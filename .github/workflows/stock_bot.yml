@@ -2,11 +2,22 @@ name: Run Stock Bot
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "53 13 * * 1-5"
+    inputs:
+      mode:
+        description: "signal | execute"
+        required: true
+        default: "signal"
+        type: choice
+        options:
+          - signal
+          - execute
 
 permissions:
   contents: write
+
+concurrency:
+  group: ai-stock-lab
+  cancel-in-progress: false
 
 jobs:
   run-stock-bot:
@@ -15,6 +26,7 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      BOT_MODE: ${{ inputs.mode }}
 
     steps:
       - name: Check out repository
@@ -43,20 +55,21 @@ jobs:
           fi
 
           echo "Telegram secrets finnes ✅"
+          echo "BOT_MODE=$BOT_MODE"
 
       - name: Run stock bot
         run: python stock_bot.py
 
-      - name: Commit updated portfolio files
+      - name: Commit updated data files
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
 
-          git add data/*.csv || true
+          git add data/*.csv data/*.json data/**/*.json data/**/*.csv || true
 
           if git diff --cached --quiet; then
-            echo "Ingen portfolio-endringer å committe."
+            echo "Ingen data-endringer å committe."
           else
-            git commit -m "Update paper portfolio data"
+            git commit -m "Update AI Stock Lab data"
             git push
           fi
