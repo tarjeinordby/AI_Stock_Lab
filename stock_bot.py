@@ -1,7 +1,7 @@
 import os
 import math
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import requests
@@ -12,35 +12,30 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 # =========================
+# KONFIGURASJON
+# =========================
+
+START_CAPITAL = 10_000
+MAX_POSITIONS = 10
+BUY_TOP_N = 10
+HOLD_TOP_N = 20
+MIN_CASH_TO_BUY = 100
+
+DATA_DIR = "data"
+
+PORTFOLIO_FILE = f"{DATA_DIR}/paper_portfolios.csv"
+TRADES_FILE = f"{DATA_DIR}/trades.csv"
+PERFORMANCE_FILE = f"{DATA_DIR}/performance.csv"
+CASH_FILE = f"{DATA_DIR}/cash.csv"
+BENCHMARK_FILE = f"{DATA_DIR}/benchmark_state.csv"
+
+
+# =========================
 # TELEGRAM
 # =========================
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-
-def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        raise ValueError("Mangler TELEGRAM_BOT_TOKEN eller TELEGRAM_CHAT_ID i GitHub Secrets.")
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    # Telegram har maksgrense per melding. Vi splitter hvis teksten blir lang.
-    chunks = split_message(message, max_length=3800)
-
-    for chunk in chunks:
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": chunk
-        }
-
-        response = requests.post(url, json=payload)
-
-        if response.status_code == 200:
-            print("Melding sendt til Telegram ✅")
-        else:
-            print("Feil ved sending:", response.text)
-            response.raise_for_status()
 
 
 def split_message(message, max_length=3800):
@@ -61,8 +56,52 @@ def split_message(message, max_length=3800):
     return chunks
 
 
+def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        raise ValueError("Mangler TELEGRAM_BOT_TOKEN eller TELEGRAM_CHAT_ID i GitHub Secrets.")
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+    for chunk in split_message(message):
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": chunk
+        }
+
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            print("Melding sendt til Telegram ✅")
+        else:
+            print("Feil ved sending:", response.text)
+            response.raise_for_status()
+
+
 # =========================
-# UNIVERS: S&P 500 + NASDAQ 100
+# FILER / DATA
+# =========================
+
+def ensure_data_dir():
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def read_csv_or_empty(path, columns):
+    if os.path.exists(path):
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            return pd.DataFrame(columns=columns)
+
+    return pd.DataFrame(columns=columns)
+
+
+def save_csv(df, path):
+    ensure_data_dir()
+    df.to_csv(path, index=False)
+
+
+# =========================
+# UNIVERS
 # =========================
 
 EXTRA_WATCHLIST = [
@@ -73,7 +112,6 @@ EXTRA_WATCHLIST = [
 
 
 def clean_ticker(ticker):
-    # Yahoo Finance bruker BRK-B i stedet for BRK.B
     return str(ticker).strip().replace(".", "-")
 
 
@@ -82,8 +120,7 @@ def fetch_sp500_tickers():
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         tables = pd.read_html(url)
         df = tables[0]
-        tickers = [clean_ticker(x) for x in df["Symbol"].tolist()]
-        return tickers
+        return [clean_ticker(x) for x in df["Symbol"].tolist()]
     except Exception as e:
         print(f"Kunne ikke hente S&P 500: {e}")
         return []
@@ -131,7 +168,6 @@ def download_market_data(tickers, chunk_size=80):
 
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
-
         print(f"Henter data for {len(chunk)} tickere...")
 
         try:
@@ -208,8 +244,14 @@ def calculate_rsi(close, period=14):
 
 
 def pct_change(current, previous):
-    if previous is None or previous == 0 or math.isnan(previous):
+    if previous is None or previous == 0:
         return None
+
+    try:
+        if math.isnan(previous):
+            return None
+    except Exception:
+        pass
 
     return ((current / previous) - 1) * 100
 
@@ -256,6 +298,9 @@ def analyze_stock(ticker, df, spy_3m_return):
         ret_3m = pct_change(price, price_3m_ago)
         ret_6m = pct_change(price, price_6m_ago)
 
+        if ret_1m is None or ret_3m is None or ret_6m is None:
+            return None
+
         high_52w = float(close.max())
         low_52w = float(close.min())
 
@@ -268,12 +313,10 @@ def analyze_stock(ticker, df, spy_3m_return):
 
         avg_dollar_volume = avg_volume_20 * price
 
-        # Filtrer bort illikvide aksjer
         if avg_dollar_volume < 50_000_000:
             return None
 
         daily_returns = close.pct_change().dropna()
-
         volatility_60d = float(daily_returns.tail(60).std() * math.sqrt(252) * 100)
 
         drawdown_3m = pct_change(price, float(close.tail(63).max()))
@@ -339,7 +382,6 @@ def analyze_stock(ticker, df, spy_3m_return):
 
 def score_momentum_ai(stock):
     score = 0
-
     score += stock["ret_1m"] * 0.25
     score += stock["ret_3m"] * 0.55
     score += stock["ret_6m"] * 0.30
@@ -366,7 +408,6 @@ def score_momentum_ai(stock):
 
 def score_quality_momentum_ai(stock):
     score = 0
-
     score += stock["ret_3m"] * 0.35
     score += stock["ret_6m"] * 0.45
 
@@ -381,7 +422,6 @@ def score_quality_momentum_ai(stock):
     if stock["near_high"]:
         score += 5
 
-    # Straffer for høy volatilitet
     score -= stock["volatility_60d"] * 0.25
 
     if stock["overbought"]:
@@ -395,7 +435,6 @@ def score_quality_momentum_ai(stock):
 
 def score_aggressive_ai(stock):
     score = 0
-
     score += stock["ret_1m"] * 0.65
     score += stock["ret_3m"] * 0.65
     score += stock["ret_6m"] * 0.20
@@ -409,7 +448,6 @@ def score_aggressive_ai(stock):
     if stock["near_high"]:
         score += 7
 
-    # Aggressive_AI tåler mer volatilitet, men ikke total svakhet
     if not stock["above_sma50"]:
         score -= 12
 
@@ -421,7 +459,6 @@ def score_aggressive_ai(stock):
 
 def score_low_risk_ai(stock):
     score = 0
-
     score += stock["ret_3m"] * 0.25
     score += stock["ret_6m"] * 0.30
 
@@ -436,11 +473,10 @@ def score_low_risk_ai(stock):
     if stock["near_high"]:
         score += 4
 
-    # Hovedpoenget: lavere volatilitet og mindre drawdown
     score -= stock["volatility_60d"] * 0.65
 
     if stock["drawdown_3m"] is not None:
-        score += stock["drawdown_3m"] * 0.35  # drawdown er negativ, så dette straffer store fall
+        score += stock["drawdown_3m"] * 0.35
 
     if not stock["above_sma200"]:
         score -= 20
@@ -450,7 +486,6 @@ def score_low_risk_ai(stock):
 
 def score_balanced_ai(stock):
     score = 0
-
     score += stock["ret_1m"] * 0.15
     score += stock["ret_3m"] * 0.40
     score += stock["ret_6m"] * 0.35
@@ -509,32 +544,348 @@ def rank_stocks(analyzed_stocks):
                 continue
 
         scored = sorted(scored, key=lambda x: x["strategy_score"], reverse=True)
+
+        for rank, item in enumerate(scored, start=1):
+            item["rank"] = rank
+
         rankings[strategy_name] = scored
 
     return rankings
 
 
 # =========================
-# MELDING
+# PAPER PORTFOLIO
 # =========================
 
-def format_stock_line(stock, rank):
-    return (
-        f"{rank}. {stock['ticker']} | "
-        f"${safe_round(stock['price'], 2)} | "
-        f"Score {safe_round(stock['strategy_score'], 1)} | "
-        f"1M {safe_round(stock['ret_1m'], 1)}% | "
-        f"3M {safe_round(stock['ret_3m'], 1)}% | "
-        f"6M {safe_round(stock['ret_6m'], 1)}% | "
-        f"RS {safe_round(stock['relative_strength_3m'], 1)}% | "
-        f"RSI {safe_round(stock['rsi'], 0)} | "
-        f"Vol {safe_round(stock['volatility_60d'], 0)}%"
+def load_cash():
+    columns = ["strategy", "cash"]
+    cash_df = read_csv_or_empty(CASH_FILE, columns)
+
+    existing = set(cash_df["strategy"].tolist()) if not cash_df.empty else set()
+
+    rows = []
+
+    for strategy in STRATEGIES.keys():
+        if strategy not in existing:
+            rows.append({
+                "strategy": strategy,
+                "cash": START_CAPITAL
+            })
+
+    if rows:
+        cash_df = pd.concat([cash_df, pd.DataFrame(rows)], ignore_index=True)
+
+    return cash_df
+
+
+def get_cash(cash_df, strategy):
+    row = cash_df[cash_df["strategy"] == strategy]
+
+    if row.empty:
+        return START_CAPITAL
+
+    return float(row.iloc[0]["cash"])
+
+
+def set_cash(cash_df, strategy, cash):
+    if strategy in cash_df["strategy"].values:
+        cash_df.loc[cash_df["strategy"] == strategy, "cash"] = cash
+    else:
+        cash_df = pd.concat([
+            cash_df,
+            pd.DataFrame([{"strategy": strategy, "cash": cash}])
+        ], ignore_index=True)
+
+    return cash_df
+
+
+def load_portfolio():
+    columns = [
+        "strategy", "ticker", "shares", "buy_price", "buy_date",
+        "current_price", "market_value"
+    ]
+
+    return read_csv_or_empty(PORTFOLIO_FILE, columns)
+
+
+def load_trades():
+    columns = [
+        "date", "strategy", "action", "ticker", "price",
+        "shares", "value", "reason"
+    ]
+
+    return read_csv_or_empty(TRADES_FILE, columns)
+
+
+def load_performance():
+    columns = [
+        "date", "strategy", "portfolio_value", "cash",
+        "positions_value", "return_pct", "num_positions"
+    ]
+
+    return read_csv_or_empty(PERFORMANCE_FILE, columns)
+
+
+def update_current_prices(portfolio_df, price_map):
+    if portfolio_df.empty:
+        return portfolio_df
+
+    for idx, row in portfolio_df.iterrows():
+        ticker = row["ticker"]
+
+        if ticker in price_map:
+            price = price_map[ticker]
+            shares = float(row["shares"])
+            portfolio_df.at[idx, "current_price"] = price
+            portfolio_df.at[idx, "market_value"] = shares * price
+
+    return portfolio_df
+
+
+def run_paper_portfolios(rankings, price_map):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    portfolio_df = load_portfolio()
+    trades_df = load_trades()
+    performance_df = load_performance()
+    cash_df = load_cash()
+
+    portfolio_df = update_current_prices(portfolio_df, price_map)
+
+    report = {}
+
+    new_trades = []
+
+    for strategy, ranked_stocks in rankings.items():
+        top_buy = ranked_stocks[:BUY_TOP_N]
+        top_hold = ranked_stocks[:HOLD_TOP_N]
+
+        buy_tickers = [x["ticker"] for x in top_buy if x["strategy_score"] > 0 and x["above_sma200"]]
+        hold_tickers = [x["ticker"] for x in top_hold if x["strategy_score"] > 0 and x["above_sma200"]]
+
+        strategy_portfolio = portfolio_df[portfolio_df["strategy"] == strategy].copy()
+        cash = get_cash(cash_df, strategy)
+
+        buys = []
+        sells = []
+        holds = []
+
+        # SELG
+        for _, pos in strategy_portfolio.iterrows():
+            ticker = pos["ticker"]
+            should_sell = ticker not in hold_tickers
+
+            if should_sell:
+                price = price_map.get(ticker)
+
+                if price is None:
+                    continue
+
+                shares = float(pos["shares"])
+                value = shares * price
+                cash += value
+
+                sells.append(ticker)
+
+                new_trades.append({
+                    "date": today,
+                    "strategy": strategy,
+                    "action": "SELL",
+                    "ticker": ticker,
+                    "price": round(price, 2),
+                    "shares": round(shares, 6),
+                    "value": round(value, 2),
+                    "reason": f"Ikke lenger topp {HOLD_TOP_N} / svakere trend"
+                })
+
+                portfolio_df = portfolio_df[
+                    ~((portfolio_df["strategy"] == strategy) & (portfolio_df["ticker"] == ticker))
+                ]
+
+        # OPPDATER ETTER SALG
+        strategy_portfolio = portfolio_df[portfolio_df["strategy"] == strategy].copy()
+        owned_tickers = set(strategy_portfolio["ticker"].tolist())
+
+        for ticker in owned_tickers:
+            if ticker in hold_tickers:
+                holds.append(ticker)
+
+        # KJØP
+        positions_count = len(owned_tickers)
+
+        positions_value = float(strategy_portfolio["market_value"].sum()) if not strategy_portfolio.empty else 0
+        total_equity = cash + positions_value
+
+        target_position_value = total_equity / MAX_POSITIONS
+
+        for ticker in buy_tickers:
+            if positions_count >= MAX_POSITIONS:
+                break
+
+            if ticker in owned_tickers:
+                continue
+
+            if cash < MIN_CASH_TO_BUY:
+                break
+
+            price = price_map.get(ticker)
+
+            if price is None or price <= 0:
+                continue
+
+            buy_value = min(target_position_value, cash)
+            shares = buy_value / price
+
+            if buy_value < MIN_CASH_TO_BUY:
+                continue
+
+            cash -= buy_value
+            positions_count += 1
+            owned_tickers.add(ticker)
+            buys.append(ticker)
+
+            new_row = {
+                "strategy": strategy,
+                "ticker": ticker,
+                "shares": shares,
+                "buy_price": price,
+                "buy_date": today,
+                "current_price": price,
+                "market_value": buy_value
+            }
+
+            portfolio_df = pd.concat([portfolio_df, pd.DataFrame([new_row])], ignore_index=True)
+
+            new_trades.append({
+                "date": today,
+                "strategy": strategy,
+                "action": "BUY",
+                "ticker": ticker,
+                "price": round(price, 2),
+                "shares": round(shares, 6),
+                "value": round(buy_value, 2),
+                "reason": f"Topp {BUY_TOP_N} i {strategy}"
+            })
+
+        # OPPDATER CASH
+        cash_df = set_cash(cash_df, strategy, cash)
+
+        # PERFORMANCE
+        strategy_portfolio = portfolio_df[portfolio_df["strategy"] == strategy].copy()
+        positions_value = float(strategy_portfolio["market_value"].sum()) if not strategy_portfolio.empty else 0
+        portfolio_value = cash + positions_value
+        return_pct = ((portfolio_value / START_CAPITAL) - 1) * 100
+
+        performance_row = {
+            "date": today,
+            "strategy": strategy,
+            "portfolio_value": round(portfolio_value, 2),
+            "cash": round(cash, 2),
+            "positions_value": round(positions_value, 2),
+            "return_pct": round(return_pct, 2),
+            "num_positions": len(strategy_portfolio)
+        }
+
+        performance_df = pd.concat([performance_df, pd.DataFrame([performance_row])], ignore_index=True)
+
+        report[strategy] = {
+            "portfolio_value": portfolio_value,
+            "cash": cash,
+            "positions_value": positions_value,
+            "return_pct": return_pct,
+            "num_positions": len(strategy_portfolio),
+            "buys": buys,
+            "sells": sells,
+            "holds": holds,
+            "top_candidates": [x["ticker"] for x in top_buy[:5]]
+        }
+
+    if new_trades:
+        trades_df = pd.concat([trades_df, pd.DataFrame(new_trades)], ignore_index=True)
+
+    portfolio_df = update_current_prices(portfolio_df, price_map)
+
+    save_csv(portfolio_df, PORTFOLIO_FILE)
+    save_csv(trades_df, TRADES_FILE)
+    save_csv(performance_df, PERFORMANCE_FILE)
+    save_csv(cash_df, CASH_FILE)
+
+    return report
+
+
+# =========================
+# BENCHMARK
+# =========================
+
+def update_benchmarks(price_map):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    benchmark_df = read_csv_or_empty(
+        BENCHMARK_FILE,
+        ["benchmark", "start_date", "start_price", "shares"]
     )
 
+    performance_df = load_performance()
+
+    benchmark_report = {}
+
+    for benchmark in ["SPY", "QQQ"]:
+        price = price_map.get(benchmark)
+
+        if price is None:
+            continue
+
+        existing = benchmark_df[benchmark_df["benchmark"] == benchmark]
+
+        if existing.empty:
+            shares = START_CAPITAL / price
+
+            benchmark_df = pd.concat([
+                benchmark_df,
+                pd.DataFrame([{
+                    "benchmark": benchmark,
+                    "start_date": today,
+                    "start_price": price,
+                    "shares": shares
+                }])
+            ], ignore_index=True)
+
+        else:
+            shares = float(existing.iloc[0]["shares"])
+
+        value = shares * price
+        return_pct = ((value / START_CAPITAL) - 1) * 100
+
+        performance_df = pd.concat([
+            performance_df,
+            pd.DataFrame([{
+                "date": today,
+                "strategy": benchmark,
+                "portfolio_value": round(value, 2),
+                "cash": 0,
+                "positions_value": round(value, 2),
+                "return_pct": round(return_pct, 2),
+                "num_positions": 1
+            }])
+        ], ignore_index=True)
+
+        benchmark_report[benchmark] = {
+            "value": value,
+            "return_pct": return_pct
+        }
+
+    save_csv(benchmark_df, BENCHMARK_FILE)
+    save_csv(performance_df, PERFORMANCE_FILE)
+
+    return benchmark_report
+
+
+# =========================
+# RAPPORT
+# =========================
 
 def format_market_context(spy, qqq):
     lines = []
-
     lines.append("MARKEDSKONTEKST")
 
     if spy:
@@ -556,48 +907,110 @@ def format_market_context(spy, qqq):
     return "\n".join(lines)
 
 
-def build_message(rankings, analyzed_count, universe_count, spy, qqq):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+def build_portfolio_message(report, benchmark_report, rankings, analyzed_count, universe_count, spy, qqq):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    title_map = {
+        "Momentum_AI": "🏆 Momentum_AI",
+        "Quality_Momentum_AI": "🧠 Quality_Momentum_AI",
+        "Aggressive_AI": "🔥 Aggressive_AI",
+        "Low_Risk_AI": "🛡 Low_Risk_AI",
+        "Balanced_AI": "⚖️ Balanced_AI"
+    }
+
+    explanation_map = {
+        "Momentum_AI": "Jakter aksjer med sterkest fart og relativ styrke.",
+        "Quality_Momentum_AI": "Ser etter sterk trend, men straffer ekstrem risiko.",
+        "Aggressive_AI": "Tar høyere risiko for å fange eksplosive bevegelser.",
+        "Low_Risk_AI": "Prioriterer lavere volatilitet og jevnere trend.",
+        "Balanced_AI": "Kombinerer momentum, trend og risiko."
+    }
 
     message = ""
-    message += "📊 AI STOCK LAB v2\n"
+    message += "📊 AI PORTFOLIO MANAGER v1\n"
     message += f"Dato: {today}\n"
-    message += "Rapport: Pre-market watchlist\n"
+    message += "Rapport: Paper portfolio kjøp/hold/selg\n"
     message += f"Univers: {universe_count} tickere\n"
     message += f"Analysert etter filtre: {analyzed_count} tickere\n\n"
 
     message += format_market_context(spy, qqq)
     message += "\n\n"
 
-    strategy_titles = {
-        "Momentum_AI": "🏆 Momentum_AI — sterkest relativ styrke",
-        "Quality_Momentum_AI": "🧠 Quality_Momentum_AI — sterk trend + lavere risiko",
-        "Aggressive_AI": "🔥 Aggressive_AI — høy momentum / høyere risiko",
-        "Low_Risk_AI": "🛡 Low_Risk_AI — jevnere aksjer med lavere volatilitet",
-        "Balanced_AI": "⚖️ Balanced_AI — samlet beste kandidater"
-    }
+    # Leaderboard
+    leaderboard = sorted(report.items(), key=lambda x: x[1]["return_pct"], reverse=True)
 
-    for strategy_name, stocks in rankings.items():
+    message += "🏁 LEADERBOARD\n"
+    for i, (strategy, data) in enumerate(leaderboard, start=1):
+        message += (
+            f"{i}. {strategy}: "
+            f"${safe_round(data['portfolio_value'], 2)} "
+            f"({safe_round(data['return_pct'], 2)}%) | "
+            f"{data['num_positions']} posisjoner\n"
+        )
+
+    for benchmark, data in benchmark_report.items():
+        message += (
+            f"{benchmark}: "
+            f"${safe_round(data['value'], 2)} "
+            f"({safe_round(data['return_pct'], 2)}%)\n"
+        )
+
+    message += "\n"
+
+    # Strategier
+    for strategy, data in report.items():
         message += "━━━━━━━━━━━━━━\n"
-        message += strategy_titles.get(strategy_name, strategy_name)
-        message += "\n"
+        message += f"{title_map.get(strategy, strategy)}\n"
+        message += f"{explanation_map.get(strategy, '')}\n"
         message += "━━━━━━━━━━━━━━\n"
 
-        top = stocks[:5]
+        message += (
+            f"Verdi: ${safe_round(data['portfolio_value'], 2)} "
+            f"({safe_round(data['return_pct'], 2)}%)\n"
+        )
+        message += f"Cash: ${safe_round(data['cash'], 2)} | Posisjoner: {data['num_positions']}/{MAX_POSITIONS}\n"
 
-        if not top:
-            message += "Ingen kandidater.\n\n"
-            continue
+        buys = data["buys"]
+        sells = data["sells"]
+        holds = data["holds"]
+        top_candidates = data["top_candidates"]
 
-        for i, stock in enumerate(top, start=1):
-            message += format_stock_line(stock, i)
-            message += "\n"
+        message += f"Topp kandidater nå: {', '.join(top_candidates) if top_candidates else 'Ingen'}\n"
+
+        if buys:
+            message += f"KJØP: {', '.join(buys)}\n"
+        else:
+            message += "KJØP: ingen\n"
+
+        if holds:
+            message += f"HOLD: {', '.join(holds[:10])}\n"
+        else:
+            message += "HOLD: ingen\n"
+
+        if sells:
+            message += f"SELG: {', '.join(sells)}\n"
+        else:
+            message += "SELG: ingen\n"
+
+        # Vis topp 3 med litt data
+        top_ranked = rankings[strategy][:3]
+        message += "Topp 3 detaljer:\n"
+
+        for stock in top_ranked:
+            message += (
+                f"- {stock['ticker']}: "
+                f"Score {safe_round(stock['strategy_score'], 1)} | "
+                f"3M {safe_round(stock['ret_3m'], 1)}% | "
+                f"RS {safe_round(stock['relative_strength_3m'], 1)}% | "
+                f"RSI {safe_round(stock['rsi'], 0)} | "
+                f"Vol {safe_round(stock['volatility_60d'], 0)}%\n"
+            )
 
         message += "\n"
 
-    message += "⚠️ Dette er ikke kjøpsordre. Kun beslutningsstøtte.\n"
-    message += "Sjekk alltid nyheter, earnings, risiko og egen portefølje før handel.\n"
-    message += "Neste steg: paper tracking for å måle strategiene mot SPY/QQQ."
+    message += "⚠️ Dette er paper trading, ikke ekte ordre.\n"
+    message += "Målet er å teste hvilke strategier som faktisk slår SPY/QQQ over tid.\n"
+    message += "Ikke bruk dette til ekte kjøp/salg før strategiene har bevist seg over tid."
 
     return message
 
@@ -607,6 +1020,8 @@ def build_message(rankings, analyzed_count, universe_count, spy, qqq):
 # =========================
 
 def run_bot():
+    ensure_data_dir()
+
     universe = build_universe()
     market_data = download_market_data(universe)
 
@@ -635,7 +1050,20 @@ def run_bot():
 
     rankings = rank_stocks(analyzed_stocks)
 
-    message = build_message(
+    price_map = {}
+
+    for ticker, df in market_data.items():
+        try:
+            price_map[ticker] = float(df["Close"].iloc[-1])
+        except Exception:
+            pass
+
+    report = run_paper_portfolios(rankings, price_map)
+    benchmark_report = update_benchmarks(price_map)
+
+    message = build_portfolio_message(
+        report=report,
+        benchmark_report=benchmark_report,
         rankings=rankings,
         analyzed_count=len(analyzed_stocks),
         universe_count=len(universe),
