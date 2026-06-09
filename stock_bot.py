@@ -8,8 +8,8 @@ from datetime import datetime
 # TELEGRAM
 # =========================
 
-BOT_TOKEN = os.getenv("REMOVED")
-CHAT_ID = os.getenv("7386922633")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
 def send_telegram(message):
