@@ -26,13 +26,14 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      BOT_MODE: ${{ inputs.mode }}
+      BOT_MODE: ${{ github.event.inputs.mode }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -54,6 +55,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$BOT_MODE" ]; then
+            echo "BOT_MODE mangler"
+            exit 1
+          fi
+
           echo "Telegram secrets finnes ✅"
           echo "BOT_MODE=$BOT_MODE"
 
@@ -61,15 +67,22 @@ jobs:
         run: python stock_bot.py
 
       - name: Commit updated data files
+        if: always()
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
 
-          git add data/*.csv data/*.json data/**/*.json data/**/*.csv || true
+          git pull --rebase origin main || true
+
+          if [ -d "data" ]; then
+            git add data/
+          else
+            echo "Ingen data-mappe finnes ennå."
+          fi
 
           if git diff --cached --quiet; then
             echo "Ingen data-endringer å committe."
           else
             git commit -m "Update AI Stock Lab data"
-            git push
+            git push origin main
           fi
