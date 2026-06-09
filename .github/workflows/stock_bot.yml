@@ -7,6 +7,9 @@ on:
     # Ca. 15:15 norsk sommertid
     - cron: "15 13 * * 1-5"
 
+permissions:
+  contents: write
+
 jobs:
   run-stock-bot:
     runs-on: ubuntu-latest
@@ -18,6 +21,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -43,3 +48,17 @@ jobs:
 
       - name: Run stock bot
         run: python stock_bot.py
+
+      - name: Commit updated portfolio files
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git add data/*.csv || true
+
+          if git diff --cached --quiet; then
+            echo "Ingen portfolio-endringer å committe."
+          else
+            git commit -m "Update paper portfolio data"
+            git push
+          fi
