@@ -84,8 +84,10 @@ jobs:
 
           if [ -d "data" ]; then
             git add data/
-          else
-            echo "Ingen data-mappe finnes ennå."
+          fi
+
+          if [ -d "data_v3" ]; then
+            git add data_v3/
           fi
 
           if git diff --cached --quiet; then
