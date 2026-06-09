@@ -1,8 +1,11 @@
 import os
+import json
 import math
 import warnings
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
@@ -11,23 +14,55 @@ import yfinance as yf
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
+# ============================================================
+# AI PORTFOLIO LAB v2
+# Long-term paper portfolio manager
+#
+# Modes:
+#   BOT_MODE=signal   -> creates signal snapshot / candidates
+#   BOT_MODE=execute  -> updates paper portfolio from latest signal
+#
+# Goal:
+#   Long-term outperformance vs SPY / QQQ with controlled turnover.
+# ============================================================
+
+
 # =========================
-# KONFIGURASJON
+# CONFIG
 # =========================
 
-START_CAPITAL = 10_000
-MAX_POSITIONS = 10
-BUY_TOP_N = 10
-HOLD_TOP_N = 20
-MIN_CASH_TO_BUY = 100
+START_CAPITAL = 10_000.0
+
+MAX_POSITIONS = 12
+MAX_POSITION_WEIGHT = 0.12
+MAX_NEW_BUYS_PER_WEEK = 4
+BUYBACK_COOLDOWN_DAYS = 10
+
+TARGET_VOL_NORMAL = 0.16
+TARGET_VOL_DEFENSIVE = 0.08
+
+HARD_STOP_LOSS = -0.18
+TRAILING_STOP_FROM_HIGH = -0.25
+
+MIN_PRICE = 10
+MIN_AVG_DOLLAR_VOLUME = 25_000_000
+
+TOP_CANDIDATES_TO_SAVE = 75
+TOP_CANDIDATES_TO_REPORT = 12
+
+MONDAY_REBALANCE_ONLY = True
 
 DATA_DIR = "data"
+STATE_DIR = f"{DATA_DIR}/state"
+SIGNALS_DIR = f"{DATA_DIR}/signals"
+REPORTS_DIR = f"{DATA_DIR}/reports"
 
-PORTFOLIO_FILE = f"{DATA_DIR}/paper_portfolios.csv"
+STATE_FILE = f"{STATE_DIR}/portfolio_state.json"
 TRADES_FILE = f"{DATA_DIR}/trades.csv"
 PERFORMANCE_FILE = f"{DATA_DIR}/performance.csv"
-CASH_FILE = f"{DATA_DIR}/cash.csv"
-BENCHMARK_FILE = f"{DATA_DIR}/benchmark_state.csv"
+
+OSLO = ZoneInfo("Europe/Oslo")
+NY = ZoneInfo("America/New_York")
 
 
 # =========================
@@ -58,7 +93,8 @@ def split_message(message, max_length=3800):
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
-        raise ValueError("Mangler TELEGRAM_BOT_TOKEN eller TELEGRAM_CHAT_ID i GitHub Secrets.")
+        print("Telegram secrets mangler. Hopper over sending.")
+        return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
@@ -68,21 +104,38 @@ def send_telegram(message):
             "text": chunk
         }
 
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=30)
 
         if response.status_code == 200:
             print("Melding sendt til Telegram ✅")
         else:
-            print("Feil ved sending:", response.text)
+            print("Telegram-feil:", response.text)
             response.raise_for_status()
 
 
 # =========================
-# FILER / DATA
+# FILE HELPERS
 # =========================
 
-def ensure_data_dir():
-    os.makedirs(DATA_DIR, exist_ok=True)
+def ensure_dirs():
+    for path in [DATA_DIR, STATE_DIR, SIGNALS_DIR, REPORTS_DIR]:
+        os.makedirs(path, exist_ok=True)
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def now_oslo():
+    return now_utc().astimezone(OSLO)
+
+
+def now_ny():
+    return now_utc().astimezone(NY)
+
+
+def today_str():
+    return now_oslo().strftime("%Y-%m-%d")
 
 
 def read_csv_or_empty(path, columns):
@@ -96,18 +149,48 @@ def read_csv_or_empty(path, columns):
 
 
 def save_csv(df, path):
-    ensure_data_dir()
+    ensure_dirs()
     df.to_csv(path, index=False)
 
 
+def load_state():
+    ensure_dirs()
+
+    if not os.path.exists(STATE_FILE):
+        return {
+            "created_at": now_utc().isoformat(),
+            "cash": START_CAPITAL,
+            "positions": {},
+            "highest_portfolio_value": START_CAPITAL,
+            "weekly_meta": {
+                "iso_week": "",
+                "buys_this_week": 0
+            },
+            "cooldowns": {},
+            "last_signal_file": None,
+            "last_execution_date": None
+        }
+
+    with open(STATE_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_state(state):
+    ensure_dirs()
+
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
+
+
 # =========================
-# UNIVERS
+# UNIVERSE
 # =========================
 
 EXTRA_WATCHLIST = [
     "PLTR", "ARM", "SMCI", "TSM", "ASML", "NVO", "SHOP", "SE",
     "COIN", "RBLX", "U", "SNOW", "MDB", "DDOG", "NET", "CRWD",
-    "CELH", "ELF", "TOST", "APP", "HOOD", "SOFI"
+    "CELH", "ELF", "TOST", "APP", "HOOD", "SOFI", "MSTR",
+    "UBER", "ABNB", "PANW", "ZS", "OKTA", "BILL", "ROKU"
 ]
 
 
@@ -155,25 +238,54 @@ def build_universe():
 
     universe = sorted(set(sp500 + nasdaq100 + EXTRA_WATCHLIST + ["SPY", "QQQ"]))
 
-    print(f"Antall tickere i univers: {len(universe)}")
+    print(f"Univers: {len(universe)} tickere")
     return universe
 
 
 # =========================
-# DATAHENTING
+# MARKET DATA
 # =========================
 
-def download_market_data(tickers, chunk_size=80):
+def extract_ticker_data(raw, ticker):
+    try:
+        if raw is None or raw.empty:
+            return None
+
+        if isinstance(raw.columns, pd.MultiIndex):
+            if ticker not in raw.columns.get_level_values(0):
+                return None
+            df = raw[ticker].copy()
+        else:
+            df = raw.copy()
+
+        needed = ["Open", "High", "Low", "Close", "Volume"]
+
+        for col in needed:
+            if col not in df.columns:
+                return None
+
+        df = df[needed].dropna()
+
+        if len(df) < 260:
+            return None
+
+        return df
+
+    except Exception:
+        return None
+
+
+def download_daily_data(tickers, chunk_size=80):
     all_data = {}
 
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i + chunk_size]
-        print(f"Henter data for {len(chunk)} tickere...")
+        print(f"Henter daglige data for {len(chunk)} tickere...")
 
         try:
             raw = yf.download(
                 tickers=chunk,
-                period="1y",
+                period="2y",
                 interval="1d",
                 auto_adjust=True,
                 group_by="ticker",
@@ -188,45 +300,52 @@ def download_market_data(tickers, chunk_size=80):
                     all_data[ticker] = df
 
         except Exception as e:
-            print(f"Feil ved nedlasting av chunk: {e}")
+            print(f"Nedlastingsfeil chunk: {e}")
 
     print(f"Data hentet for {len(all_data)} tickere")
     return all_data
 
 
-def extract_ticker_data(raw, ticker):
+def get_latest_price(ticker, fallback_price=None):
+    """
+    Brukes i execute-modus.
+    Prøver intraday 1m først. Hvis det feiler, bruker den fallback fra signal.
+    """
     try:
-        if raw is None or raw.empty:
+        data = yf.download(
+            tickers=ticker,
+            period="5d",
+            interval="1m",
+            auto_adjust=False,
+            progress=False,
+            prepost=False
+        )
+
+        if data is not None and not data.empty and "Close" in data.columns:
+            price = float(data["Close"].dropna().iloc[-1])
+            if price > 0:
+                return price
+
+    except Exception as e:
+        print(f"Intraday pris feilet for {ticker}: {e}")
+
+    return fallback_price
+
+
+# =========================
+# INDICATORS
+# =========================
+
+def pct_change(current, previous):
+    try:
+        if previous is None or previous == 0:
             return None
-
-        if isinstance(raw.columns, pd.MultiIndex):
-            if ticker not in raw.columns.get_level_values(0):
-                return None
-
-            df = raw[ticker].copy()
-        else:
-            df = raw.copy()
-
-        needed = ["Open", "High", "Low", "Close", "Volume"]
-
-        for col in needed:
-            if col not in df.columns:
-                return None
-
-        df = df[needed].dropna()
-
-        if len(df) < 220:
+        if math.isnan(previous):
             return None
-
-        return df
-
+        return (current / previous) - 1
     except Exception:
         return None
 
-
-# =========================
-# INDIKATORER
-# =========================
 
 def calculate_rsi(close, period=14):
     delta = close.diff()
@@ -243,109 +362,107 @@ def calculate_rsi(close, period=14):
     return rsi
 
 
-def pct_change(current, previous):
-    if previous is None or previous == 0:
-        return None
-
+def safe_float(x, default=None):
     try:
-        if math.isnan(previous):
-            return None
-    except Exception:
-        pass
-
-    return ((current / previous) - 1) * 100
-
-
-def safe_round(value, digits=2):
-    if value is None:
-        return None
-
-    try:
+        if x is None:
+            return default
+        value = float(x)
         if math.isnan(value):
-            return None
-
-        return round(float(value), digits)
-
+            return default
+        return value
     except Exception:
-        return None
+        return default
+
+
+def safe_round(x, digits=2):
+    value = safe_float(x)
+    if value is None:
+        return "N/A"
+    return round(value, digits)
 
 
 # =========================
-# AKSJEANALYSE
+# SIGNAL ENGINE
 # =========================
 
-def analyze_stock(ticker, df, spy_3m_return):
+def analyze_stock(ticker, df, spy_ret_3m=None):
     try:
         close = df["Close"]
         volume = df["Volume"]
 
         price = float(close.iloc[-1])
 
-        if price < 10:
+        if price < MIN_PRICE:
             return None
 
-        sma20 = float(close.rolling(20).mean().iloc[-1])
+        avg_volume_20 = float(volume.tail(20).mean())
+        avg_dollar_volume = avg_volume_20 * price
+
+        if avg_dollar_volume < MIN_AVG_DOLLAR_VOLUME:
+            return None
+
         sma50 = float(close.rolling(50).mean().iloc[-1])
+        sma100 = float(close.rolling(100).mean().iloc[-1])
         sma200 = float(close.rolling(200).mean().iloc[-1])
 
         rsi = float(calculate_rsi(close).iloc[-1])
 
-        price_1m_ago = float(close.iloc[-21])
-        price_3m_ago = float(close.iloc[-63])
-        price_6m_ago = float(close.iloc[-126])
+        price_1m = float(close.iloc[-21])
+        price_3m = float(close.iloc[-63])
+        price_6m = float(close.iloc[-126])
+        price_12m = float(close.iloc[-252])
 
-        ret_1m = pct_change(price, price_1m_ago)
-        ret_3m = pct_change(price, price_3m_ago)
-        ret_6m = pct_change(price, price_6m_ago)
+        ret_1m = pct_change(price, price_1m)
+        ret_3m = pct_change(price, price_3m)
+        ret_6m = pct_change(price, price_6m)
+        ret_12m = pct_change(price, price_12m)
 
-        if ret_1m is None or ret_3m is None or ret_6m is None:
+        # 12-1 momentum: bruker pris for 1 måned siden mot 12 måneder siden
+        mom_12_1 = pct_change(price_1m, price_12m)
+        mom_6_1 = pct_change(price_1m, price_6m)
+        mom_3_1 = pct_change(price_1m, price_3m)
+
+        if None in [ret_1m, ret_3m, ret_6m, ret_12m, mom_12_1, mom_6_1, mom_3_1]:
             return None
 
-        high_52w = float(close.max())
-        low_52w = float(close.min())
+        daily_returns = close.pct_change().dropna()
+        vol60 = float(daily_returns.tail(60).std() * math.sqrt(252))
+        vol20 = float(daily_returns.tail(20).std() * math.sqrt(252))
+
+        high_52w = float(close.tail(252).max())
+        low_52w = float(close.tail(252).min())
 
         distance_from_high = pct_change(price, high_52w)
         distance_from_low = pct_change(price, low_52w)
 
-        avg_volume_20 = float(volume.tail(20).mean())
-        latest_volume = float(volume.iloc[-1])
-        volume_ratio = latest_volume / avg_volume_20 if avg_volume_20 > 0 else 1
-
-        avg_dollar_volume = avg_volume_20 * price
-
-        if avg_dollar_volume < 50_000_000:
-            return None
-
-        daily_returns = close.pct_change().dropna()
-        volatility_60d = float(daily_returns.tail(60).std() * math.sqrt(252) * 100)
-
         drawdown_3m = pct_change(price, float(close.tail(63).max()))
+        drawdown_6m = pct_change(price, float(close.tail(126).max()))
 
         relative_strength_3m = None
-        if spy_3m_return is not None and ticker not in ["SPY", "QQQ"]:
-            relative_strength_3m = ret_3m - spy_3m_return
+        if spy_ret_3m is not None and ticker not in ["SPY", "QQQ"]:
+            relative_strength_3m = ret_3m - spy_ret_3m
 
         trend_score = 0
 
-        if price > sma20:
+        if price > sma50:
             trend_score += 1
 
-        if price > sma50:
-            trend_score += 2
+        if price > sma100:
+            trend_score += 1
 
         if price > sma200:
             trend_score += 2
 
-        if sma20 > sma50 > sma200:
-            trend_score += 3
-        elif sma50 > sma200:
+        if sma50 > sma100 > sma200:
+            trend_score += 2
+
+        if price > high_52w * 0.90:
             trend_score += 1
 
-        healthy_rsi = 45 <= rsi <= 70
-        overbought = rsi > 75
-        weak_rsi = rsi < 40
-
-        near_high = distance_from_high is not None and distance_from_high > -12
+        above_sma200 = price > sma200
+        healthy_rsi = 45 <= rsi <= 72
+        overbought = rsi > 78
+        very_weak_rsi = rsi < 38
 
         return {
             "ticker": ticker,
@@ -353,677 +470,245 @@ def analyze_stock(ticker, df, spy_3m_return):
             "ret_1m": ret_1m,
             "ret_3m": ret_3m,
             "ret_6m": ret_6m,
+            "ret_12m": ret_12m,
+            "mom_12_1": mom_12_1,
+            "mom_6_1": mom_6_1,
+            "mom_3_1": mom_3_1,
             "relative_strength_3m": relative_strength_3m,
+            "vol60": vol60,
+            "vol20": vol20,
             "rsi": rsi,
-            "volatility_60d": volatility_60d,
-            "volume_ratio": volume_ratio,
             "distance_from_high": distance_from_high,
             "distance_from_low": distance_from_low,
             "drawdown_3m": drawdown_3m,
+            "drawdown_6m": drawdown_6m,
             "trend_score": trend_score,
+            "above_sma200": above_sma200,
             "healthy_rsi": healthy_rsi,
             "overbought": overbought,
-            "weak_rsi": weak_rsi,
-            "near_high": near_high,
+            "very_weak_rsi": very_weak_rsi,
             "avg_dollar_volume": avg_dollar_volume,
-            "above_sma50": price > sma50,
-            "above_sma200": price > sma200,
-            "sma20_above_sma50_above_sma200": sma20 > sma50 > sma200
+            "sma50": sma50,
+            "sma100": sma100,
+            "sma200": sma200
         }
 
     except Exception as e:
-        print(f"Analysefeil for {ticker}: {e}")
+        print(f"Analysefeil {ticker}: {e}")
         return None
 
 
-# =========================
-# STRATEGIER
-# =========================
+def percentile_rank(series, higher_is_better=True):
+    s = pd.Series(series).astype(float)
 
-def score_momentum_ai(stock):
-    score = 0
-    score += stock["ret_1m"] * 0.25
-    score += stock["ret_3m"] * 0.55
-    score += stock["ret_6m"] * 0.30
+    if not higher_is_better:
+        s = -s
 
-    if stock["relative_strength_3m"] is not None:
-        score += stock["relative_strength_3m"] * 0.70
+    return s.rank(pct=True)
 
-    score += stock["trend_score"] * 2.0
 
-    if stock["near_high"]:
-        score += 6
+def build_score_table(analyzed_stocks):
+    df = pd.DataFrame(analyzed_stocks)
 
-    if stock["overbought"]:
-        score -= 5
+    if df.empty:
+        return df
 
-    if not stock["above_sma50"]:
-        score -= 10
+    df = df.set_index("ticker")
 
-    if stock["ret_1m"] < -5:
-        score -= 8
-
-    return score
-
-
-def score_quality_momentum_ai(stock):
-    score = 0
-    score += stock["ret_3m"] * 0.35
-    score += stock["ret_6m"] * 0.45
-
-    if stock["relative_strength_3m"] is not None:
-        score += stock["relative_strength_3m"] * 0.45
-
-    score += stock["trend_score"] * 2.5
-
-    if stock["healthy_rsi"]:
-        score += 8
-
-    if stock["near_high"]:
-        score += 5
-
-    score -= stock["volatility_60d"] * 0.25
-
-    if stock["overbought"]:
-        score -= 4
-
-    if not stock["above_sma200"]:
-        score -= 15
-
-    return score
-
-
-def score_aggressive_ai(stock):
-    score = 0
-    score += stock["ret_1m"] * 0.65
-    score += stock["ret_3m"] * 0.65
-    score += stock["ret_6m"] * 0.20
-
-    if stock["relative_strength_3m"] is not None:
-        score += stock["relative_strength_3m"] * 0.60
-
-    score += stock["volume_ratio"] * 4
-    score += stock["trend_score"] * 1.5
-
-    if stock["near_high"]:
-        score += 7
-
-    if not stock["above_sma50"]:
-        score -= 12
-
-    if stock["ret_1m"] < 0:
-        score -= 5
-
-    return score
-
-
-def score_low_risk_ai(stock):
-    score = 0
-    score += stock["ret_3m"] * 0.25
-    score += stock["ret_6m"] * 0.30
-
-    if stock["relative_strength_3m"] is not None:
-        score += stock["relative_strength_3m"] * 0.30
-
-    score += stock["trend_score"] * 3.0
-
-    if stock["healthy_rsi"]:
-        score += 8
-
-    if stock["near_high"]:
-        score += 4
-
-    score -= stock["volatility_60d"] * 0.65
-
-    if stock["drawdown_3m"] is not None:
-        score += stock["drawdown_3m"] * 0.35
-
-    if not stock["above_sma200"]:
-        score -= 20
-
-    return score
-
-
-def score_balanced_ai(stock):
-    score = 0
-    score += stock["ret_1m"] * 0.15
-    score += stock["ret_3m"] * 0.40
-    score += stock["ret_6m"] * 0.35
-
-    if stock["relative_strength_3m"] is not None:
-        score += stock["relative_strength_3m"] * 0.45
-
-    score += stock["trend_score"] * 2.5
-
-    if stock["healthy_rsi"]:
-        score += 7
-
-    if stock["near_high"]:
-        score += 5
-
-    score -= stock["volatility_60d"] * 0.30
-
-    if stock["overbought"]:
-        score -= 4
-
-    if not stock["above_sma50"]:
-        score -= 8
-
-    if not stock["above_sma200"]:
-        score -= 12
-
-    return score
-
-
-STRATEGIES = {
-    "Momentum_AI": score_momentum_ai,
-    "Quality_Momentum_AI": score_quality_momentum_ai,
-    "Aggressive_AI": score_aggressive_ai,
-    "Low_Risk_AI": score_low_risk_ai,
-    "Balanced_AI": score_balanced_ai
-}
-
-
-# =========================
-# RANGERING
-# =========================
-
-def rank_stocks(analyzed_stocks):
-    rankings = {}
-
-    for strategy_name, strategy_function in STRATEGIES.items():
-        scored = []
-
-        for stock in analyzed_stocks:
-            try:
-                score = strategy_function(stock)
-                item = stock.copy()
-                item["strategy_score"] = score
-                scored.append(item)
-            except Exception:
-                continue
-
-        scored = sorted(scored, key=lambda x: x["strategy_score"], reverse=True)
-
-        for rank, item in enumerate(scored, start=1):
-            item["rank"] = rank
-
-        rankings[strategy_name] = scored
-
-    return rankings
-
-
-# =========================
-# PAPER PORTFOLIO
-# =========================
-
-def load_cash():
-    columns = ["strategy", "cash"]
-    cash_df = read_csv_or_empty(CASH_FILE, columns)
-
-    existing = set(cash_df["strategy"].tolist()) if not cash_df.empty else set()
-
-    rows = []
-
-    for strategy in STRATEGIES.keys():
-        if strategy not in existing:
-            rows.append({
-                "strategy": strategy,
-                "cash": START_CAPITAL
-            })
-
-    if rows:
-        cash_df = pd.concat([cash_df, pd.DataFrame(rows)], ignore_index=True)
-
-    return cash_df
-
-
-def get_cash(cash_df, strategy):
-    row = cash_df[cash_df["strategy"] == strategy]
-
-    if row.empty:
-        return START_CAPITAL
-
-    return float(row.iloc[0]["cash"])
-
-
-def set_cash(cash_df, strategy, cash):
-    if strategy in cash_df["strategy"].values:
-        cash_df.loc[cash_df["strategy"] == strategy, "cash"] = cash
-    else:
-        cash_df = pd.concat([
-            cash_df,
-            pd.DataFrame([{"strategy": strategy, "cash": cash}])
-        ], ignore_index=True)
-
-    return cash_df
-
-
-def load_portfolio():
-    columns = [
-        "strategy", "ticker", "shares", "buy_price", "buy_date",
-        "current_price", "market_value"
+    # Robust clipping for å hindre at én ekstrem aksje dominerer alt
+    factor_cols = [
+        "mom_12_1", "mom_6_1", "mom_3_1", "relative_strength_3m",
+        "ret_6m", "ret_3m", "vol60", "drawdown_6m", "trend_score"
     ]
 
-    return read_csv_or_empty(PORTFOLIO_FILE, columns)
+    for col in factor_cols:
+        if col in df.columns:
+            lower = df[col].quantile(0.02)
+            upper = df[col].quantile(0.98)
+            df[col] = df[col].clip(lower, upper)
 
+    # Momentum sleeve
+    df["rank_mom_12_1"] = percentile_rank(df["mom_12_1"], True)
+    df["rank_mom_6_1"] = percentile_rank(df["mom_6_1"], True)
+    df["rank_mom_3_1"] = percentile_rank(df["mom_3_1"], True)
+    df["rank_rs"] = percentile_rank(df["relative_strength_3m"].fillna(0), True)
 
-def load_trades():
-    columns = [
-        "date", "strategy", "action", "ticker", "price",
-        "shares", "value", "reason"
-    ]
-
-    return read_csv_or_empty(TRADES_FILE, columns)
-
-
-def load_performance():
-    columns = [
-        "date", "strategy", "portfolio_value", "cash",
-        "positions_value", "return_pct", "num_positions"
-    ]
-
-    return read_csv_or_empty(PERFORMANCE_FILE, columns)
-
-
-def update_current_prices(portfolio_df, price_map):
-    if portfolio_df.empty:
-        return portfolio_df
-
-    for idx, row in portfolio_df.iterrows():
-        ticker = row["ticker"]
-
-        if ticker in price_map:
-            price = price_map[ticker]
-            shares = float(row["shares"])
-            portfolio_df.at[idx, "current_price"] = price
-            portfolio_df.at[idx, "market_value"] = shares * price
-
-    return portfolio_df
-
-
-def run_paper_portfolios(rankings, price_map):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    portfolio_df = load_portfolio()
-    trades_df = load_trades()
-    performance_df = load_performance()
-    cash_df = load_cash()
-
-    portfolio_df = update_current_prices(portfolio_df, price_map)
-
-    report = {}
-
-    new_trades = []
-
-    for strategy, ranked_stocks in rankings.items():
-        top_buy = ranked_stocks[:BUY_TOP_N]
-        top_hold = ranked_stocks[:HOLD_TOP_N]
-
-        buy_tickers = [x["ticker"] for x in top_buy if x["strategy_score"] > 0 and x["above_sma200"]]
-        hold_tickers = [x["ticker"] for x in top_hold if x["strategy_score"] > 0 and x["above_sma200"]]
-
-        strategy_portfolio = portfolio_df[portfolio_df["strategy"] == strategy].copy()
-        cash = get_cash(cash_df, strategy)
-
-        buys = []
-        sells = []
-        holds = []
-
-        # SELG
-        for _, pos in strategy_portfolio.iterrows():
-            ticker = pos["ticker"]
-            should_sell = ticker not in hold_tickers
-
-            if should_sell:
-                price = price_map.get(ticker)
-
-                if price is None:
-                    continue
-
-                shares = float(pos["shares"])
-                value = shares * price
-                cash += value
-
-                sells.append(ticker)
-
-                new_trades.append({
-                    "date": today,
-                    "strategy": strategy,
-                    "action": "SELL",
-                    "ticker": ticker,
-                    "price": round(price, 2),
-                    "shares": round(shares, 6),
-                    "value": round(value, 2),
-                    "reason": f"Ikke lenger topp {HOLD_TOP_N} / svakere trend"
-                })
-
-                portfolio_df = portfolio_df[
-                    ~((portfolio_df["strategy"] == strategy) & (portfolio_df["ticker"] == ticker))
-                ]
-
-        # OPPDATER ETTER SALG
-        strategy_portfolio = portfolio_df[portfolio_df["strategy"] == strategy].copy()
-        owned_tickers = set(strategy_portfolio["ticker"].tolist())
-
-        for ticker in owned_tickers:
-            if ticker in hold_tickers:
-                holds.append(ticker)
-
-        # KJØP
-        positions_count = len(owned_tickers)
-
-        positions_value = float(strategy_portfolio["market_value"].sum()) if not strategy_portfolio.empty else 0
-        total_equity = cash + positions_value
-
-        target_position_value = total_equity / MAX_POSITIONS
-
-        for ticker in buy_tickers:
-            if positions_count >= MAX_POSITIONS:
-                break
-
-            if ticker in owned_tickers:
-                continue
-
-            if cash < MIN_CASH_TO_BUY:
-                break
-
-            price = price_map.get(ticker)
-
-            if price is None or price <= 0:
-                continue
-
-            buy_value = min(target_position_value, cash)
-            shares = buy_value / price
-
-            if buy_value < MIN_CASH_TO_BUY:
-                continue
-
-            cash -= buy_value
-            positions_count += 1
-            owned_tickers.add(ticker)
-            buys.append(ticker)
-
-            new_row = {
-                "strategy": strategy,
-                "ticker": ticker,
-                "shares": shares,
-                "buy_price": price,
-                "buy_date": today,
-                "current_price": price,
-                "market_value": buy_value
-            }
-
-            portfolio_df = pd.concat([portfolio_df, pd.DataFrame([new_row])], ignore_index=True)
-
-            new_trades.append({
-                "date": today,
-                "strategy": strategy,
-                "action": "BUY",
-                "ticker": ticker,
-                "price": round(price, 2),
-                "shares": round(shares, 6),
-                "value": round(buy_value, 2),
-                "reason": f"Topp {BUY_TOP_N} i {strategy}"
-            })
-
-        # OPPDATER CASH
-        cash_df = set_cash(cash_df, strategy, cash)
-
-        # PERFORMANCE
-        strategy_portfolio = portfolio_df[portfolio_df["strategy"] == strategy].copy()
-        positions_value = float(strategy_portfolio["market_value"].sum()) if not strategy_portfolio.empty else 0
-        portfolio_value = cash + positions_value
-        return_pct = ((portfolio_value / START_CAPITAL) - 1) * 100
-
-        performance_row = {
-            "date": today,
-            "strategy": strategy,
-            "portfolio_value": round(portfolio_value, 2),
-            "cash": round(cash, 2),
-            "positions_value": round(positions_value, 2),
-            "return_pct": round(return_pct, 2),
-            "num_positions": len(strategy_portfolio)
-        }
-
-        performance_df = pd.concat([performance_df, pd.DataFrame([performance_row])], ignore_index=True)
-
-        report[strategy] = {
-            "portfolio_value": portfolio_value,
-            "cash": cash,
-            "positions_value": positions_value,
-            "return_pct": return_pct,
-            "num_positions": len(strategy_portfolio),
-            "buys": buys,
-            "sells": sells,
-            "holds": holds,
-            "top_candidates": [x["ticker"] for x in top_buy[:5]]
-        }
-
-    if new_trades:
-        trades_df = pd.concat([trades_df, pd.DataFrame(new_trades)], ignore_index=True)
-
-    portfolio_df = update_current_prices(portfolio_df, price_map)
-
-    save_csv(portfolio_df, PORTFOLIO_FILE)
-    save_csv(trades_df, TRADES_FILE)
-    save_csv(performance_df, PERFORMANCE_FILE)
-    save_csv(cash_df, CASH_FILE)
-
-    return report
-
-
-# =========================
-# BENCHMARK
-# =========================
-
-def update_benchmarks(price_map):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    benchmark_df = read_csv_or_empty(
-        BENCHMARK_FILE,
-        ["benchmark", "start_date", "start_price", "shares"]
+    df["momentum_rank"] = (
+        0.45 * df["rank_mom_12_1"] +
+        0.25 * df["rank_mom_6_1"] +
+        0.15 * df["rank_mom_3_1"] +
+        0.15 * df["rank_rs"]
     )
 
-    performance_df = load_performance()
+    # Trend sleeve
+    df["trend_rank"] = percentile_rank(df["trend_score"], True)
 
-    benchmark_report = {}
+    # Low risk / stability sleeve
+    df["vol_rank"] = percentile_rank(df["vol60"], False)
+    df["drawdown_rank"] = percentile_rank(df["drawdown_6m"], True)
 
-    for benchmark in ["SPY", "QQQ"]:
-        price = price_map.get(benchmark)
+    df["stability_rank"] = (
+        0.65 * df["vol_rank"] +
+        0.35 * df["drawdown_rank"]
+    )
 
-        if price is None:
-            continue
+    # Quality proxy siden vi foreløpig ikke har ekte fundamentals
+    # Denne favoriserer aksjer med sterk trend, lavere volatilitet, og sunn RSI.
+    df["rsi_quality"] = np.where(
+        df["healthy_rsi"],
+        1.0,
+        np.where(df["overbought"], 0.35, np.where(df["very_weak_rsi"], 0.20, 0.60))
+    )
 
-        existing = benchmark_df[benchmark_df["benchmark"] == benchmark]
+    df["quality_proxy_rank"] = (
+        0.40 * df["trend_rank"] +
+        0.35 * df["stability_rank"] +
+        0.25 * df["rsi_quality"]
+    )
 
-        if existing.empty:
-            shares = START_CAPITAL / price
+    # Total ensemble score
+    df["score"] = (
+        0.45 * df["momentum_rank"] +
+        0.25 * df["quality_proxy_rank"] +
+        0.20 * df["trend_rank"] +
+        0.10 * df["stability_rank"]
+    )
 
-            benchmark_df = pd.concat([
-                benchmark_df,
-                pd.DataFrame([{
-                    "benchmark": benchmark,
-                    "start_date": today,
-                    "start_price": price,
-                    "shares": shares
-                }])
-            ], ignore_index=True)
+    # Straffer direkte
+    df.loc[~df["above_sma200"], "score"] *= 0.55
+    df.loc[df["overbought"], "score"] *= 0.90
+    df.loc[df["vol60"] > 1.20, "score"] *= 0.80
 
-        else:
-            shares = float(existing.iloc[0]["shares"])
+    df = df.sort_values("score", ascending=False)
+    df["rank"] = range(1, len(df) + 1)
+    df["score_percentile"] = df["score"].rank(pct=True)
 
-        value = shares * price
-        return_pct = ((value / START_CAPITAL) - 1) * 100
+    return df
 
-        performance_df = pd.concat([
-            performance_df,
-            pd.DataFrame([{
-                "date": today,
-                "strategy": benchmark,
-                "portfolio_value": round(value, 2),
-                "cash": 0,
-                "positions_value": round(value, 2),
-                "return_pct": round(return_pct, 2),
-                "num_positions": 1
-            }])
-        ], ignore_index=True)
 
-        benchmark_report[benchmark] = {
-            "value": value,
-            "return_pct": return_pct
+# =========================
+# REGIME DETECTION
+# =========================
+
+def detect_market_regime(spy, qqq):
+    """
+    Enkel regimesjekk:
+    - bullish: SPY og QQQ over 200 SMA og positiv 3M
+    - neutral: blandet
+    - defensive: svakt marked
+    """
+    if spy is None or qqq is None:
+        return {
+            "regime": "unknown",
+            "max_gross_exposure": 0.70,
+            "target_vol": TARGET_VOL_DEFENSIVE
         }
 
-    save_csv(benchmark_df, BENCHMARK_FILE)
-    save_csv(performance_df, PERFORMANCE_FILE)
+    spy_good = spy["above_sma200"] and spy["ret_3m"] > 0
+    qqq_good = qqq["above_sma200"] and qqq["ret_3m"] > 0
 
-    return benchmark_report
+    if spy_good and qqq_good:
+        return {
+            "regime": "bullish",
+            "max_gross_exposure": 1.00,
+            "target_vol": TARGET_VOL_NORMAL
+        }
+
+    if spy["above_sma200"] or qqq["above_sma200"]:
+        return {
+            "regime": "neutral",
+            "max_gross_exposure": 0.70,
+            "target_vol": 0.12
+        }
+
+    return {
+        "regime": "defensive",
+        "max_gross_exposure": 0.40,
+        "target_vol": TARGET_VOL_DEFENSIVE
+    }
 
 
 # =========================
-# RAPPORT
+# SIGNAL MODE
 # =========================
 
-def format_market_context(spy, qqq):
-    lines = []
-    lines.append("MARKEDSKONTEKST")
+def save_signal_snapshot(score_df, regime, spy, qqq):
+    ensure_dirs()
+
+    date = today_str()
+    path = f"{SIGNALS_DIR}/{date}_signal.json"
+
+    candidates = score_df.head(TOP_CANDIDATES_TO_SAVE).reset_index().to_dict(orient="records")
+
+    payload = {
+        "created_at_utc": now_utc().isoformat(),
+        "created_at_oslo": now_oslo().isoformat(),
+        "created_at_ny": now_ny().isoformat(),
+        "date": date,
+        "regime": regime,
+        "spy": spy,
+        "qqq": qqq,
+        "candidates": candidates
+    }
+
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+
+    state = load_state()
+    state["last_signal_file"] = path
+    save_state(state)
+
+    return path
+
+
+def build_signal_message(score_df, regime, analyzed_count, universe_count, spy, qqq):
+    message = ""
+    message += "📈 AI PORTFOLIO LAB v2 — SIGNAL\n"
+    message += f"Dato: {today_str()}\n"
+    message += f"Marked: {regime['regime'].upper()}\n"
+    message += f"Maks eksponering: {int(regime['max_gross_exposure'] * 100)}%\n"
+    message += f"Univers: {universe_count} tickere | Analysert: {analyzed_count}\n\n"
 
     if spy:
-        lines.append(
-            f"SPY: 1M {safe_round(spy['ret_1m'], 1)}% | "
-            f"3M {safe_round(spy['ret_3m'], 1)}% | "
-            f"6M {safe_round(spy['ret_6m'], 1)}% | "
-            f"Trend {spy['trend_score']}/8"
+        message += (
+            f"SPY: 3M {safe_round(spy['ret_3m'] * 100, 1)}% | "
+            f"6M {safe_round(spy['ret_6m'] * 100, 1)}% | "
+            f"Over 200SMA: {'ja' if spy['above_sma200'] else 'nei'}\n"
         )
 
     if qqq:
-        lines.append(
-            f"QQQ: 1M {safe_round(qqq['ret_1m'], 1)}% | "
-            f"3M {safe_round(qqq['ret_3m'], 1)}% | "
-            f"6M {safe_round(qqq['ret_6m'], 1)}% | "
-            f"Trend {qqq['trend_score']}/8"
-        )
-
-    return "\n".join(lines)
-
-
-def build_portfolio_message(report, benchmark_report, rankings, analyzed_count, universe_count, spy, qqq):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    title_map = {
-        "Momentum_AI": "🏆 Momentum_AI",
-        "Quality_Momentum_AI": "🧠 Quality_Momentum_AI",
-        "Aggressive_AI": "🔥 Aggressive_AI",
-        "Low_Risk_AI": "🛡 Low_Risk_AI",
-        "Balanced_AI": "⚖️ Balanced_AI"
-    }
-
-    explanation_map = {
-        "Momentum_AI": "Jakter aksjer med sterkest fart og relativ styrke.",
-        "Quality_Momentum_AI": "Ser etter sterk trend, men straffer ekstrem risiko.",
-        "Aggressive_AI": "Tar høyere risiko for å fange eksplosive bevegelser.",
-        "Low_Risk_AI": "Prioriterer lavere volatilitet og jevnere trend.",
-        "Balanced_AI": "Kombinerer momentum, trend og risiko."
-    }
-
-    message = ""
-    message += "📊 AI PORTFOLIO MANAGER v1\n"
-    message += f"Dato: {today}\n"
-    message += "Rapport: Paper portfolio kjøp/hold/selg\n"
-    message += f"Univers: {universe_count} tickere\n"
-    message += f"Analysert etter filtre: {analyzed_count} tickere\n\n"
-
-    message += format_market_context(spy, qqq)
-    message += "\n\n"
-
-    # Leaderboard
-    leaderboard = sorted(report.items(), key=lambda x: x[1]["return_pct"], reverse=True)
-
-    message += "🏁 LEADERBOARD\n"
-    for i, (strategy, data) in enumerate(leaderboard, start=1):
         message += (
-            f"{i}. {strategy}: "
-            f"${safe_round(data['portfolio_value'], 2)} "
-            f"({safe_round(data['return_pct'], 2)}%) | "
-            f"{data['num_positions']} posisjoner\n"
-        )
-
-    for benchmark, data in benchmark_report.items():
-        message += (
-            f"{benchmark}: "
-            f"${safe_round(data['value'], 2)} "
-            f"({safe_round(data['return_pct'], 2)}%)\n"
+            f"QQQ: 3M {safe_round(qqq['ret_3m'] * 100, 1)}% | "
+            f"6M {safe_round(qqq['ret_6m'] * 100, 1)}% | "
+            f"Over 200SMA: {'ja' if qqq['above_sma200'] else 'nei'}\n"
         )
 
     message += "\n"
+    message += "🏆 TOPP KANDIDATER\n"
 
-    # Strategier
-    for strategy, data in report.items():
-        message += "━━━━━━━━━━━━━━\n"
-        message += f"{title_map.get(strategy, strategy)}\n"
-        message += f"{explanation_map.get(strategy, '')}\n"
-        message += "━━━━━━━━━━━━━━\n"
+    top = score_df.head(TOP_CANDIDATES_TO_REPORT).reset_index()
 
+    for i, row in enumerate(top.itertuples(), start=1):
         message += (
-            f"Verdi: ${safe_round(data['portfolio_value'], 2)} "
-            f"({safe_round(data['return_pct'], 2)}%)\n"
+            f"{i}. {row.ticker} | "
+            f"Score {safe_round(row.score, 3)} | "
+            f"3M {safe_round(row.ret_3m * 100, 1)}% | "
+            f"6M {safe_round(row.ret_6m * 100, 1)}% | "
+            f"RS {safe_round(row.relative_strength_3m * 100 if row.relative_strength_3m is not None else None, 1)}% | "
+            f"Vol {safe_round(row.vol60 * 100, 0)}% | "
+            f"RSI {safe_round(row.rsi, 0)}\n"
         )
-        message += f"Cash: ${safe_round(data['cash'], 2)} | Posisjoner: {data['num_positions']}/{MAX_POSITIONS}\n"
 
-        buys = data["buys"]
-        sells = data["sells"]
-        holds = data["holds"]
-        top_candidates = data["top_candidates"]
-
-        message += f"Topp kandidater nå: {', '.join(top_candidates) if top_candidates else 'Ingen'}\n"
-
-        if buys:
-            message += f"KJØP: {', '.join(buys)}\n"
-        else:
-            message += "KJØP: ingen\n"
-
-        if holds:
-            message += f"HOLD: {', '.join(holds[:10])}\n"
-        else:
-            message += "HOLD: ingen\n"
-
-        if sells:
-            message += f"SELG: {', '.join(sells)}\n"
-        else:
-            message += "SELG: ingen\n"
-
-        # Vis topp 3 med litt data
-        top_ranked = rankings[strategy][:3]
-        message += "Topp 3 detaljer:\n"
-
-        for stock in top_ranked:
-            message += (
-                f"- {stock['ticker']}: "
-                f"Score {safe_round(stock['strategy_score'], 1)} | "
-                f"3M {safe_round(stock['ret_3m'], 1)}% | "
-                f"RS {safe_round(stock['relative_strength_3m'], 1)}% | "
-                f"RSI {safe_round(stock['rsi'], 0)} | "
-                f"Vol {safe_round(stock['volatility_60d'], 0)}%\n"
-            )
-
-        message += "\n"
-
-    message += "⚠️ Dette er paper trading, ikke ekte ordre.\n"
-    message += "Målet er å teste hvilke strategier som faktisk slår SPY/QQQ over tid.\n"
-    message += "Ikke bruk dette til ekte kjøp/salg før strategiene har bevist seg over tid."
+    message += "\n"
+    message += "Neste steg: execute-kjøringen bruker dette signalet til paper-portefølje.\n"
+    message += "Dette er ikke ekte kjøpsordre."
 
     return message
 
 
-# =========================
-# KJØR BOT
-# =========================
-
-def run_bot():
-    ensure_data_dir()
-
+def run_signal():
     universe = build_universe()
-    market_data = download_market_data(universe)
+    market_data = download_daily_data(universe)
 
     spy = None
     qqq = None
@@ -1031,41 +716,42 @@ def run_bot():
     if "SPY" in market_data:
         spy = analyze_stock("SPY", market_data["SPY"], None)
 
+    spy_3m = spy["ret_3m"] if spy else None
+
     if "QQQ" in market_data:
-        spy_3m = spy["ret_3m"] if spy else None
         qqq = analyze_stock("QQQ", market_data["QQQ"], spy_3m)
 
-    spy_3m_return = spy["ret_3m"] if spy else None
-
-    analyzed_stocks = []
+    analyzed = []
 
     for ticker, df in market_data.items():
         if ticker in ["SPY", "QQQ"]:
             continue
 
-        result = analyze_stock(ticker, df, spy_3m_return)
+        result = analyze_stock(ticker, df, spy_3m)
 
         if result:
-            analyzed_stocks.append(result)
+            analyzed.append(result)
 
-    rankings = rank_stocks(analyzed_stocks)
+    score_df = build_score_table(analyzed)
 
-    price_map = {}
+    if score_df.empty:
+        raise ValueError("Ingen aksjer ble analysert. Sjekk datakilde.")
 
-    for ticker, df in market_data.items():
-        try:
-            price_map[ticker] = float(df["Close"].iloc[-1])
-        except Exception:
-            pass
+    regime = detect_market_regime(spy, qqq)
 
-    report = run_paper_portfolios(rankings, price_map)
-    benchmark_report = update_benchmarks(price_map)
+    signal_file = save_signal_snapshot(
+        score_df=score_df,
+        regime=regime,
+        spy=spy,
+        qqq=qqq
+    )
 
-    message = build_portfolio_message(
-        report=report,
-        benchmark_report=benchmark_report,
-        rankings=rankings,
-        analyzed_count=len(analyzed_stocks),
+    print(f"Signal lagret: {signal_file}")
+
+    message = build_signal_message(
+        score_df=score_df,
+        regime=regime,
+        analyzed_count=len(analyzed),
         universe_count=len(universe),
         spy=spy,
         qqq=qqq
@@ -1074,5 +760,550 @@ def run_bot():
     send_telegram(message)
 
 
+# =========================
+# EXECUTION / PORTFOLIO
+# =========================
+
+def load_latest_signal():
+    state = load_state()
+    signal_path = state.get("last_signal_file")
+
+    if not signal_path or not os.path.exists(signal_path):
+        files = sorted([f for f in os.listdir(SIGNALS_DIR) if f.endswith("_signal.json")])
+
+        if not files:
+            raise FileNotFoundError("Fant ingen signalfil. Kjør signal først.")
+
+        signal_path = f"{SIGNALS_DIR}/{files[-1]}"
+
+    with open(signal_path, "r") as f:
+        return json.load(f), signal_path
+
+
+def reset_week_if_needed(state):
+    current_week = now_oslo().strftime("%G-W%V")
+
+    if state["weekly_meta"].get("iso_week") != current_week:
+        state["weekly_meta"] = {
+            "iso_week": current_week,
+            "buys_this_week": 0
+        }
+
+    return state
+
+
+def trading_days_between(date_str):
+    if not date_str:
+        return 999
+
+    try:
+        start = pd.Timestamp(date_str)
+        end = pd.Timestamp(today_str())
+        return len(pd.bdate_range(start, end)) - 1
+    except Exception:
+        return 999
+
+
+def load_trades():
+    return read_csv_or_empty(
+        TRADES_FILE,
+        ["date", "timestamp_utc", "action", "ticker", "shares", "price", "value", "cost", "reason"]
+    )
+
+
+def load_performance():
+    return read_csv_or_empty(
+        PERFORMANCE_FILE,
+        ["date", "portfolio_value", "cash", "positions_value", "return_pct", "num_positions", "spy_return_pct", "qqq_return_pct"]
+    )
+
+
+def estimate_trade_cost(value, side):
+    # Enkel realistisk kostnadsmodell for paper.
+    # 0.10% total friksjon på kjøp/salg.
+    base_cost = abs(value) * 0.001
+
+    # Litt ekstra på salg for fees.
+    if side == "SELL":
+        base_cost += abs(value) * 0.00003
+
+    return base_cost
+
+
+def current_portfolio_value(state, candidates_by_ticker):
+    positions_value = 0.0
+    updated_positions = {}
+
+    for ticker, pos in state["positions"].items():
+        fallback = pos.get("last_price", pos.get("avg_price"))
+        price = candidates_by_ticker.get(ticker, {}).get("price", fallback)
+
+        if price is None:
+            price = fallback
+
+        shares = float(pos["shares"])
+        value = shares * price
+
+        pos["last_price"] = price
+        pos["market_value"] = value
+
+        updated_positions[ticker] = pos
+        positions_value += value
+
+    state["positions"] = updated_positions
+
+    total = float(state["cash"]) + positions_value
+
+    return total, positions_value, state
+
+
+def build_target_weights(candidates, regime, state):
+    df = pd.DataFrame(candidates)
+
+    if df.empty:
+        return {}
+
+    df = df.sort_values("score", ascending=False).head(50)
+
+    # Bare aksjer med god trend og positiv score
+    df = df[
+        (df["above_sma200"] == True) &
+        (df["score"] > 0)
+    ].copy()
+
+    if df.empty:
+        return {}
+
+    # Primære kandidater
+    df = df.head(MAX_POSITIONS).copy()
+
+    # Score-vol sizing
+    df["vol60"] = df["vol60"].clip(lower=0.20, upper=1.50)
+    df["raw_weight"] = (df["score"] ** 1.25) / df["vol60"]
+
+    if df["raw_weight"].sum() <= 0:
+        return {}
+
+    df["target_weight"] = df["raw_weight"] / df["raw_weight"].sum()
+
+    # Maks posisjonsvekt
+    df["target_weight"] = df["target_weight"].clip(upper=MAX_POSITION_WEIGHT)
+
+    # Normaliser etter cap
+    if df["target_weight"].sum() > 0:
+        df["target_weight"] = df["target_weight"] / df["target_weight"].sum()
+
+    # Markedsregime bestemmer total eksponering
+    max_exposure = regime.get("max_gross_exposure", 0.70)
+    df["target_weight"] *= max_exposure
+
+    return dict(zip(df["ticker"], df["target_weight"]))
+
+
+def should_hard_sell(ticker, pos, candidate):
+    if candidate is None:
+        return True, "Ikke lenger i kandidatlisten"
+
+    price = candidate.get("price", pos.get("last_price", pos.get("avg_price")))
+    avg_price = pos.get("avg_price", price)
+    highest_price = pos.get("highest_price", avg_price)
+
+    if price and highest_price:
+        pos["highest_price"] = max(highest_price, price)
+
+    ret_from_entry = (price / avg_price) - 1 if avg_price else 0
+    ret_from_high = (price / pos.get("highest_price", highest_price)) - 1 if pos.get("highest_price") else 0
+
+    if ret_from_entry <= HARD_STOP_LOSS:
+        return True, f"Hard stop-loss {safe_round(ret_from_entry * 100, 1)}%"
+
+    if ret_from_high <= TRAILING_STOP_FROM_HIGH:
+        return True, f"Trailing stop {safe_round(ret_from_high * 100, 1)}% fra topp"
+
+    if not candidate.get("above_sma200", False):
+        return True, "Under 200-dagers snitt"
+
+    if candidate.get("rank", 999) > 75 and candidate.get("score", 0) < 0.50:
+        return True, "Falt langt ned i ranking"
+
+    return False, ""
+
+
+def execute_sell(state, trades_df, ticker, reason, candidates_by_ticker):
+    pos = state["positions"].get(ticker)
+
+    if not pos:
+        return state, trades_df, None
+
+    fallback_price = pos.get("last_price", pos.get("avg_price"))
+    signal_price = candidates_by_ticker.get(ticker, {}).get("price", fallback_price)
+    price = get_latest_price(ticker, signal_price)
+
+    shares = float(pos["shares"])
+    value = shares * price
+    cost = estimate_trade_cost(value, "SELL")
+    net_value = value - cost
+
+    state["cash"] += net_value
+
+    trade = {
+        "date": today_str(),
+        "timestamp_utc": now_utc().isoformat(),
+        "action": "SELL",
+        "ticker": ticker,
+        "shares": round(shares, 6),
+        "price": round(price, 2),
+        "value": round(value, 2),
+        "cost": round(cost, 2),
+        "reason": reason
+    }
+
+    trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
+
+    del state["positions"][ticker]
+
+    state["cooldowns"][ticker] = today_str()
+
+    return state, trades_df, trade
+
+
+def execute_buy(state, trades_df, ticker, target_value, reason, candidate):
+    signal_price = candidate.get("price")
+    price = get_latest_price(ticker, signal_price)
+
+    if price is None or price <= 0:
+        return state, trades_df, None
+
+    # Gap guard: ikke jag aksjer som har åpnet altfor høyt over signalpris
+    if signal_price:
+        gap = (price / signal_price) - 1
+
+        if gap > 0.05:
+            return state, trades_df, None
+
+        if gap > 0.025:
+            target_value *= 0.50
+
+    target_value = min(target_value, state["cash"])
+
+    if target_value < 100:
+        return state, trades_df, None
+
+    cost = estimate_trade_cost(target_value, "BUY")
+    total_needed = target_value + cost
+
+    if total_needed > state["cash"]:
+        target_value = state["cash"] * 0.995
+        cost = estimate_trade_cost(target_value, "BUY")
+        total_needed = target_value + cost
+
+    shares = target_value / price
+
+    if shares <= 0:
+        return state, trades_df, None
+
+    state["cash"] -= total_needed
+
+    state["positions"][ticker] = {
+        "shares": shares,
+        "avg_price": price,
+        "last_price": price,
+        "highest_price": price,
+        "market_value": shares * price,
+        "buy_date": today_str()
+    }
+
+    state["weekly_meta"]["buys_this_week"] += 1
+
+    trade = {
+        "date": today_str(),
+        "timestamp_utc": now_utc().isoformat(),
+        "action": "BUY",
+        "ticker": ticker,
+        "shares": round(shares, 6),
+        "price": round(price, 2),
+        "value": round(target_value, 2),
+        "cost": round(cost, 2),
+        "reason": reason
+    }
+
+    trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
+
+    return state, trades_df, trade
+
+
+def update_benchmark_state(state, signal):
+    candidates = signal["candidates"]
+    by_ticker = {x["ticker"]: x for x in candidates}
+
+    spy_price = None
+    qqq_price = None
+
+    # Hent fra signal hvis mulig, ellers yfinance
+    for symbol in ["SPY", "QQQ"]:
+        if symbol not in state:
+            state[symbol] = {}
+
+    for symbol in ["SPY", "QQQ"]:
+        try:
+            price = get_latest_price(symbol, None)
+
+            if price is None:
+                price = by_ticker.get(symbol, {}).get("price")
+
+            if not state[symbol].get("start_price") and price:
+                state[symbol]["start_price"] = price
+
+            if price:
+                state[symbol]["last_price"] = price
+
+        except Exception:
+            pass
+
+    return state
+
+
+def benchmark_return(state, symbol):
+    b = state.get(symbol, {})
+    start = b.get("start_price")
+    last = b.get("last_price")
+
+    if not start or not last:
+        return None
+
+    return (last / start) - 1
+
+
+def run_execute():
+    signal, signal_path = load_latest_signal()
+    state = load_state()
+    state = reset_week_if_needed(state)
+
+    candidates = signal["candidates"]
+    candidates_by_ticker = {x["ticker"]: x for x in candidates}
+
+    trades_df = load_trades()
+    performance_df = load_performance()
+
+    regime = signal["regime"]
+    is_monday = now_oslo().weekday() == 0
+
+    total_before, positions_value_before, state = current_portfolio_value(state, candidates_by_ticker)
+
+    sells = []
+    buys = []
+    holds = []
+
+    # 1. Hard sells kan skje alle dager
+    for ticker, pos in list(state["positions"].items()):
+        candidate = candidates_by_ticker.get(ticker)
+        sell, reason = should_hard_sell(ticker, pos, candidate)
+
+        if sell:
+            state, trades_df, trade = execute_sell(
+                state=state,
+                trades_df=trades_df,
+                ticker=ticker,
+                reason=reason,
+                candidates_by_ticker=candidates_by_ticker
+            )
+
+            if trade:
+                sells.append(trade)
+
+    # Oppdater verdi etter salg
+    total_now, positions_value_now, state = current_portfolio_value(state, candidates_by_ticker)
+
+    # 2. Bygg target weights
+    target_weights = build_target_weights(candidates, regime, state)
+
+    # 3. Kjøp / rebalanser
+    current_positions = set(state["positions"].keys())
+    target_tickers = list(target_weights.keys())
+
+    # Mandag: mer aktiv rebalansering
+    # Andre dager: kun kjøp nye superkandidater hvis vi har plass og ukentlig buy-budget
+    for ticker in target_tickers:
+        if ticker in state["positions"]:
+            holds.append(ticker)
+            continue
+
+        if len(state["positions"]) >= MAX_POSITIONS:
+            break
+
+        if state["weekly_meta"]["buys_this_week"] >= MAX_NEW_BUYS_PER_WEEK:
+            break
+
+        candidate = candidates_by_ticker.get(ticker)
+
+        if not candidate:
+            continue
+
+        # Anti flip-flop: ikke kjøp tilbake rett etter salg
+        last_sell = state["cooldowns"].get(ticker)
+
+        if trading_days_between(last_sell) < BUYBACK_COOLDOWN_DAYS:
+            continue
+
+        # Kjøpsstrenghet:
+        # Mandag: topp 12 ok.
+        # Tirs-fre: bare topp 5 / svært høy score.
+        rank = candidate.get("rank", 999)
+        score_percentile = candidate.get("score_percentile", 0)
+
+        if is_monday:
+            if rank > 12:
+                continue
+        else:
+            if rank > 5 and score_percentile < 0.97:
+                continue
+
+        target_weight = target_weights[ticker]
+        target_value = total_now * target_weight
+
+        state, trades_df, trade = execute_buy(
+            state=state,
+            trades_df=trades_df,
+            ticker=ticker,
+            target_value=target_value,
+            reason=f"Rank {rank}, score {safe_round(candidate.get('score'), 3)}",
+            candidate=candidate
+        )
+
+        if trade:
+            buys.append(trade)
+
+    # 4. Oppdater priser/verdi
+    total_after, positions_value_after, state = current_portfolio_value(state, candidates_by_ticker)
+
+    state["highest_portfolio_value"] = max(
+        float(state.get("highest_portfolio_value", START_CAPITAL)),
+        total_after
+    )
+
+    state["last_execution_date"] = today_str()
+    state = update_benchmark_state(state, signal)
+
+    spy_ret = benchmark_return(state, "SPY")
+    qqq_ret = benchmark_return(state, "QQQ")
+
+    return_pct = (total_after / START_CAPITAL) - 1
+
+    performance_row = {
+        "date": today_str(),
+        "portfolio_value": round(total_after, 2),
+        "cash": round(state["cash"], 2),
+        "positions_value": round(positions_value_after, 2),
+        "return_pct": round(return_pct * 100, 2),
+        "num_positions": len(state["positions"]),
+        "spy_return_pct": round(spy_ret * 100, 2) if spy_ret is not None else None,
+        "qqq_return_pct": round(qqq_ret * 100, 2) if qqq_ret is not None else None
+    }
+
+    performance_df = pd.concat([performance_df, pd.DataFrame([performance_row])], ignore_index=True)
+
+    save_csv(trades_df, TRADES_FILE)
+    save_csv(performance_df, PERFORMANCE_FILE)
+    save_state(state)
+
+    message = build_execute_message(
+        state=state,
+        buys=buys,
+        sells=sells,
+        holds=holds,
+        total_after=total_after,
+        positions_value=positions_value_after,
+        return_pct=return_pct,
+        spy_ret=spy_ret,
+        qqq_ret=qqq_ret,
+        signal=signal,
+        signal_path=signal_path
+    )
+
+    send_telegram(message)
+
+
+def build_execute_message(state, buys, sells, holds, total_after, positions_value, return_pct, spy_ret, qqq_ret, signal, signal_path):
+    message = ""
+    message += "🧠 AI PORTFOLIO LAB v2 — EXECUTE\n"
+    message += f"Dato: {today_str()}\n"
+    message += f"Marked: {signal['regime']['regime'].upper()}\n"
+    message += f"Signalfil: {os.path.basename(signal_path)}\n\n"
+
+    message += "📊 PORTFØLJE\n"
+    message += f"Verdi: ${safe_round(total_after, 2)} ({safe_round(return_pct * 100, 2)}%)\n"
+    message += f"Cash: ${safe_round(state['cash'], 2)}\n"
+    message += f"Investert: ${safe_round(positions_value, 2)}\n"
+    message += f"Posisjoner: {len(state['positions'])}/{MAX_POSITIONS}\n"
+
+    if spy_ret is not None:
+        message += f"SPY siden start: {safe_round(spy_ret * 100, 2)}%\n"
+
+    if qqq_ret is not None:
+        message += f"QQQ siden start: {safe_round(qqq_ret * 100, 2)}%\n"
+
+    message += "\n"
+
+    message += "🟢 KJØP\n"
+    if buys:
+        for t in buys:
+            message += f"- {t['ticker']} | ${t['value']} @ ${t['price']} | {t['reason']}\n"
+    else:
+        message += "- Ingen nye kjøp\n"
+
+    message += "\n"
+
+    message += "🔴 SELG\n"
+    if sells:
+        for t in sells:
+            message += f"- {t['ticker']} | ${t['value']} @ ${t['price']} | {t['reason']}\n"
+    else:
+        message += "- Ingen salg\n"
+
+    message += "\n"
+
+    message += "🟡 HOLD\n"
+    if state["positions"]:
+        for ticker, pos in sorted(state["positions"].items()):
+            value = pos.get("market_value", 0)
+            avg = pos.get("avg_price", 0)
+            last = pos.get("last_price", avg)
+            pnl = (last / avg - 1) if avg else 0
+
+            message += (
+                f"- {ticker}: ${safe_round(value, 2)} | "
+                f"P/L {safe_round(pnl * 100, 1)}%\n"
+            )
+    else:
+        message += "- Ingen posisjoner\n"
+
+    message += "\n"
+    message += "⚠️ Paper trading, ikke ekte ordre.\n"
+    message += "Målet er å teste en langsiktig porteføljemodell mot SPY/QQQ."
+
+    return message
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+    ensure_dirs()
+
+    mode = os.environ.get("BOT_MODE", "signal").strip().lower()
+
+    print(f"BOT_MODE={mode}")
+    print(f"Oslo time: {now_oslo().isoformat()}")
+    print(f"New York time: {now_ny().isoformat()}")
+
+    if mode == "signal":
+        run_signal()
+    elif mode == "execute":
+        run_execute()
+    else:
+        raise ValueError(f"Ukjent BOT_MODE: {mode}")
+
+
 if __name__ == "__main__":
-    run_bot()
+    main()
