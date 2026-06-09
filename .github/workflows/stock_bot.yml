@@ -3,13 +3,17 @@ name: Run Stock Bot
 on:
   workflow_dispatch:
   schedule:
-    # Kjører mandag–fredag kl. 13:15 UTC
-    # Dette tilsvarer ca. 15:15 norsk sommertid
+    # Mandag–fredag kl. 13:15 UTC
+    # Ca. 15:15 norsk sommertid
     - cron: "15 13 * * 1-5"
 
 jobs:
   run-stock-bot:
     runs-on: ubuntu-latest
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Check out repository
@@ -23,8 +27,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check environment variables
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN mangler"
+            exit 1
+          fi
+
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "TELEGRAM_CHAT_ID mangler"
+            exit 1
+          fi
+
+          echo "Telegram secrets finnes ✅"
+
       - name: Run stock bot
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python stock_bot.py
