@@ -1,0 +1,54 @@
+{
+  "cash": 4201.651603365282,
+  "cooldowns": {},
+  "created_at": "2026-06-09T17:38:24.020881+00:00",
+  "highest_portfolio_value": 10000.0,
+  "last_execution_date": "2026-06-09",
+  "positions": {
+    "ARM": {
+      "avg_price": 317.20001220703125,
+      "buy_date": "2026-06-09",
+      "highest_price": 317.20001220703125,
+      "last_price": 317.20001220703125,
+      "market_value": 1095.9290889408205,
+      "shares": 3.455009605187296
+    },
+    "ASML": {
+      "avg_price": 1742.800048828125,
+      "buy_date": "2026-06-09",
+      "highest_price": 1742.800048828125,
+      "last_price": 1742.800048828125,
+      "market_value": 1402.4813864020255,
+      "shares": 0.8047287968261574
+    },
+    "DDOG": {
+      "avg_price": 226.49000549316406,
+      "buy_date": "2026-06-09",
+      "highest_price": 226.49000549316406,
+      "last_price": 226.49000549316406,
+      "market_value": 1213.098630526502,
+      "shares": 5.3560801850177695
+    },
+    "DELL": {
+      "avg_price": 372.9549865722656,
+      "buy_date": "2026-06-09",
+      "highest_price": 372.9549865722656,
+      "last_price": 372.9549865722656,
+      "market_value": 1225.1369196562139,
+      "shares": 3.284945807847042
+    },
+    "IONQ": {
+      "avg_price": 56.619998931884766,
+      "buy_date": "2026-06-09",
+      "highest_price": 56.619998931884766,
+      "last_price": 56.619998931884766,
+      "market_value": 855.909815268362,
+      "shares": 15.116740222797288
+    }
+  },
+  "strategy": "Max_Return_AI",
+  "weekly_meta": {
+    "buys_this_week": 5,
+    "iso_week": "2026-W24"
+  }
+}

@@ -1,0 +1,6 @@
+date,strategy,portfolio_value,cash,positions_value,return_pct,num_positions,spy_return_pct,qqq_return_pct
+2026-06-09,Max_Return_AI,9994.21,4201.65,5792.56,-0.06,5,,
+2026-06-09,Quality_Momentum_AI,9994.99,4988.83,5006.16,-0.05,4,,
+2026-06-09,Balanced_AI,9995.44,5434.48,4560.95,-0.05,4,,
+2026-06-09,Low_Risk_AI,9997.43,7432.07,2565.36,-0.03,3,,
+2026-06-09,MegaCap_AI,9994.19,4180.83,5813.36,-0.06,3,,
