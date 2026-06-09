@@ -2,9 +2,10 @@ name: Run Stock Bot
 
 on:
   workflow_dispatch:
+  on:
+  workflow_dispatch:
   schedule:
-  - cron: "45 15 * * 1-5"
-    timezone: "Europe/Oslo"
+    - cron: "53 13 * * 1-5"
 
 permissions:
   contents: write
