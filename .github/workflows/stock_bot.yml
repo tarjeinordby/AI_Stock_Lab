@@ -2,8 +2,6 @@ name: Run Stock Bot
 
 on:
   workflow_dispatch:
-  on:
-  workflow_dispatch:
   schedule:
     - cron: "53 13 * * 1-5"
 
