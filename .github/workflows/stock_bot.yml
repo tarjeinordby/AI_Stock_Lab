@@ -24,9 +24,12 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       BOT_MODE: ${{ github.event.inputs.mode }}
+
+      # Telegram brukes kun i execute-modus.
+      # Signal skal kjøre stille i bakgrunnen.
+      TELEGRAM_BOT_TOKEN: ${{ github.event.inputs.mode == 'execute' && secrets.TELEGRAM_BOT_TOKEN || '' }}
+      TELEGRAM_CHAT_ID: ${{ github.event.inputs.mode == 'execute' && secrets.TELEGRAM_CHAT_ID || '' }}
 
     steps:
       - name: Check out repository
@@ -45,23 +48,28 @@ jobs:
 
       - name: Check environment variables
         run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "TELEGRAM_BOT_TOKEN mangler"
-            exit 1
-          fi
-
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "TELEGRAM_CHAT_ID mangler"
-            exit 1
-          fi
-
           if [ -z "$BOT_MODE" ]; then
             echo "BOT_MODE mangler"
             exit 1
           fi
 
-          echo "Telegram secrets finnes ✅"
           echo "BOT_MODE=$BOT_MODE"
+
+          if [ "$BOT_MODE" = "execute" ]; then
+            if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+              echo "TELEGRAM_BOT_TOKEN mangler i execute-modus"
+              exit 1
+            fi
+
+            if [ -z "$TELEGRAM_CHAT_ID" ]; then
+              echo "TELEGRAM_CHAT_ID mangler i execute-modus"
+              exit 1
+            fi
+
+            echo "Telegram secrets finnes ✅"
+          else
+            echo "Signal-modus: Telegram er deaktivert ✅"
+          fi
 
       - name: Run stock bot
         run: python stock_bot.py
