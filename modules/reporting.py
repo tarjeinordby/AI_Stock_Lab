@@ -103,6 +103,20 @@ def _build_leaderboard(results, spy_ret, qqq_ret):
     return "\n".join(lines)
 
 
+def _build_correlation_alerts(results):
+    """Collect unique correlation log messages across all strategies."""
+    seen = set()
+    lines = []
+    for r in results:
+        for msg in r.get("correlation_log", []):
+            if msg not in seen:
+                seen.add(msg)
+                lines.append(f"  🔗 {msg}")
+    if not lines:
+        return ""
+    return "\n🔗 KORRELASJONSFILTER:\n" + "\n".join(lines)
+
+
 def _build_actions(results):
     lines = ["📌 DAGENS HANDLINGER"]
     any_action = False
@@ -266,7 +280,8 @@ def _build_positions_summary(results):
     return "\n".join(lines)
 
 
-def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings, macro=None, earnings_analysis=None):
+def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
+                       macro=None, earnings_analysis=None, active_weights=None):
     regime = signal.get("regime", {})
     regime_name = regime.get("regime", "unknown")
     regime_label = REGIME_LABELS.get(regime_name, regime_name.upper())
@@ -286,6 +301,14 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
         mult_str = f" → eksponering ×{mult:.0%}" if mult < 1.0 else ""
         lines.append(f"📉 10Y/2Y: {macro.get('status', 'N/A')}{mult_str}")
 
+    # Active factor weights
+    if active_weights:
+        mom = round(active_weights.get("momentum", 0) * 100)
+        qual = round(active_weights.get("quality", 0) * 100)
+        val = round(active_weights.get("value", 0) * 100)
+        sent = round(active_weights.get("sentiment", 0) * 100)
+        lines.append(f"📊 Aktive vekter: Mom {mom}% | Kval {qual}% | Verdi {val}% | Sent {sent}%")
+
     lines.append("")
     lines.append(_build_leaderboard(results, spy_ret, qqq_ret))
     lines.append("")
@@ -294,6 +317,9 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
         lines.append(premarket_block)
 
     lines.append(_build_actions(results))
+    corr_block = _build_correlation_alerts(results)
+    if corr_block:
+        lines.append(corr_block)
     earnings_block = _build_earnings_alerts(results, earnings_analysis=earnings_analysis)
     if earnings_block:
         lines.append(earnings_block)
@@ -314,7 +340,7 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
 # WEEKLY REPORT (Mondays)
 # ============================================================
 
-def build_weekly_report(results, fundamentals_cache=None):
+def build_weekly_report(results, fundamentals_cache=None, corr_pairs=None):
     lines = ["\n📅 UKENTLIG DEEP-DIVE"]
 
     for r in results:
@@ -355,6 +381,16 @@ def build_weekly_report(results, fundamentals_cache=None):
             for sector, val in sorted(sector_exposure.items(), key=lambda x: -x[1]):
                 pct = val / total_val if total_val > 0 else 0
                 lines.append(f"    {sector}: {format_pct(pct, 1)}")
+
+    # Correlation heatmap across all held positions
+    if corr_pairs:
+        from modules.correlation import format_correlation_heatmap
+        all_held = set()
+        for r in results:
+            all_held.update(r.get("positions", {}).keys())
+        heatmap = format_correlation_heatmap(corr_pairs, all_held)
+        if heatmap:
+            lines.append(heatmap)
 
     return "\n".join(lines)
 
@@ -418,14 +454,15 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 # ============================================================
 
 def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
-                       drawdown_warnings, fundamentals_cache=None, macro=None, earnings_analysis=None):
+                       drawdown_warnings, fundamentals_cache=None, macro=None,
+                       earnings_analysis=None, active_weights=None, corr_pairs=None):
     msg = build_daily_report(
         results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
-        macro=macro, earnings_analysis=earnings_analysis,
+        macro=macro, earnings_analysis=earnings_analysis, active_weights=active_weights,
     )
 
     if is_monday():
-        msg += "\n" + build_weekly_report(results, fundamentals_cache)
+        msg += "\n" + build_weekly_report(results, fundamentals_cache, corr_pairs=corr_pairs)
 
     if is_first_monday_of_month():
         msg += "\n" + build_monthly_report(results, spy_ret, qqq_ret)

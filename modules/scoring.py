@@ -140,6 +140,49 @@ STRATEGIES = {
 TOP_CANDIDATES_TO_SAVE = 150
 TOP_CANDIDATES_TO_REPORT = 5
 
+# ============================================================
+# DYNAMIC REGIME WEIGHTS
+# ============================================================
+
+REGIME_WEIGHTS = {
+    "explosive": {"momentum": 0.45, "quality": 0.25, "value": 0.15, "sentiment": 0.15},
+    "bullish":   {"momentum": 0.35, "quality": 0.30, "value": 0.20, "sentiment": 0.15},
+    "neutral":   {"momentum": 0.25, "quality": 0.35, "value": 0.25, "sentiment": 0.15},
+    "defensive": {"momentum": 0.15, "quality": 0.40, "value": 0.30, "sentiment": 0.15},
+    "unknown":   {"momentum": 0.30, "quality": 0.30, "value": 0.25, "sentiment": 0.15},
+}
+
+_MACRO_INVERTED_ADJ = {"momentum": -0.10, "quality": +0.10, "value": 0.0, "sentiment": 0.0}
+
+
+def get_regime_weights(regime, macro_inverted=False):
+    """
+    Return pure regime-based weights (used for display and backtest).
+    If macro_inverted (yield curve < -0.5%): shift -10% momentum → +10% quality.
+    """
+    w = dict(REGIME_WEIGHTS.get(regime, REGIME_WEIGHTS["unknown"]))
+    if macro_inverted:
+        for k in _MACRO_INVERTED_ADJ:
+            w[k] = max(0.0, w[k] + _MACRO_INVERTED_ADJ[k])
+        total = sum(w.values())
+        if total > 0:
+            w = {k: v / total for k, v in w.items()}
+    return w
+
+
+def get_effective_weights(strategy_weights, regime, macro_inverted=False):
+    """
+    Blend each strategy's base weights 50/50 with the regime-based weights.
+    Preserves per-strategy differentiation (e.g. AI_Sentiment_AI's 30% sentiment)
+    while incorporating regime direction (more momentum in bull, more quality in bear).
+    """
+    rw = get_regime_weights(regime, macro_inverted)
+    blended = {k: 0.50 * strategy_weights.get(k, 0) + 0.50 * rw.get(k, 0) for k in rw}
+    total = sum(blended.values())
+    if total <= 0:
+        return strategy_weights
+    return {k: v / total for k, v in blended.items()}
+
 
 # ============================================================
 # FACTOR SCORING HELPERS
@@ -252,7 +295,8 @@ def _value_sub_score(forward_pe, peg_ratio, price_to_sales):
 # MAIN SCORING ENGINE
 # ============================================================
 
-def build_score_table(analyzed_stocks, fundamentals, sentiment_scores, earnings_data):
+def build_score_table(analyzed_stocks, fundamentals, sentiment_scores, earnings_data,
+                      regime="bullish", macro_inverted=False):
     df = pd.DataFrame(analyzed_stocks)
     if df.empty:
         return df
@@ -340,9 +384,9 @@ def build_score_table(analyzed_stocks, fundamentals, sentiment_scores, earnings_
         (earnings_data.get(t) or {}).get("days_to_earnings") for t in df.index
     ]
 
-    # ---- Per-strategy scores ----
+    # ---- Per-strategy scores (regime-adjusted weights) ----
     for strat_name, config in STRATEGIES.items():
-        w = config["weights"]
+        w = get_effective_weights(config["weights"], regime, macro_inverted)
         col = config["score_column"]
 
         df[col] = (

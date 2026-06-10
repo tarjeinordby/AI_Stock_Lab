@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "0 21 * * 1-5"   # 21:00 UTC = 23:00 Oslo (sommer), etter US-børslutt
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Bot-modus (signal kjøres automatisk via cron)'
+        required: false
+        default: 'signal'
+        type: choice
+        options:
+          - signal
+          - backtest
 
 permissions:
   contents: write
@@ -17,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      BOT_MODE: signal
-      PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+      BOT_MODE: ${{ inputs.mode || 'signal' }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
     steps:
       - name: Check out repository
@@ -35,10 +44,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run signal mode
+      - name: Run bot
         run: python stock_bot.py
 
-      - name: Commit signal data
+      - name: Commit data
         if: always()
         run: |
           git config --global user.name "github-actions"
@@ -51,6 +60,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Ingen endringer å committe."
           else
-            git commit -m "Signal: $(date -u +%Y-%m-%d)"
+            git commit -m "${BOT_MODE^}: $(date -u +%Y-%m-%d)"
             git push origin main
           fi

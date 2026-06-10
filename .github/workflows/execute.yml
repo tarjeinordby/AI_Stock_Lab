@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "25 13 * * 1-5"  # 13:25 UTC = 15:25 Oslo = 9:25 ET (pre-market)
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Bot-modus (execute kjøres automatisk via cron)'
+        required: false
+        default: 'execute'
+        type: choice
+        options:
+          - execute
+          - backtest
 
 permissions:
   contents: write
@@ -17,10 +26,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      BOT_MODE: execute
+      BOT_MODE: ${{ inputs.mode || 'execute' }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
     steps:
       - name: Check out repository
@@ -37,7 +46,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Verify required secrets
+      - name: Verify Telegram secrets (execute mode only)
+        if: ${{ inputs.mode == '' || inputs.mode == 'execute' }}
         run: |
           if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
             echo "TELEGRAM_BOT_TOKEN mangler"
@@ -49,7 +59,7 @@ jobs:
           fi
           echo "Telegram secrets OK ✅"
 
-      - name: Run execute mode
+      - name: Run bot
         run: python stock_bot.py
 
       - name: Commit portfolio data
@@ -65,6 +75,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Ingen endringer å committe."
           else
-            git commit -m "Execute: $(date -u +%Y-%m-%d)"
+            git commit -m "${BOT_MODE^}: $(date -u +%Y-%m-%d)"
             git push origin main
           fi

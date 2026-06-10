@@ -26,7 +26,19 @@ from modules.risk import (
     should_sell_position,
     spy_is_recovering,
 )
-from modules.scoring import STRATEGIES, TOP_CANDIDATES_TO_REPORT, build_score_table, make_strategy_candidates
+from modules.correlation import (
+    check_correlation_against_held,
+    compute_correlation_matrix,
+    filter_correlated_sells,
+    find_correlated_pairs,
+)
+from modules.scoring import (
+    STRATEGIES,
+    TOP_CANDIDATES_TO_REPORT,
+    build_score_table,
+    get_regime_weights,
+    make_strategy_candidates,
+)
 from modules.sentiment import fetch_sentiment_bulk
 from modules.state import (
     GLOBAL_STATE_FILE,
@@ -167,7 +179,7 @@ def run_signal():
     # Fundamentals for all tickers (cached, 7 days)
     fundamentals = fetch_fundamentals_bulk(all_tickers)
 
-    # Preliminary scoring (neutral 0.5 sentiment) to identify top candidates
+    # Preliminary scoring (neutral data, default weights) to identify top candidates
     neutral_sentiment = {t: {"score": 0.5, "raw_score": 0.0} for t in all_tickers}
     neutral_earnings = {t: {"earnings_bonus": 0, "earnings_soon": False} for t in all_tickers}
     prelim_df = build_score_table(analyzed, fundamentals, neutral_sentiment, neutral_earnings)
@@ -185,7 +197,6 @@ def run_signal():
             top20 = prelim_df[col].nlargest(20).index.tolist()
             sentiment_tickers.update(top20)
 
-    # Filter to tickers that are actually in our analyzed set
     sentiment_tickers = [t for t in sentiment_tickers if t in all_tickers]
     print(f"Sentiment + earnings fetch for {len(sentiment_tickers)} tickere")
 
@@ -202,16 +213,34 @@ def run_signal():
     full_sentiment = {t: neutral_sentiment[t] for t in all_tickers}
     full_sentiment.update(sentiment_scores)
 
-    # Final scoring with all 4 factors
-    score_df = build_score_table(analyzed, fundamentals, full_sentiment, full_earnings)
+    # Market regime + macro (must be before final scoring for dynamic weights)
+    vix = get_vix()
+    regime = detect_market_regime(spy_data, qqq_data, vix)
+    print(f"Markedsregime: {regime['regime'].upper()} — {regime['reason']}")
+
+    macro = get_macro_status()
+    macro_inverted = macro.get("inverted", False)
+    active_weights = get_regime_weights(regime["regime"], macro_inverted)
+    print(f"Aktive vekter: Mom {active_weights['momentum']:.0%} | "
+          f"Kval {active_weights['quality']:.0%} | "
+          f"Verdi {active_weights['value']:.0%} | "
+          f"Sent {active_weights['sentiment']:.0%}")
+
+    # Final scoring with regime-adjusted weights
+    score_df = build_score_table(
+        analyzed, fundamentals, full_sentiment, full_earnings,
+        regime=regime["regime"], macro_inverted=macro_inverted,
+    )
 
     if score_df.empty:
         raise ValueError("Score-tabellen er tom. Sjekk datakilde.")
 
-    # Market regime
-    vix = get_vix()
-    regime = detect_market_regime(spy_data, qqq_data, vix)
-    print(f"Markedsregime: {regime['regime'].upper()} — {regime['reason']}")
+    # Correlation matrix for all analyzed tickers (used in execute-mode filtering)
+    corr_matrix = compute_correlation_matrix(market_data, all_tickers)
+    corr_pairs = find_correlated_pairs(corr_matrix, threshold=0.70)
+    if corr_pairs:
+        high_corr = [p for p in corr_pairs if p["correlation"] >= 0.85]
+        print(f"Korrelasjonspar ≥70%: {len(corr_pairs)} | ≥85%: {len(high_corr)}")
 
     # Build signal payload
     strategies_payload = {}
@@ -235,6 +264,8 @@ def run_signal():
         "qqq": qqq_data,
         "strategies": strategies_payload,
         "earnings_analysis": deep_earnings,
+        "active_weights": active_weights,
+        "corr_pairs": corr_pairs,
     }
 
     date = today_str()
@@ -254,10 +285,13 @@ def run_signal():
 # ============================================================
 
 def run_strategy_execution(
-    strategy_name, signal, trades_df, price_cache, premarket_flags=None, macro_mult=1.0
+    strategy_name, signal, trades_df, price_cache,
+    premarket_flags=None, macro_mult=1.0, corr_pairs=None,
 ):
     if premarket_flags is None:
         premarket_flags = {}
+    if corr_pairs is None:
+        corr_pairs = []
     config = STRATEGIES[strategy_name]
     state = load_strategy_state(strategy_name)
     state = reset_week_if_needed(state)
@@ -279,8 +313,29 @@ def run_strategy_execution(
 
     sells = []
     buys = []
+    correlation_log = []
 
-    # Evaluate sells
+    # Correlation-based sells: if two held positions are >85% correlated, sell the lower-scored
+    corr_sell_candidates = filter_correlated_sells(
+        state["positions"], candidates_by_ticker, corr_pairs
+    )
+    for cs in corr_sell_candidates:
+        ticker = cs["sell_ticker"]
+        if ticker in state["positions"]:
+            state, trades_df, trade = execute_sell(
+                state, trades_df, strategy_name, ticker, cs["reason"],
+                candidates_by_ticker, price_cache
+            )
+            if trade:
+                sells.append(trade)
+                log_msg = (
+                    f"{cs['sell_ticker']} og {cs['keep_ticker']} er "
+                    f"{cs['correlation']:.0%} korrelert — holder kun {cs['keep_ticker']}"
+                )
+                correlation_log.append(log_msg)
+                print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
+
+    # Evaluate normal sells
     for ticker, pos in list(state["positions"].items()):
         candidate = candidates_by_ticker.get(ticker)
         sell, reason = should_sell_position(ticker, pos, candidate, config)
@@ -350,11 +405,22 @@ def run_strategy_execution(
                 print(f"  [{strategy_name}] SKIP {ticker}: earnings om {days_to_earnings}d (blackout)")
                 continue
 
-            # Correlation filter: max 2 positions per sector per strategy
+            # Sector filter: max 2 positions per sector per strategy
             sector = candidate.get("sector", "Unknown")
             sector_counts = _sector_counts()
             if sector_counts.get(sector, 0) >= 2:
                 print(f"  [{strategy_name}] SKIP {ticker}: sektorbegrensning {sector} ({sector_counts.get(sector)}≥2)")
+                continue
+
+            # Correlation filter: skip if >85% correlated with an existing position
+            held_set = set(state["positions"].keys())
+            is_corr, corr_with, corr_val = check_correlation_against_held(
+                ticker, held_set, corr_pairs
+            )
+            if is_corr:
+                log_msg = f"{ticker} og {corr_with} er {corr_val:.0%} korrelert — holder kun {corr_with}"
+                correlation_log.append(log_msg)
+                print(f"  [{strategy_name}] SKIP {ticker}: {log_msg}")
                 continue
 
             target_value_full = total_now * target_weights[ticker]
@@ -413,6 +479,7 @@ def run_strategy_execution(
         "drawdown": drawdown_now,
         "premarket_flags": strategy_pm_flags,
         "sector_map": sector_map,
+        "correlation_log": correlation_log,
     }, trades_df
 
 
@@ -441,6 +508,10 @@ def run_execute():
     # Macro filter (FRED 10Y/2Y yield spread, no API key)
     macro = get_macro_status()
     macro_mult = macro.get("exposure_mult", 1.0)
+
+    # Load precomputed correlation pairs and active weights from signal
+    corr_pairs = signal.get("corr_pairs", [])
+    active_weights = signal.get("active_weights")
 
     # --- Pre-market filter ---
     # Collect held tickers + top candidates from signal as prev_prices reference
@@ -475,6 +546,7 @@ def run_execute():
             strategy_name, signal, trades_df, price_cache,
             premarket_flags=premarket_flags,
             macro_mult=macro_mult,
+            corr_pairs=corr_pairs,
         )
         results.append(result)
 
@@ -516,6 +588,8 @@ def run_execute():
         fundamentals_cache=fundamentals_cache,
         macro=macro,
         earnings_analysis=earnings_analysis,
+        active_weights=active_weights,
+        corr_pairs=corr_pairs,
     )
 
     send_telegram(message)
@@ -538,6 +612,9 @@ def main():
         run_signal()
     elif mode == "execute":
         run_execute()
+    elif mode == "backtest":
+        from modules.backtest import run_backtest
+        run_backtest()
     else:
         raise ValueError(f"Ukjent BOT_MODE: {mode}")
 
