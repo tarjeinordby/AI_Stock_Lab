@@ -133,6 +133,45 @@ def _build_actions(results):
     return "\n".join(lines)
 
 
+def _build_premarket_section(results):
+    """Collect all pre-market flags across strategies and format a section."""
+    # Aggregate: ticker -> {move, held_by, candidate_for}
+    aggregated = {}
+    for r in results:
+        strat = r["strategy"]
+        held = set(r.get("positions", {}).keys())
+        flags = r.get("premarket_flags", {})
+
+        for ticker, move in flags.items():
+            if ticker not in aggregated:
+                aggregated[ticker] = {"move": move, "held_by": [], "candidate_for": []}
+            if ticker in held:
+                aggregated[ticker]["held_by"].append(strat)
+            else:
+                aggregated[ticker]["candidate_for"].append(strat)
+
+    if not aggregated:
+        return ""
+
+    lines = ["\n🌅 PRE-MARKET (>4% fra gårsdagens slutt)"]
+    for ticker, info in sorted(aggregated.items(), key=lambda x: -abs(x[1]["move"])):
+        move = info["move"]
+        arrow = "↑" if move > 0 else "↓"
+        held = info["held_by"]
+        cand = info["candidate_for"]
+
+        parts = []
+        if held:
+            parts.append(f"holdt: {', '.join(set(held))}")
+        if cand:
+            parts.append(f"kandidat: {', '.join(set(cand))} → kjøpsstørrelse halvert")
+
+        detail = "  |  ".join(parts) if parts else ""
+        lines.append(f"  {ticker}: {move:+.1%} {arrow}  {detail}")
+
+    return "\n".join(lines)
+
+
 def _build_earnings_alerts(results):
     # Collect all positions with upcoming earnings across all strategies
     soon = {}
@@ -204,6 +243,10 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
 
     lines.append(_build_leaderboard(results, spy_ret, qqq_ret))
     lines.append("")
+    premarket_block = _build_premarket_section(results)
+    if premarket_block:
+        lines.append(premarket_block)
+
     lines.append(_build_actions(results))
     earnings_block = _build_earnings_alerts(results)
     if earnings_block:

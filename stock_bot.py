@@ -7,7 +7,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 from modules.earnings import fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk
-from modules.market_data import download_daily_data, get_price_cached, get_vix
+from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix
 from modules.portfolio import (
     build_target_weights,
     current_portfolio_value,
@@ -247,7 +247,9 @@ def run_signal():
 # EXECUTE MODE — per strategy
 # ============================================================
 
-def run_strategy_execution(strategy_name, signal, trades_df, price_cache):
+def run_strategy_execution(strategy_name, signal, trades_df, price_cache, premarket_flags=None):
+    if premarket_flags is None:
+        premarket_flags = {}
     config = STRATEGIES[strategy_name]
     state = load_strategy_state(strategy_name)
     state = reset_week_if_needed(state)
@@ -318,13 +320,15 @@ def run_strategy_execution(strategy_name, signal, trades_df, price_cache):
             target_value = total_now * target_weights[ticker]
             reason = f"Rank #{candidate.get('rank')}, score {safe_round(candidate.get('strategy_score'), 1)}"
 
+            pm_move = premarket_flags.get(ticker)
             state, trades_df, trade = execute_buy(
                 state, trades_df, strategy_name, ticker, target_value,
-                reason, candidate, price_cache
+                reason, candidate, price_cache,
+                premarket_move=pm_move,
             )
             if trade:
                 buys.append(trade)
-                print(f"  [{strategy_name}] KJØP {ticker}: {reason}")
+                print(f"  [{strategy_name}] KJØP {ticker}: {trade['reason']}")
 
     # Final valuation
     total_after, positions_value_after, state = current_portfolio_value(
@@ -341,6 +345,10 @@ def run_strategy_execution(strategy_name, signal, trades_df, price_cache):
     return_pct = (total_after / START_CAPITAL) - 1
 
     # Attach full candidate list for reporting (earnings alerts etc.)
+    # Pre-market flags relevant to this strategy (held positions + new buys)
+    relevant_tickers = set(state["positions"].keys()) | {t["ticker"] for t in buys}
+    strategy_pm_flags = {t: m for t, m in premarket_flags.items() if t in relevant_tickers}
+
     return {
         "strategy": strategy_name,
         "description": config["description"],
@@ -355,6 +363,7 @@ def run_strategy_execution(strategy_name, signal, trades_df, price_cache):
         "top_candidates": candidates[:TOP_CANDIDATES_TO_REPORT],
         "top_candidates_full": candidates[:50],
         "drawdown": drawdown_now,
+        "premarket_flags": strategy_pm_flags,
     }, trades_df
 
 
@@ -380,13 +389,38 @@ def run_execute():
 
     print(f"SPY siden start: {(spy_ret or 0)*100:.2f}%  |  QQQ: {(qqq_ret or 0)*100:.2f}%")
 
+    # --- Pre-market filter ---
+    # Collect held tickers + top candidates from signal as prev_prices reference
+    prev_prices = {}
+    pm_tickers = set()
+
+    for strat_name in STRATEGIES:
+        strat_state = load_strategy_state(strat_name)
+        held = strat_state.get("positions", {})
+        pm_tickers.update(held.keys())
+        payload = signal.get("strategies", {}).get(strat_name, {})
+        for c in payload.get("candidates", [])[:30]:
+            t = c.get("ticker")
+            if t:
+                pm_tickers.add(t)
+                if t not in prev_prices and c.get("price"):
+                    prev_prices[t] = c["price"]
+        # For held positions, use last_price as prev_close if not in candidates
+        for t, pos in held.items():
+            if t not in prev_prices:
+                prev_prices[t] = pos.get("last_price") or pos.get("avg_price")
+
+    all_pm_moves = compute_premarket_moves(list(pm_tickers), prev_prices)
+    premarket_flags = {t: m for t, m in all_pm_moves.items() if abs(m) > 0.04}
+
     results = []
     drawdown_warnings = []
 
     for strategy_name in STRATEGIES.keys():
         print(f"\nKjører {strategy_name}...")
         result, trades_df = run_strategy_execution(
-            strategy_name, signal, trades_df, price_cache
+            strategy_name, signal, trades_df, price_cache,
+            premarket_flags=premarket_flags,
         )
         results.append(result)
 

@@ -133,7 +133,8 @@ def execute_sell(
 
 
 def execute_buy(
-    state, trades_df, strategy_name, ticker, target_value, reason, candidate, price_cache
+    state, trades_df, strategy_name, ticker, target_value, reason, candidate, price_cache,
+    premarket_move=None,
 ):
     import pandas as pd
 
@@ -142,6 +143,12 @@ def execute_buy(
 
     if price is None or price <= 0:
         return state, trades_df, None
+
+    # Pre-market filter: halve size if moved >4% since yesterday's close
+    if premarket_move is not None and abs(premarket_move) > 0.04:
+        target_value *= 0.50
+        arrow = "↑" if premarket_move > 0 else "↓"
+        reason = f"{reason} [PM {premarket_move:+.1%}{arrow} → 50%]"
 
     # Gap check vs signal price
     if signal_price and signal_price > 0:
