@@ -173,28 +173,40 @@ def _build_premarket_section(results):
 
 
 def _build_earnings_alerts(results):
-    # Collect all positions with upcoming earnings across all strategies
-    soon = {}
+    # Collect positions with upcoming earnings — split blackout (≤3d) from alert (4-14d)
+    blackout = {}
+    alert = {}
     for r in results:
         candidates_by_ticker = {c["ticker"]: c for c in r.get("top_candidates_full", [])}
         for ticker in r.get("positions", {}):
             c = candidates_by_ticker.get(ticker, {})
-            if c.get("earnings_soon"):
-                days = c.get("days_to_earnings")
-                date = c.get("next_earnings", "?")
-                if ticker not in soon:
-                    soon[ticker] = {"date": date, "days": days, "strategies": []}
-                soon[ticker]["strategies"].append(r["strategy"])
+            days = c.get("days_to_earnings")
+            if days is None:
+                continue
+            date = c.get("next_earnings", "?")
+            if days <= 3:
+                bucket = blackout
+            elif c.get("earnings_soon"):
+                bucket = alert
+            else:
+                continue
+            if ticker not in bucket:
+                bucket[ticker] = {"date": date, "days": days, "strategies": []}
+            bucket[ticker]["strategies"].append(r["strategy"])
 
-    if not soon:
-        return ""
+    lines = []
+    if blackout:
+        lines.append("\n🚫 EARNINGS BLACKOUT (≤3 dager — ikke kjøp):")
+        for ticker, info in sorted(blackout.items(), key=lambda x: x[1].get("days") or 999):
+            strats = ", ".join(set(info["strategies"]))
+            lines.append(f"  ⚠️ {ticker}: {info['date']} (om {info['days']}d) — {strats}")
+    if alert:
+        lines.append("\n⚠️ EARNINGS SNART (4-14 dager):")
+        for ticker, info in sorted(alert.items(), key=lambda x: x[1].get("days") or 999):
+            strats = ", ".join(set(info["strategies"]))
+            lines.append(f"  {ticker}: {info['date']} (om {info['days']}d) — {strats}")
 
-    lines = ["\n⚠️ EARNINGS DENNE UKEN / 14 DAGER:"]
-    for ticker, info in sorted(soon.items(), key=lambda x: x[1].get("days") or 999):
-        strats = ", ".join(set(info["strategies"]))
-        lines.append(f"  {ticker}: {info['date']} (om {info['days']}d) — {strats}")
-
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else ""
 
 
 def _build_positions_summary(results):
@@ -204,14 +216,30 @@ def _build_positions_summary(results):
     for r in sorted_results:
         lines.append(f"\n{r['strategy']} (${safe_round(r['portfolio_value'], 0)}):")
         positions = r.get("positions", {})
+        sector_map = r.get("sector_map", {})
         if positions:
             holdings = []
             for ticker, pos in sorted(positions.items()):
                 avg = pos.get("avg_price", 0)
                 last = pos.get("last_price", avg)
                 pnl = (last / avg - 1) if avg else 0
-                holdings.append(f"{ticker}({format_pct(pnl, 1)})")
+                partial_mark = "(P)" if pos.get("is_partial") else ""
+                holdings.append(f"{ticker}{partial_mark}({format_pct(pnl, 1)})")
             lines.append("  " + ", ".join(holdings[:15]))
+
+            # Sector exposure — compact one-liner
+            sector_exposure = {}
+            total_val = r.get("portfolio_value", 1) or 1
+            for ticker, pos in positions.items():
+                sector = sector_map.get(ticker, "?")
+                mv = pos.get("market_value", 0)
+                sector_exposure[sector] = sector_exposure.get(sector, 0) + mv
+            if sector_exposure:
+                sector_str = " | ".join(
+                    f"{s[:6]}:{mv/total_val:.0%}"
+                    for s, mv in sorted(sector_exposure.items(), key=lambda x: -x[1])
+                )
+                lines.append(f"  [{sector_str}]")
         else:
             lines.append("  (ingen posisjoner)")
 
@@ -226,7 +254,7 @@ def _build_positions_summary(results):
     return "\n".join(lines)
 
 
-def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings):
+def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings, macro=None):
     regime = signal.get("regime", {})
     regime_name = regime.get("regime", "unknown")
     regime_label = REGIME_LABELS.get(regime_name, regime_name.upper())
@@ -238,9 +266,15 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
         f"Dato: {today_str()}",
         f"Marked: {regime_label}{vix_str}",
         f"  {regime.get('reason', '')}",
-        "",
     ]
 
+    # Macro status
+    if macro:
+        mult = macro.get("exposure_mult", 1.0)
+        mult_str = f" → eksponering ×{mult:.0%}" if mult < 1.0 else ""
+        lines.append(f"📉 10Y/2Y: {macro.get('status', 'N/A')}{mult_str}")
+
+    lines.append("")
     lines.append(_build_leaderboard(results, spy_ret, qqq_ret))
     lines.append("")
     premarket_block = _build_premarket_section(results)
@@ -258,7 +292,8 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
             lines.append(f"  {w}")
 
     lines.append(_build_positions_summary(results))
-    lines.append("\n⚠️ Paper trading — ikke ekte ordre.")
+    lines.append("\n💡 Faktiske handler bør vente til 09:35 ET for bedre spread og likviditet.")
+    lines.append("⚠️ Paper trading — ikke ekte ordre.")
 
     return "\n".join(lines)
 
@@ -371,8 +406,8 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 # ============================================================
 
 def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
-                       drawdown_warnings, fundamentals_cache=None):
-    msg = build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings)
+                       drawdown_warnings, fundamentals_cache=None, macro=None):
+    msg = build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings, macro=macro)
 
     if is_monday():
         msg += "\n" + build_weekly_report(results, fundamentals_cache)

@@ -8,10 +8,12 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 from modules.earnings import fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk
 from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix
+from modules.macro import get_macro_status
 from modules.portfolio import (
     build_target_weights,
     current_portfolio_value,
     execute_buy,
+    execute_pyramid_fill,
     execute_sell,
 )
 from modules.reporting import (
@@ -247,7 +249,9 @@ def run_signal():
 # EXECUTE MODE — per strategy
 # ============================================================
 
-def run_strategy_execution(strategy_name, signal, trades_df, price_cache, premarket_flags=None):
+def run_strategy_execution(
+    strategy_name, signal, trades_df, price_cache, premarket_flags=None, macro_mult=1.0
+):
     if premarket_flags is None:
         premarket_flags = {}
     config = STRATEGIES[strategy_name]
@@ -295,11 +299,30 @@ def run_strategy_execution(strategy_name, signal, trades_df, price_cache, premar
     can_buy = (not in_drawdown_protection) or spy_is_recovering(spy_candidate)
 
     target_weights = build_target_weights(
-        candidates, config, regime_name, portfolio_drawdown=drawdown_now
+        candidates, config, regime_name,
+        portfolio_drawdown=drawdown_now, macro_mult=macro_mult,
     )
     target_tickers = list(target_weights.keys())
 
-    # Evaluate buys
+    # Pyramid fills for existing partial positions
+    pyramid_fills = []
+    for ticker in list(state["positions"].keys()):
+        state, trades_df, fill = execute_pyramid_fill(
+            state, trades_df, strategy_name, ticker, candidates_by_ticker, price_cache
+        )
+        if fill:
+            pyramid_fills.append(fill)
+            print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
+
+    # Count sector positions for correlation filter
+    def _sector_counts():
+        counts = {}
+        for t in state["positions"]:
+            sector = candidates_by_ticker.get(t, {}).get("sector", "Unknown")
+            counts[sector] = counts.get(sector, 0) + 1
+        return counts
+
+    # Evaluate new buys
     if can_buy:
         for ticker in target_tickers:
             if ticker in state["positions"]:
@@ -317,18 +340,40 @@ def run_strategy_execution(strategy_name, signal, trades_df, price_cache, premar
             if not candidate:
                 continue
 
-            target_value = total_now * target_weights[ticker]
+            # Earnings blackout: skip if earnings within 3 trading days
+            days_to_earnings = candidate.get("days_to_earnings")
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 3:
+                print(f"  [{strategy_name}] SKIP {ticker}: earnings om {days_to_earnings}d (blackout)")
+                continue
+
+            # Correlation filter: max 2 positions per sector per strategy
+            sector = candidate.get("sector", "Unknown")
+            sector_counts = _sector_counts()
+            if sector_counts.get(sector, 0) >= 2:
+                print(f"  [{strategy_name}] SKIP {ticker}: sektorbegrensning {sector} ({sector_counts.get(sector)}≥2)")
+                continue
+
+            target_value_full = total_now * target_weights[ticker]
+            # Pyramid: buy 60% now, queue 40% for fill after 5 days + >2% gain
+            initial_value = target_value_full * 0.60
+            pyramid_remaining = target_value_full * 0.40
             reason = f"Rank #{candidate.get('rank')}, score {safe_round(candidate.get('strategy_score'), 1)}"
 
             pm_move = premarket_flags.get(ticker)
             state, trades_df, trade = execute_buy(
-                state, trades_df, strategy_name, ticker, target_value,
+                state, trades_df, strategy_name, ticker, initial_value,
                 reason, candidate, price_cache,
                 premarket_move=pm_move,
+                pyramid_remaining=pyramid_remaining,
             )
             if trade:
                 buys.append(trade)
-                print(f"  [{strategy_name}] KJØP {ticker}: {trade['reason']}")
+                print(f"  [{strategy_name}] KJØP 60% {ticker}: {trade['reason']}")
+
+    # Build sector map for held positions (for reporting)
+    sector_map = {}
+    for ticker in state["positions"]:
+        sector_map[ticker] = candidates_by_ticker.get(ticker, {}).get("sector", "Unknown")
 
     # Final valuation
     total_after, positions_value_after, state = current_portfolio_value(
@@ -344,7 +389,6 @@ def run_strategy_execution(strategy_name, signal, trades_df, price_cache, premar
 
     return_pct = (total_after / START_CAPITAL) - 1
 
-    # Attach full candidate list for reporting (earnings alerts etc.)
     # Pre-market flags relevant to this strategy (held positions + new buys)
     relevant_tickers = set(state["positions"].keys()) | {t["ticker"] for t in buys}
     strategy_pm_flags = {t: m for t, m in premarket_flags.items() if t in relevant_tickers}
@@ -358,12 +402,13 @@ def run_strategy_execution(strategy_name, signal, trades_df, price_cache, premar
         "return_pct": return_pct,
         "num_positions": len(state["positions"]),
         "positions": state["positions"],
-        "buys": buys,
+        "buys": buys + pyramid_fills,
         "sells": sells,
         "top_candidates": candidates[:TOP_CANDIDATES_TO_REPORT],
         "top_candidates_full": candidates[:50],
         "drawdown": drawdown_now,
         "premarket_flags": strategy_pm_flags,
+        "sector_map": sector_map,
     }, trades_df
 
 
@@ -388,6 +433,10 @@ def run_execute():
     qqq_ret = benchmark_return(benchmark_state, "QQQ")
 
     print(f"SPY siden start: {(spy_ret or 0)*100:.2f}%  |  QQQ: {(qqq_ret or 0)*100:.2f}%")
+
+    # Macro filter (FRED 10Y/2Y yield spread, no API key)
+    macro = get_macro_status()
+    macro_mult = macro.get("exposure_mult", 1.0)
 
     # --- Pre-market filter ---
     # Collect held tickers + top candidates from signal as prev_prices reference
@@ -421,6 +470,7 @@ def run_execute():
         result, trades_df = run_strategy_execution(
             strategy_name, signal, trades_df, price_cache,
             premarket_flags=premarket_flags,
+            macro_mult=macro_mult,
         )
         results.append(result)
 
@@ -458,6 +508,7 @@ def run_execute():
         qqq_ret=qqq_ret,
         drawdown_warnings=drawdown_warnings,
         fundamentals_cache=fundamentals_cache,
+        macro=macro,
     )
 
     send_telegram(message)

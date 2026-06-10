@@ -1,7 +1,7 @@
 import pandas as pd
 
 from modules.market_data import get_price_cached
-from modules.state import now_utc, safe_float, safe_round, today_str
+from modules.state import now_utc, safe_float, safe_round, today_str, trading_days_between
 
 
 MIN_POSITION_VALUE = 500
@@ -34,7 +34,7 @@ def current_portfolio_value(state, candidates_by_ticker, price_cache):
     return total, positions_value, state
 
 
-def build_target_weights(candidates, config, regime_name, portfolio_drawdown=0.0):
+def build_target_weights(candidates, config, regime_name, portfolio_drawdown=0.0, macro_mult=1.0):
     if not candidates:
         return {}
 
@@ -74,9 +74,9 @@ def build_target_weights(candidates, config, regime_name, portfolio_drawdown=0.0
     if total_w > 0:
         df["target_weight"] = df["target_weight"] / total_w
 
-    # Apply regime exposure (overridden by portfolio drawdown protection)
+    # Apply regime exposure (overridden by portfolio drawdown protection + macro mult)
     base_exposure = config["exposure"].get(regime_name, config["exposure"].get("unknown", 0.50))
-    effective_exposure = _get_effective_exposure(base_exposure, portfolio_drawdown)
+    effective_exposure = _get_effective_exposure(base_exposure, portfolio_drawdown) * max(0.0, min(1.0, macro_mult))
     df["target_weight"] *= effective_exposure
 
     return dict(zip(df["ticker"], df["target_weight"]))
@@ -134,7 +134,7 @@ def execute_sell(
 
 def execute_buy(
     state, trades_df, strategy_name, ticker, target_value, reason, candidate, price_cache,
-    premarket_move=None,
+    premarket_move=None, pyramid_remaining=0.0,
 ):
     import pandas as pd
 
@@ -179,6 +179,7 @@ def execute_buy(
         return state, trades_df, None
 
     state["cash"] -= total_needed
+    is_partial = pyramid_remaining > 0
     state["positions"][ticker] = {
         "shares": shares,
         "avg_price": price,
@@ -186,6 +187,9 @@ def execute_buy(
         "highest_price": price,
         "market_value": shares * price,
         "buy_date": today_str(),
+        "is_partial": is_partial,
+        "pyramid_remaining_value": round(pyramid_remaining, 2) if is_partial else 0.0,
+        "pyramid_min_price": round(price * 1.02, 4) if is_partial else 0.0,
     }
     state["weekly_meta"]["buys_this_week"] += 1
 
@@ -200,6 +204,79 @@ def execute_buy(
         "value": round(target_value, 2),
         "cost": round(cost, 2),
         "reason": reason,
+    }
+
+    trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
+    return state, trades_df, trade
+
+
+def execute_pyramid_fill(state, trades_df, strategy_name, ticker, candidates_by_ticker, price_cache):
+    """
+    Complete a partial position: buy the remaining 40% if:
+    - Position is marked is_partial=True
+    - At least 5 trading days since buy_date
+    - Current price >= pyramid_min_price (entry × 1.02)
+    """
+    pos = state["positions"].get(ticker)
+    if not pos or not pos.get("is_partial"):
+        return state, trades_df, None
+
+    days_held = trading_days_between(pos.get("buy_date"))
+    if days_held < 5:
+        return state, trades_df, None
+
+    remaining = float(pos.get("pyramid_remaining_value", 0))
+    if remaining < MIN_POSITION_VALUE:
+        pos["is_partial"] = False
+        pos["pyramid_remaining_value"] = 0.0
+        return state, trades_df, None
+
+    fallback = pos.get("last_price", pos.get("avg_price"))
+    signal_price = candidates_by_ticker.get(ticker, {}).get("price", fallback)
+    price = get_price_cached(ticker, signal_price, price_cache)
+
+    if price is None or price <= 0:
+        return state, trades_df, None
+
+    min_price = float(pos.get("pyramid_min_price", 0))
+    if price < min_price:
+        return state, trades_df, None
+
+    # Cap to available cash
+    remaining = min(remaining, state["cash"] * 0.995)
+    cost = estimate_trade_cost(remaining, "BUY")
+    if remaining + cost > state["cash"]:
+        remaining = state["cash"] * 0.995 - cost
+    if remaining < MIN_POSITION_VALUE:
+        return state, trades_df, None
+
+    new_shares = remaining / price
+    old_shares = float(pos["shares"])
+    old_avg = float(pos["avg_price"])
+    total_shares = old_shares + new_shares
+    new_avg = (old_shares * old_avg + remaining) / total_shares
+    entry_pct = (price / old_avg - 1) * 100
+
+    state["cash"] -= remaining + cost
+    pos["shares"] = total_shares
+    pos["avg_price"] = new_avg
+    pos["market_value"] = total_shares * price
+    pos["last_price"] = price
+    pos["highest_price"] = max(float(pos.get("highest_price", price)), price)
+    pos["is_partial"] = False
+    pos["pyramid_remaining_value"] = 0.0
+
+    trade = {
+        "date": today_str(),
+        "timestamp_utc": now_utc().isoformat(),
+        "strategy": strategy_name,
+        "action": "BUY",
+        "ticker": ticker,
+        "shares": round(new_shares, 6),
+        "price": round(price, 2),
+        "value": round(remaining, 2),
+        "cost": round(cost, 2),
+        "reason": f"Pyramidering 40% ({entry_pct:+.1f}% fra entry, dag {days_held})",
     }
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
