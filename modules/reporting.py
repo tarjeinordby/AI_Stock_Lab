@@ -65,7 +65,10 @@ def split_message(text, max_length=3800):
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram secrets mangler — hopper over sending.")
+        print("Telegram secrets mangler — skriver melding til stdout:\n")
+        print("─" * 60)
+        print(message)
+        print("─" * 60)
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
