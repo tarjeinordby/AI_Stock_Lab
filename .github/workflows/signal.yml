@@ -1,0 +1,56 @@
+name: Signal — Bygg signalfil
+
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"   # 14:00 UTC = 16:00 Oslo (sommer), 15:00 (vinter)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-stock-lab-signal
+  cancel-in-progress: false
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+
+    env:
+      BOT_MODE: signal
+      PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run signal mode
+        run: python stock_bot.py
+
+      - name: Commit signal data
+        if: always()
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git pull --rebase origin main || true
+
+          git add data_v3/ || true
+
+          if git diff --cached --quiet; then
+            echo "Ingen endringer å committe."
+          else
+            git commit -m "Signal: $(date -u +%Y-%m-%d)"
+            git push origin main
+          fi

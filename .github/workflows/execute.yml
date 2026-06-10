@@ -1,0 +1,70 @@
+name: Execute — Oppdater porteføljer og send rapport
+
+on:
+  schedule:
+    - cron: "30 14 * * 1-5"  # 14:30 UTC, 30 min etter signal
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-stock-lab-execute
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+
+    env:
+      BOT_MODE: execute
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify required secrets
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN mangler"
+            exit 1
+          fi
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "TELEGRAM_CHAT_ID mangler"
+            exit 1
+          fi
+          echo "Telegram secrets OK ✅"
+
+      - name: Run execute mode
+        run: python stock_bot.py
+
+      - name: Commit portfolio data
+        if: always()
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git pull --rebase origin main || true
+
+          git add data_v3/ || true
+
+          if git diff --cached --quiet; then
+            echo "Ingen endringer å committe."
+          else
+            git commit -m "Execute: $(date -u +%Y-%m-%d)"
+            git push origin main
+          fi
