@@ -65,7 +65,7 @@ def get_latest_price(ticker, fallback_price=None):
             prepost=False,
         )
         if data is not None and not data.empty:
-            close = data["Close"].dropna()
+            close = data["Close"].squeeze().dropna()
             if not close.empty:
                 price = float(close.iloc[-1])
                 if price > 0:
@@ -93,7 +93,7 @@ def get_vix():
             progress=False,
         )
         if data is not None and not data.empty:
-            close = data["Close"].dropna()
+            close = data["Close"].squeeze().dropna()  # squeeze: DataFrame→Series
             if not close.empty:
                 vix = float(close.iloc[-1])
                 print(f"VIX: {vix:.1f}")
