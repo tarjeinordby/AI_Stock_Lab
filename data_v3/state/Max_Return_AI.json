@@ -2,47 +2,47 @@
   "cash": 4201.651603365282,
   "cooldowns": {},
   "created_at": "2026-06-09T17:38:24.020881+00:00",
-  "highest_portfolio_value": 10000.0,
-  "last_execution_date": "2026-06-09",
+  "highest_portfolio_value": 10083.414540574915,
+  "last_execution_date": "2026-06-10",
   "positions": {
     "ARM": {
       "avg_price": 317.20001220703125,
       "buy_date": "2026-06-09",
-      "highest_price": 317.20001220703125,
-      "last_price": 317.20001220703125,
-      "market_value": 1095.9290889408205,
+      "highest_price": 324.8599853515625,
+      "last_price": 324.8599853515625,
+      "market_value": 1122.3943697306527,
       "shares": 3.455009605187296
     },
     "ASML": {
       "avg_price": 1742.800048828125,
       "buy_date": "2026-06-09",
-      "highest_price": 1742.800048828125,
-      "last_price": 1742.800048828125,
-      "market_value": 1402.4813864020255,
+      "highest_price": 1777.77001953125,
+      "last_price": 1777.77001953125,
+      "market_value": 1430.6227288509972,
       "shares": 0.8047287968261574
     },
     "DDOG": {
       "avg_price": 226.49000549316406,
       "buy_date": "2026-06-09",
-      "highest_price": 226.49000549316406,
-      "last_price": 226.49000549316406,
-      "market_value": 1213.098630526502,
+      "highest_price": 227.33999633789062,
+      "last_price": 227.33999633789062,
+      "market_value": 1217.6512496473883,
       "shares": 5.3560801850177695
     },
     "DELL": {
       "avg_price": 372.9549865722656,
       "buy_date": "2026-06-09",
-      "highest_price": 372.9549865722656,
-      "last_price": 372.9549865722656,
-      "market_value": 1225.1369196562139,
+      "highest_price": 381.7799987792969,
+      "last_price": 381.7799987792969,
+      "market_value": 1254.1266065099,
       "shares": 3.284945807847042
     },
     "IONQ": {
       "avg_price": 56.619998931884766,
       "buy_date": "2026-06-09",
-      "highest_price": 56.619998931884766,
-      "last_price": 56.619998931884766,
-      "market_value": 855.909815268362,
+      "highest_price": 56.689998626708984,
+      "last_price": 56.689998626708984,
+      "market_value": 856.9679824706948,
       "shares": 15.116740222797288
     }
   },

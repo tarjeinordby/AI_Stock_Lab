@@ -2,39 +2,39 @@
   "cash": 4988.828901599936,
   "cooldowns": {},
   "created_at": "2026-06-09T17:38:26.562618+00:00",
-  "highest_portfolio_value": 10000.0,
-  "last_execution_date": "2026-06-09",
+  "highest_portfolio_value": 10082.196335860763,
+  "last_execution_date": "2026-06-10",
   "positions": {
     "ASML": {
       "avg_price": 1742.800048828125,
       "buy_date": "2026-06-09",
-      "highest_price": 1742.800048828125,
-      "last_price": 1742.800048828125,
-      "market_value": 1357.678699484724,
+      "highest_price": 1777.77001953125,
+      "last_price": 1777.77001953125,
+      "market_value": 1384.9210583411873,
       "shares": 0.7790214949773726
     },
     "DELL": {
       "avg_price": 372.9549865722656,
       "buy_date": "2026-06-09",
-      "highest_price": 372.9549865722656,
-      "last_price": 372.9549865722656,
-      "market_value": 933.1288350124261,
+      "highest_price": 381.7799987792969,
+      "last_price": 381.7799987792969,
+      "market_value": 955.2089080941728,
       "shares": 2.5019878232184953
     },
     "ROKU": {
       "avg_price": 120.0199966430664,
       "buy_date": "2026-06-09",
-      "highest_price": 120.0199966430664,
-      "last_price": 120.0199966430664,
-      "market_value": 1357.678699484724,
+      "highest_price": 120.91000366210938,
+      "last_price": 120.91000366210938,
+      "market_value": 1367.7465515589085,
       "shares": 11.31210412813453
     },
     "TSM": {
       "avg_price": 419.3299865722656,
       "buy_date": "2026-06-09",
-      "highest_price": 419.3299865722656,
-      "last_price": 419.3299865722656,
-      "market_value": 1357.678699484724,
+      "highest_price": 427.9200134277344,
+      "last_price": 427.9200134277344,
+      "market_value": 1385.4909162665585,
       "shares": 3.2377333912673736
     }
   },
