@@ -5,7 +5,7 @@ import pandas as pd
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
-from modules.earnings import fetch_earnings_bulk
+from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk
 from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix
 from modules.macro import get_macro_status
@@ -192,6 +192,9 @@ def run_signal():
     earnings_data = fetch_earnings_bulk(sentiment_tickers)
     sentiment_scores = fetch_sentiment_bulk(sentiment_tickers)
 
+    # Deep earnings analysis (Claude Opus) for tickers with earnings within 14 days
+    deep_earnings = fetch_deep_earnings_analysis(earnings_data)
+
     # Expand to full universe (others get neutral)
     full_earnings = {t: neutral_earnings[t] for t in all_tickers}
     full_earnings.update(earnings_data)
@@ -231,6 +234,7 @@ def run_signal():
         "spy": spy_data,
         "qqq": qqq_data,
         "strategies": strategies_payload,
+        "earnings_analysis": deep_earnings,
     }
 
     date = today_str()
@@ -500,6 +504,8 @@ def run_execute():
     # Load fundamentals cache for weekly sector report
     fundamentals_cache = load_json(FUNDAMENTALS_CACHE_FILE, {})
 
+    earnings_analysis = signal.get("earnings_analysis", {})
+
     message = build_full_message(
         results=results,
         signal=signal,
@@ -509,6 +515,7 @@ def run_execute():
         drawdown_warnings=drawdown_warnings,
         fundamentals_cache=fundamentals_cache,
         macro=macro,
+        earnings_analysis=earnings_analysis,
     )
 
     send_telegram(message)

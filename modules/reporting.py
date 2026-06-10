@@ -172,7 +172,10 @@ def _build_premarket_section(results):
     return "\n".join(lines)
 
 
-def _build_earnings_alerts(results):
+def _build_earnings_alerts(results, earnings_analysis=None):
+    if earnings_analysis is None:
+        earnings_analysis = {}
+
     # Collect positions with upcoming earnings — split blackout (≤3d) from alert (4-14d)
     blackout = {}
     alert = {}
@@ -200,11 +203,20 @@ def _build_earnings_alerts(results):
         for ticker, info in sorted(blackout.items(), key=lambda x: x[1].get("days") or 999):
             strats = ", ".join(set(info["strategies"]))
             lines.append(f"  ⚠️ {ticker}: {info['date']} (om {info['days']}d) — {strats}")
+            analysis = earnings_analysis.get(ticker)
+            if analysis:
+                lines.append(f"    🤖 {analysis.get('recommendation', '')}: {analysis.get('outlook', '')[:120]}")
     if alert:
         lines.append("\n⚠️ EARNINGS SNART (4-14 dager):")
         for ticker, info in sorted(alert.items(), key=lambda x: x[1].get("days") or 999):
             strats = ", ".join(set(info["strategies"]))
             lines.append(f"  {ticker}: {info['date']} (om {info['days']}d) — {strats}")
+            analysis = earnings_analysis.get(ticker)
+            if analysis:
+                risks = " | ".join(analysis.get("risk_factors", [])[:2])
+                lines.append(f"    🤖 {analysis.get('recommendation', '')}: {analysis.get('outlook', '')[:120]}")
+                if risks:
+                    lines.append(f"    Risiko: {risks}")
 
     return "\n".join(lines) if lines else ""
 
@@ -254,7 +266,7 @@ def _build_positions_summary(results):
     return "\n".join(lines)
 
 
-def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings, macro=None):
+def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings, macro=None, earnings_analysis=None):
     regime = signal.get("regime", {})
     regime_name = regime.get("regime", "unknown")
     regime_label = REGIME_LABELS.get(regime_name, regime_name.upper())
@@ -282,7 +294,7 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
         lines.append(premarket_block)
 
     lines.append(_build_actions(results))
-    earnings_block = _build_earnings_alerts(results)
+    earnings_block = _build_earnings_alerts(results, earnings_analysis=earnings_analysis)
     if earnings_block:
         lines.append(earnings_block)
 
@@ -406,8 +418,11 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 # ============================================================
 
 def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
-                       drawdown_warnings, fundamentals_cache=None, macro=None):
-    msg = build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings, macro=macro)
+                       drawdown_warnings, fundamentals_cache=None, macro=None, earnings_analysis=None):
+    msg = build_daily_report(
+        results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
+        macro=macro, earnings_analysis=earnings_analysis,
+    )
 
     if is_monday():
         msg += "\n" + build_weekly_report(results, fundamentals_cache)

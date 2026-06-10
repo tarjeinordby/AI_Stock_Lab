@@ -1,11 +1,18 @@
-from datetime import datetime
+import json
+import os
+import re
+from datetime import datetime, timezone
 
 import pandas as pd
 import yfinance as yf
 
-from modules.state import safe_float, today_str
+import anthropic
+
+from modules.state import STATE_DIR, load_json, safe_float, save_json, today_str
 
 EARNINGS_ALERT_DAYS = 14
+EARNINGS_ANALYSIS_CACHE_FILE = f"{STATE_DIR}/earnings_analysis_cache.json"
+EARNINGS_ANALYSIS_MODEL = "claude-opus-4-5"
 
 
 def _get_next_earnings_date(t):
@@ -117,4 +124,119 @@ def fetch_earnings_bulk(tickers):
         if (i + 1) % 20 == 0:
             print(f"  Earnings: {i+1}/{len(tickers)}")
     print(f"Earnings komplett for {len(result)} tickere")
+    return result
+
+
+# ============================================================
+# DEEP EARNINGS ANALYSIS (Claude Opus + web_search)
+# ============================================================
+
+def _cache_is_fresh_analysis(entry):
+    fetched_at = entry.get("fetched_at") if entry else None
+    if not fetched_at:
+        return False
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(fetched_at)).total_seconds()
+        return age < 24 * 3600
+    except Exception:
+        return False
+
+
+def _parse_analysis_json(text):
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _fetch_deep_analysis(client, ticker, days_to_earnings, next_earnings_date):
+    """Use Claude Opus + web_search to analyse an upcoming earnings report."""
+    from modules.sentiment import run_claude_web_search
+
+    prompt = (
+        f"{ticker} reports earnings in {days_to_earnings} days (around {next_earnings_date}). "
+        "Search for: analyst consensus estimates (EPS and revenue), recent guidance, "
+        "key risks, and any pre-announcement news. "
+        "Based on what you find, give a deep analysis of what to expect. "
+        "Respond ONLY with a JSON object (no markdown): "
+        '{"outlook": "2-3 sentence summary of what to expect", '
+        '"risk_factors": ["risk1", "risk2", "risk3"], '
+        '"recommendation": "one of: Hold / Reduce before earnings / Wait for report / Buy the dip"}'
+    )
+    try:
+        raw = run_claude_web_search(client, EARNINGS_ANALYSIS_MODEL, prompt, max_tokens=768)
+        parsed = _parse_analysis_json(raw)
+        if parsed and "outlook" in parsed:
+            return {
+                "outlook": str(parsed.get("outlook", ""))[:600],
+                "risk_factors": (parsed.get("risk_factors") or [])[:4],
+                "recommendation": str(parsed.get("recommendation", "Hold"))[:80],
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            }
+    except Exception as e:
+        print(f"  Deep earnings feil {ticker}: {e}")
+    return None
+
+
+def fetch_deep_earnings_analysis(tickers_earnings):
+    """
+    Run deep Claude Opus earnings analysis for tickers with upcoming earnings.
+
+    tickers_earnings: dict {ticker: earnings_data} — only processes tickers
+    where earnings_soon=True (days_to_earnings <= 14).
+
+    Returns {ticker: {outlook, risk_factors, recommendation}}.
+    Cached for 24 hours. Falls back gracefully if no API key.
+    """
+    if not tickers_earnings:
+        return {}
+
+    soon = {
+        t: e for t, e in tickers_earnings.items()
+        if e.get("earnings_soon") and e.get("days_to_earnings") is not None
+    }
+    if not soon:
+        return {}
+
+    cache = load_json(EARNINGS_ANALYSIS_CACHE_FILE, {})
+    result = {}
+    to_fetch = []
+
+    for ticker, e in soon.items():
+        entry = cache.get(ticker)
+        if entry and _cache_is_fresh_analysis(entry):
+            result[ticker] = entry
+        else:
+            to_fetch.append((ticker, e))
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        print("ANTHROPIC_API_KEY mangler — hopper over deep earnings-analyse")
+        return result
+
+    if to_fetch:
+        print(f"Deep earnings-analyse (Claude Opus): {len(to_fetch)} tickere...")
+        client = anthropic.Anthropic(api_key=api_key)
+
+        for ticker, e in to_fetch:
+            days = e.get("days_to_earnings", "?")
+            date = e.get("next_earnings", "?")
+            analysis = _fetch_deep_analysis(client, ticker, days, date)
+            if analysis:
+                cache[ticker] = analysis
+                result[ticker] = analysis
+                rec = analysis.get("recommendation", "")
+                print(f"  {ticker} ({days}d): {rec} — {analysis.get('outlook', '')[:60]}")
+            else:
+                print(f"  {ticker}: ingen analyse hentet")
+
+        save_json(cache, EARNINGS_ANALYSIS_CACHE_FILE)
+
+    print(f"Deep earnings-analyse komplett for {len(result)} tickere")
     return result

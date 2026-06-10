@@ -1,16 +1,18 @@
 import json
 import os
+import re
 from datetime import datetime, timezone
 
-import requests
+import anthropic
 
 from modules.state import SENTIMENT_CACHE_FILE, load_json, safe_float, save_json
 
-PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "")
-PERPLEXITY_MODEL = "llama-3.1-sonar-large-128k-online"
+SENTIMENT_MODEL = "claude-sonnet-4-5"
 CACHE_MAX_AGE_HOURS = 24
 
 _NEUTRAL = {"raw_score": 0.0, "score": 0.5, "summary": "Ingen data", "key_events": []}
+
+_WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search"}
 
 
 def _cache_is_fresh(entry):
@@ -24,58 +26,110 @@ def _cache_is_fresh(entry):
         return False
 
 
-def _fetch_single(ticker):
-    if not PERPLEXITY_API_KEY:
+def _get_client():
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
         return None
+    return anthropic.Anthropic(api_key=api_key)
 
-    prompt = (
-        f"What are the most important news for {ticker} in the last 7 days? "
-        "Focus on: earnings, guidance, analyst ratings, major contracts, "
-        "regulatory issues, competitive threats. "
-        "Rate the overall sentiment for a 3-12 month investor: "
-        "score from -1.0 (very negative) to +1.0 (very positive). "
-        'Respond ONLY in JSON: {"score": float, "summary": string, "key_events": [string]}'
-    )
 
-    try:
-        resp = requests.post(
-            "https://api.perplexity.ai/chat/completions",
-            headers={
-                "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": PERPLEXITY_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 512,
-            },
-            timeout=30,
+def run_claude_web_search(client, model, prompt, max_tokens=1024):
+    """
+    Run Claude with web_search_20250305 tool, handling the agentic loop.
+    Returns the final text response.
+    """
+    messages = [{"role": "user", "content": prompt}]
+    tools = [_WEB_SEARCH_TOOL]
+    last_text = ""
+
+    for _ in range(10):
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            tools=tools,
+            messages=messages,
         )
 
-        if resp.status_code != 200:
-            print(f"Perplexity HTTP {resp.status_code} for {ticker}")
-            return None
+        text_parts = [
+            b.text for b in response.content
+            if getattr(b, "type", "") == "text" and hasattr(b, "text")
+        ]
+        if text_parts:
+            last_text = " ".join(text_parts).strip()
 
-        content = resp.json()["choices"][0]["message"]["content"]
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        if start < 0 or end <= start:
-            return None
+        if response.stop_reason == "end_turn":
+            return last_text
 
-        parsed = json.loads(content[start:end])
-        raw = max(-1.0, min(1.0, safe_float(parsed.get("score"), 0.0)))
+        if response.stop_reason == "tool_use":
+            # Add assistant turn (includes tool_use blocks)
+            messages.append({"role": "assistant", "content": response.content})
+
+            # For web_search_20250305, results are filled server-side.
+            # Pass back empty tool_result to continue the loop.
+            tool_results = [
+                {"type": "tool_result", "tool_use_id": b.id, "content": ""}
+                for b in response.content
+                if getattr(b, "type", "") == "tool_use"
+            ]
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+        else:
+            break
+
+    return last_text
+
+
+def _parse_json(text):
+    """Extract first JSON object from text."""
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _fetch_single(client, ticker):
+    prompt = (
+        f"Search for the most important news about {ticker} stock in the last 7 days. "
+        "Focus on: earnings, guidance, analyst upgrades/downgrades, major contracts, "
+        "regulatory issues, and competitive threats. "
+        "Based on what you find, rate overall investor sentiment on a scale from "
+        "0.0 (very negative) to 1.0 (very positive), where 0.5 is neutral. "
+        "Respond ONLY with a JSON object: "
+        '{"score": float, "summary": "1-2 sentence assessment", "key_events": ["event1", "event2"]}'
+    )
+    try:
+        raw = run_claude_web_search(client, SENTIMENT_MODEL, prompt, max_tokens=512)
+        parsed = _parse_json(raw)
+        if not parsed or "score" not in parsed:
+            return None
+        score = max(0.0, min(1.0, safe_float(parsed.get("score"), 0.5)))
         return {
-            "raw_score": raw,
-            "score": (raw + 1.0) / 2.0,  # normalize to [0, 1]
+            "raw_score": round((score * 2.0) - 1.0, 4),  # normalize to [-1, 1]
+            "score": round(score, 4),
             "summary": str(parsed.get("summary", ""))[:500],
             "key_events": (parsed.get("key_events") or [])[:5],
         }
     except Exception as e:
-        print(f"Sentiment feil {ticker}: {e}")
+        print(f"  Sentiment feil {ticker}: {e}")
         return None
 
 
 def fetch_sentiment_bulk(tickers):
+    """
+    Fetch news sentiment for tickers using Claude Sonnet + web_search.
+    Returns {ticker: {raw_score, score, summary, key_events}}.
+    Falls back to neutral (0.5) if ANTHROPIC_API_KEY is missing.
+    Results cached for 24 hours.
+    """
+    if not tickers:
+        return {}
+
     cache = load_json(SENTIMENT_CACHE_FILE, {})
     result = {}
     to_fetch = []
@@ -89,24 +143,24 @@ def fetch_sentiment_bulk(tickers):
 
     print(f"Sentiment: {len(result)} fra cache, {len(to_fetch)} hentes nå")
 
-    if not PERPLEXITY_API_KEY:
-        print("PERPLEXITY_API_KEY mangler — bruker nøytral score (0.5) for alle")
+    client = _get_client()
+    if not client:
+        print("ANTHROPIC_API_KEY mangler — bruker nøytral score (0.5) for alle")
         for ticker in to_fetch:
-            entry = dict(_NEUTRAL)
-            entry["fetched_at"] = datetime.now(timezone.utc).isoformat()
+            entry = {**_NEUTRAL, "fetched_at": datetime.now(timezone.utc).isoformat()}
             cache[ticker] = entry
             result[ticker] = entry
         save_json(cache, SENTIMENT_CACHE_FILE)
         return result
 
     for i, ticker in enumerate(to_fetch):
-        data = _fetch_single(ticker) or dict(_NEUTRAL)
+        data = _fetch_single(client, ticker) or {**_NEUTRAL}
         data["fetched_at"] = datetime.now(timezone.utc).isoformat()
         cache[ticker] = data
         result[ticker] = data
+        print(f"  {ticker}: sentiment {data['score']:.2f} — {data.get('summary', '')[:70]}")
 
-        if (i + 1) % 10 == 0:
-            print(f"  Sentiment: {i+1}/{len(to_fetch)}")
+        if (i + 1) % 5 == 0:
             save_json(cache, SENTIMENT_CACHE_FILE)
 
     save_json(cache, SENTIMENT_CACHE_FILE)

@@ -27,8 +27,22 @@
     "score": 0.5,
     "summary": "Ingen data"
   },
+  "BILL": {
+    "fetched_at": "2026-06-10T16:58:27.470850+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
   "CELH": {
     "fetched_at": "2026-06-10T16:04:10.486822+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
+  "COIN": {
+    "fetched_at": "2026-06-10T16:58:27.470854+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -50,6 +64,13 @@
   },
   "DELL": {
     "fetched_at": "2026-06-10T16:04:10.486804+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
+  "HIMS": {
+    "fetched_at": "2026-06-10T16:58:27.470856+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -111,6 +132,13 @@
     "score": 0.5,
     "summary": "Ingen data"
   },
+  "RBLX": {
+    "fetched_at": "2026-06-10T16:58:27.470852+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
   "ROKU": {
     "fetched_at": "2026-06-10T16:04:10.486827+00:00",
     "key_events": [],
@@ -120,6 +148,13 @@
   },
   "SE": {
     "fetched_at": "2026-06-10T16:04:10.486784+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
+  "SMCI": {
+    "fetched_at": "2026-06-10T16:58:27.470844+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -148,6 +183,27 @@
   },
   "TSM": {
     "fetched_at": "2026-06-10T16:04:10.486818+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
+  "U": {
+    "fetched_at": "2026-06-10T16:58:27.470847+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
+  "UBER": {
+    "fetched_at": "2026-06-10T16:58:27.470859+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "summary": "Ingen data"
+  },
+  "ZS": {
+    "fetched_at": "2026-06-10T16:58:27.470834+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
