@@ -58,10 +58,16 @@ def _ensure_dir():
 
 
 def _download_data(tickers, start="2014-01-01", end="2025-12-31"):
-    """Download daily OHLCV for all tickers. Returns {ticker: df}."""
+    """
+    Download daily OHLCV for all tickers. Returns {ticker: df}.
+    Uses period="max" + post-filter (avoids SSL issues with start/end on some systems).
+    """
     out = {}
     chunk_size = 60
     total = len(tickers)
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+
     for i in range(0, total, chunk_size):
         chunk = tickers[i:i + chunk_size]
         n_chunk = i // chunk_size + 1
@@ -70,8 +76,7 @@ def _download_data(tickers, start="2014-01-01", end="2025-12-31"):
         try:
             raw = yf.download(
                 tickers=chunk,
-                start=start,
-                end=end,
+                period="max",
                 interval="1d",
                 auto_adjust=True,
                 group_by="ticker",
@@ -89,6 +94,8 @@ def _download_data(tickers, start="2014-01-01", end="2025-12-31"):
                     else:
                         df = raw.copy()
                     df = df[["Close", "Volume"]].dropna()
+                    # Filter to requested date range
+                    df = df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
                     if len(df) >= 200:
                         out[ticker] = df
                 except Exception:
