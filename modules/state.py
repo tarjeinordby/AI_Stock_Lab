@@ -41,12 +41,12 @@ def today_str():
 
 
 def is_market_open():
-    """True if NYSE is currently open: Mon–Fri, 09:30–16:00 ET."""
+    """True if NYSE trading window is active: Mon–Fri, 09:35–15:55 ET."""
     now = now_ny()
     if now.weekday() >= 5:          # lørdag=5, søndag=6
         return False
-    open_time  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
-    close_time = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    open_time  = now.replace(hour=9,  minute=35, second=0, microsecond=0)
+    close_time = now.replace(hour=15, minute=55, second=0, microsecond=0)
     return open_time <= now < close_time
 
 

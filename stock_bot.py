@@ -46,6 +46,7 @@ from modules.state import (
     GLOBAL_STATE_FILE,
     PERFORMANCE_FILE,
     SIGNALS_DIR,
+    STATE_DIR,
     START_CAPITAL,
     TRADES_FILE,
     ensure_dirs,
@@ -141,6 +142,49 @@ def benchmark_return(benchmark_state, symbol):
     if not start or not last:
         return None
     return (last / start) - 1
+
+
+# ============================================================
+# PRE-MARKET MODE
+# ============================================================
+
+def run_premarket():
+    print("=" * 60)
+    print("PRE-MARKET MODE")
+    print("=" * 60)
+
+    signal, signal_path = load_latest_signal()
+    print(f"Bruker signal: {signal_path}")
+
+    prev_prices = {}
+    pm_tickers = set()
+
+    for strat_name in STRATEGIES:
+        strat_state = load_strategy_state(strat_name)
+        held = strat_state.get("positions", {})
+        pm_tickers.update(held.keys())
+        payload = signal.get("strategies", {}).get(strat_name, {})
+        for c in payload.get("candidates", [])[:30]:
+            t = c.get("ticker")
+            if t:
+                pm_tickers.add(t)
+                if t not in prev_prices and c.get("price"):
+                    prev_prices[t] = c["price"]
+        for t, pos in held.items():
+            if t not in prev_prices:
+                prev_prices[t] = pos.get("last_price") or pos.get("avg_price")
+
+    all_moves = compute_premarket_moves(list(pm_tickers), prev_prices)
+
+    result = {
+        "fetched_at_utc": now_utc().isoformat(),
+        "moves": {t: round(m, 6) for t, m in all_moves.items()},
+        "flagged": {t: round(m, 6) for t, m in all_moves.items() if abs(m) > 0.04},
+    }
+
+    out_path = f"{STATE_DIR}/premarket_prices.json"
+    save_json(result, out_path)
+    print(f"Pre-market priser lagret: {out_path}")
 
 
 # ============================================================
@@ -693,6 +737,8 @@ def main():
         run_signal()
     elif mode == "execute":
         run_execute()
+    elif mode == "premarket":
+        run_premarket()
     elif mode == "backtest":
         from modules.backtest import run_backtest
         run_backtest()

@@ -2,7 +2,7 @@ name: Execute — Oppdater porteføljer og send rapport
 
 on:
   schedule:
-    - cron: "25 13 * * 1-5"  # 13:25 UTC = 15:25 Oslo = 9:25 ET (pre-market)
+    - cron: "35 13 * * 1-5"  # 13:35 UTC = 15:35 Oslo = 9:35 ET (market open)
   workflow_dispatch:
     inputs:
       mode:
