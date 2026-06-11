@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 
 import anthropic
@@ -9,6 +10,9 @@ from modules.state import SENTIMENT_CACHE_FILE, load_json, safe_float, save_json
 
 SENTIMENT_MODEL = "claude-sonnet-4-5"
 CACHE_MAX_AGE_HOURS = 24
+MAX_SENTIMENT_CALLS = 10      # maks API-kall per kjøring
+INTER_CALL_SLEEP = 3          # sekunder mellom hvert kall
+RATE_LIMIT_RETRY_WAIT = 60    # sekunder å vente ved 429-feil
 
 _NEUTRAL = {"raw_score": 0.0, "score": 0.5, "summary": "Ingen data", "key_events": []}
 
@@ -103,7 +107,7 @@ def _fetch_single(client, ticker):
         "Respond ONLY with a JSON object: "
         '{"score": float, "summary": "1-2 sentence assessment", "key_events": ["event1", "event2"]}'
     )
-    try:
+    def _call():
         raw = run_claude_web_search(client, SENTIMENT_MODEL, prompt, max_tokens=512)
         parsed = _parse_json(raw)
         if not parsed or "score" not in parsed:
@@ -116,6 +120,18 @@ def _fetch_single(client, ticker):
             "key_events": (parsed.get("key_events") or [])[:5],
             "source": "claude",
         }, None
+
+    try:
+        return _call()
+    except anthropic.RateLimitError:
+        print(f"  Rate limit (429) — venter {RATE_LIMIT_RETRY_WAIT}s før retry ({ticker})")
+        time.sleep(RATE_LIMIT_RETRY_WAIT)
+        try:
+            return _call()
+        except Exception as e:
+            err = str(e)[:120]
+            print(f"  Sentiment feil {ticker} (etter retry): {err}")
+            return None, err
     except Exception as e:
         err = str(e)[:120]
         print(f"  Sentiment feil {ticker}: {err}")
@@ -150,10 +166,23 @@ def fetch_sentiment_bulk(tickers):
         else:
             to_fetch.append(ticker)
 
-    cache_count = len(result)
+    # Cap antall API-kall — tickers er allerede prioritert (eide aksjer først)
+    skipped = []
+    if len(to_fetch) > MAX_SENTIMENT_CALLS:
+        skipped = to_fetch[MAX_SENTIMENT_CALLS:]
+        to_fetch = to_fetch[:MAX_SENTIMENT_CALLS]
+        # Bruk gammel cache-verdi (selv om fallback) for de som hoppes over
+        for ticker in skipped:
+            entry = cache.get(ticker)
+            if entry:
+                result[ticker] = entry
+
+    cache_count = len(result) - len(skipped)
     fallback_refetch = sum(1 for t in to_fetch if cache.get(t, {}).get("source") == "fallback")
+    skip_msg = f", {len(skipped)} hoppet over (cap={MAX_SENTIMENT_CALLS})" if skipped else ""
     print(f"Sentiment: {cache_count} fra cache, {len(to_fetch)} hentes nå"
-          + (f" (inkl. {fallback_refetch} fallback re-fetch)" if fallback_refetch else ""))
+          + (f" (inkl. {fallback_refetch} fallback re-fetch)" if fallback_refetch else "")
+          + skip_msg)
 
     client = _get_client()
     if not client and to_fetch:
@@ -189,11 +218,16 @@ def fetch_sentiment_bulk(tickers):
         if (i + 1) % 5 == 0:
             save_json(cache, SENTIMENT_CACHE_FILE)
 
+        # Pause mellom kall for å unngå rate limit
+        if i < len(to_fetch) - 1:
+            time.sleep(INTER_CALL_SLEEP)
+
     save_json(cache, SENTIMENT_CACHE_FILE)
 
     claude_count = sum(1 for t in to_fetch if result.get(t, {}).get("source") == "claude")
     fallback_count = len(to_fetch) - claude_count
-    print(f"Sentiment komplett: {claude_count} Claude, {fallback_count} fallback")
+    print(f"Sentiment komplett: {claude_count} Claude, {fallback_count} fallback"
+          + (f" ({len(skipped)} hoppet over)" if skipped else ""))
     if errors:
         print(f"  Feil ({len(errors)}): {'; '.join(errors[:3])}")
 

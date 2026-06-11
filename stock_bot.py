@@ -267,20 +267,24 @@ def run_signal():
     neutral_earnings = {t: {"earnings_bonus": 0, "earnings_soon": False} for t in all_tickers}
     prelim_df = build_score_table(analyzed, fundamentals, neutral_sentiment, neutral_earnings)
 
-    # Identify tickers needing real sentiment/earnings:
-    # owned positions + top 20 per strategy (union)
-    sentiment_tickers = set()
-    for strat_name, config in STRATEGIES.items():
+    # Identify tickers needing real sentiment/earnings.
+    # Eide aksjer prioriteres først, deretter topp-kandidater per strategi.
+    seen = set()
+    sentiment_tickers = []
+    for strat_name in STRATEGIES:
         strat_state = load_strategy_state(strat_name)
-        sentiment_tickers.update(strat_state.get("positions", {}).keys())
+        for t in strat_state.get("positions", {}).keys():
+            if t in all_tickers and t not in seen:
+                sentiment_tickers.append(t)
+                seen.add(t)
 
     for strat_name, config in STRATEGIES.items():
         col = config["score_column"]
         if col in prelim_df.columns:
-            top20 = prelim_df[col].nlargest(20).index.tolist()
-            sentiment_tickers.update(top20)
-
-    sentiment_tickers = [t for t in sentiment_tickers if t in all_tickers]
+            for t in prelim_df[col].nlargest(20).index.tolist():
+                if t in all_tickers and t not in seen:
+                    sentiment_tickers.append(t)
+                    seen.add(t)
     print(f"Sentiment + earnings fetch for {len(sentiment_tickers)} tickere")
 
     earnings_data = fetch_earnings_bulk(sentiment_tickers)
