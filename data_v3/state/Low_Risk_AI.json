@@ -3,7 +3,7 @@
   "cooldowns": {},
   "created_at": "2026-06-09T17:38:27.944188+00:00",
   "highest_portfolio_value": 10038.451396791148,
-  "last_execution_date": "2026-06-10",
+  "last_execution_date": "2026-06-11",
   "positions": {
     "ASML": {
       "avg_price": 1742.800048828125,
@@ -25,8 +25,8 @@
       "avg_price": 419.3299865722656,
       "buy_date": "2026-06-09",
       "highest_price": 427.9200134277344,
-      "last_price": 408.7099914550781,
-      "market_value": 833.464524508582,
+      "last_price": 408.760009765625,
+      "market_value": 833.5665246756645,
       "shares": 2.039256543597832
     }
   },

@@ -3,7 +3,7 @@
   "cooldowns": {},
   "created_at": "2026-06-09T17:38:24.020881+00:00",
   "highest_portfolio_value": 10083.414540574915,
-  "last_execution_date": "2026-06-10",
+  "last_execution_date": "2026-06-11",
   "positions": {
     "ARM": {
       "avg_price": 317.20001220703125,
@@ -41,8 +41,8 @@
       "avg_price": 56.619998931884766,
       "buy_date": "2026-06-09",
       "highest_price": 58.45500183105469,
-      "last_price": 56.59000015258789,
-      "market_value": 855.4563315147301,
+      "last_price": 56.584999084472656,
+      "market_value": 855.3807316671955,
       "shares": 15.116740222797288
     }
   },

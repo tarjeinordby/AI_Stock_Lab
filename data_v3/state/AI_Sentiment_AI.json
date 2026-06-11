@@ -3,7 +3,7 @@
   "cooldowns": {},
   "created_at": "2026-06-10T16:06:55.858307+00:00",
   "highest_portfolio_value": 10002.373743164153,
-  "last_execution_date": "2026-06-10",
+  "last_execution_date": "2026-06-11",
   "positions": {
     "DDOG": {
       "avg_price": 228.3800048828125,
@@ -33,8 +33,8 @@
       "avg_price": 415.32501220703125,
       "buy_date": "2026-06-10",
       "highest_price": 415.6199951171875,
-      "last_price": 408.7099914550781,
-      "market_value": 925.9167998615454,
+      "last_price": 408.760009765625,
+      "market_value": 926.030114424449,
       "shares": 2.2654616212466983
     }
   },
