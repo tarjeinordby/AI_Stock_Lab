@@ -127,10 +127,13 @@ def fetch_sentiment_bulk(tickers):
     Fetch news sentiment for tickers using Claude Sonnet + web_search.
     Returns {ticker: {raw_score, score, summary, key_events, source, error?}}.
     source is 'claude' when fetched via API, 'fallback' when using neutral 0.5.
-    Results cached for 24 hours.
+    Results cached for 24 hours. Fallback cache entries are re-fetched when API key is available.
     """
     if not tickers:
         return {}
+
+    api_key_set = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+    print(f"ANTHROPIC_API_KEY satt: {api_key_set}")
 
     cache = load_json(SENTIMENT_CACHE_FILE, {})
     result = {}
@@ -139,11 +142,18 @@ def fetch_sentiment_bulk(tickers):
     for ticker in tickers:
         entry = cache.get(ticker)
         if entry and _cache_is_fresh(entry):
-            result[ticker] = entry
+            # Re-fetch if cached as fallback and API key is now available
+            if entry.get("source") == "fallback" and api_key_set:
+                to_fetch.append(ticker)
+            else:
+                result[ticker] = entry
         else:
             to_fetch.append(ticker)
 
-    print(f"Sentiment: {len(result)} fra cache, {len(to_fetch)} hentes nå")
+    cache_count = len(result)
+    fallback_refetch = sum(1 for t in to_fetch if cache.get(t, {}).get("source") == "fallback")
+    print(f"Sentiment: {cache_count} fra cache, {len(to_fetch)} hentes nå"
+          + (f" (inkl. {fallback_refetch} fallback re-fetch)" if fallback_refetch else ""))
 
     client = _get_client()
     if not client and to_fetch:
