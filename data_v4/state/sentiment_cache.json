@@ -1,7 +1,7 @@
 {
   "ABNB": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838289+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:31.429122+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -9,8 +9,8 @@
     "summary": "Ingen data"
   },
   "APP": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838311+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:59.091032+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -18,8 +18,8 @@
     "summary": "Ingen data"
   },
   "ARM": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838294+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:38.108788+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -27,8 +27,8 @@
     "summary": "Ingen data"
   },
   "ASML": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838352+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:54.492754+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -36,8 +36,8 @@
     "summary": "Ingen data"
   },
   "BILL": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838356+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:40.347824+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -45,8 +45,8 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838361+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:13:02.938889+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -54,8 +54,8 @@
     "summary": "Ingen data"
   },
   "DDOG": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838333+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:48.492084+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -63,8 +63,8 @@
     "summary": "Ingen data"
   },
   "DELL": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838370+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:35.033994+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -72,8 +72,8 @@
     "summary": "Ingen data"
   },
   "IONQ": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838366+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:43.965570+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -81,8 +81,8 @@
     "summary": "Ingen data"
   },
   "MDB": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838300+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:29.501244+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -90,8 +90,8 @@
     "summary": "Ingen data"
   },
   "NET": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838338+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:45.799732+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -99,8 +99,8 @@
     "summary": "Ingen data"
   },
   "NVO": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838274+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:50.759373+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -108,8 +108,8 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838322+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:13:01.007181+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -117,17 +117,22 @@
     "summary": "Ingen data"
   },
   "PANW": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838342+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T09:12:03.324864+00:00",
+    "key_events": [
+      "Q3 FY2026 earnings beat: Revenue $3B (+31% YoY), EPS $0.85 vs $0.79 expected, raised FY2026 guidance to $11.4B revenue",
+      "Wave of analyst upgrades: Wedbush to $340, Evercore to $375, Goldman to $330, Scotiabank to $320, Truist to $375 with Buy ratings",
+      "Stock dropped 2-3% despite beat on 'sell-the-news' reaction and sector contagion from Anthropic's Claude Code Security launch threatening cybersecurity stocks",
+      "Tyson Foods partnership announced for AI-powered cybersecurity across 300+ facilities",
+      "CEO cited 1,200+ customer inquiries post-Mythos AI launch, building nine-figure AI pipeline with Next-Gen Security ARR up 60% to $8B"
+    ],
+    "raw_score": 0.3,
+    "score": 0.65,
+    "source": "claude",
+    "summary": "PANW beat Q3 earnings expectations with strong revenue growth and raised guidance, driving multiple analyst upgrades to $300-375 targets. However, stock declined 2-3% post-earnings on profit-taking, sector volatility from AI disruption fears (Anthropic's Claude), and concerns over acquisition-driven growth quality."
   },
   "ROKU": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838327+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:13:04.661735+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -135,8 +140,8 @@
     "summary": "Ingen data"
   },
   "SMCI": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838316+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:33.247272+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -144,8 +149,8 @@
     "summary": "Ingen data"
   },
   "SNOW": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838283+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:42.155330+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -153,17 +158,22 @@
     "summary": "Ingen data"
   },
   "SOFI": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838347+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T09:12:27.428569+00:00",
+    "key_events": [
+      "Q1 2026 record results: $1.1B revenue (+43% YoY), $0.12 EPS, 14.7M members (+35% YoY), but management kept full-year guidance unchanged at $4.655B revenue",
+      "Truist downgraded price target from $20 to $17 on May 12 citing loan platform slowdown and softer technology segment expectations",
+      "Muddy Waters published short report on March 17 alleging financial engineering and $312M unrecorded debt; SOFI denied claims and threatened legal action, CEO bought shares same day",
+      "Technology Platform revenue fell 27% YoY to $75M after large client departure",
+      "Acquired UK fintech PrimaryBid assets in early May to expand capital markets capabilities, stock rose 2-3% on news"
+    ],
+    "raw_score": -0.16,
+    "score": 0.42,
+    "source": "claude",
+    "summary": "SOFI faces mixed sentiment with strong Q1 earnings (43% revenue growth, record member additions) offset by unchanged 2026 guidance, a Truist price target cut to $17, March Muddy Waters short report alleging accounting irregularities, and 27% year-over-year decline in technology platform revenue from client losses."
   },
   "TOST": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838251+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:56.348692+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -171,8 +181,8 @@
     "summary": "Ingen data"
   },
   "TSM": {
-    "error": "ANTHROPIC_API_KEY mangler",
-    "fetched_at": "2026-06-11T07:37:28.838306+00:00",
+    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
+    "fetched_at": "2026-06-11T09:12:52.584217+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
