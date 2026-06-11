@@ -1,13 +1,13 @@
 {
-  "strategy": "Quality_Momentum_AI",
-  "created_at": "2026-06-11T08:42:29.093561+00:00",
   "cash": 10000.0,
-  "positions": {},
-  "highest_portfolio_value": 10000.0,
-  "weekly_meta": {
-    "iso_week": "",
-    "buys_this_week": 0
-  },
   "cooldowns": {},
-  "last_execution_date": null
+  "created_at": "2026-06-11T08:42:29.093561+00:00",
+  "highest_portfolio_value": 10000.0,
+  "last_execution_date": "2026-06-11",
+  "positions": {},
+  "strategy": "Quality_Momentum_AI",
+  "weekly_meta": {
+    "buys_this_week": 0,
+    "iso_week": "2026-W24"
+  }
 }
