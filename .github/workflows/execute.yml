@@ -71,7 +71,7 @@ jobs:
 
           git pull --rebase origin main || true
 
-          git add data_v3/ || true
+          git add data_v4/ || true
 
           if git diff --cached --quiet; then
             echo "Ingen endringer å committe."

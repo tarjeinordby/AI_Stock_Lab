@@ -507,18 +507,60 @@ def run_backtest():
 
     save_json(payload, BACKTEST_RESULTS_FILE)
 
-    # Summary table
-    print("\n" + "=" * 72)
-    print(f"{'Strategi':<24} {'Total':>8} {'Alpha':>8} {'Sharpe':>7} {'MaxDD':>8} {'Win%':>6}")
-    print("-" * 72)
-    for name, s in sorted(all_stats.items(), key=lambda x: -x[1].get("total_return", 0)):
+    # Summary table (printed + saved to .txt)
+    spy_total = float(spy_close.iloc[-1] / spy_close.iloc[0] - 1) * 100
+    sorted_stats = sorted(all_stats.items(), key=lambda x: -x[1].get("total_return", 0))
+
+    header = f"AI Stock Lab v4 — Backtest 2015-2025\nGenerert: {now_utc().strftime('%Y-%m-%d %H:%M UTC')}\n"
+    separator = "=" * 72
+    col_header = f"{'Strategi':<24} {'Total':>8} {'Alpha':>8} {'Sharpe':>7} {'MaxDD':>8} {'Win%':>6}"
+    divider = "-" * 72
+
+    rows = []
+    for name, s in sorted_stats:
         t = s.get("total_return", 0) * 100
         a = s.get("alpha", 0) * 100
         sh = s.get("sharpe", 0)
         mdd = s.get("max_drawdown", 0) * 100
         wr = s.get("win_rate", 0) * 100
-        print(f"{name:<24} {t:>+7.1f}%  {a:>+7.1f}%  {sh:>6.2f}  {mdd:>7.1f}%  {wr:>5.0f}%")
-    spy_total = float(spy_close.iloc[-1] / spy_close.iloc[0] - 1) * 100
-    print(f"{'SPY (buy & hold)':<24} {spy_total:>+7.1f}%")
-    print("=" * 72)
+        rows.append(f"{name:<24} {t:>+7.1f}%  {a:>+7.1f}%  {sh:>6.2f}  {mdd:>7.1f}%  {wr:>5.0f}%")
+    spy_row = f"{'SPY (buy & hold)':<24} {spy_total:>+7.1f}%"
+
+    yearly_section = ["\nÅrlig avkastning per strategi:"]
+    all_years = sorted({yr for s in all_stats.values() for yr in s.get("yearly_returns", {})})
+    year_header = f"  {'Strategi':<24}" + "".join(f"  {y}" for y in all_years)
+    yearly_section.append(year_header)
+    for name, s in sorted_stats:
+        yr_vals = s.get("yearly_returns", {})
+        yr_str = "".join(f"  {yr_vals.get(y, 0)*100:>+5.0f}%" for y in all_years)
+        yearly_section.append(f"  {name:<24}{yr_str}")
+
+    caveats = [
+        "\nMerknader:",
+        "  - Survivorship bias: kun aksjer som eksisterer i dag er testet",
+        "  - Ingen historiske fundamentals/sentiment — neutral 50.0 brukt",
+        "  - Månedlig rebalansering (live-system rebalanserer daglig)",
+    ]
+
+    summary_lines = (
+        [header, separator, col_header, divider]
+        + rows
+        + [spy_row, separator]
+        + yearly_section
+        + caveats
+    )
+    summary_text = "\n".join(summary_lines) + "\n"
+
+    summary_path = f"{BACKTEST_DIR}/summary.txt"
+    with open(summary_path, "w") as f:
+        f.write(summary_text)
+
+    print("\n" + separator)
+    print(col_header)
+    print(divider)
+    for row in rows:
+        print(row)
+    print(spy_row)
+    print(separator)
     print(f"\nResultater lagret: {BACKTEST_RESULTS_FILE}")
+    print(f"Oppsummering lagret: {summary_path}")
