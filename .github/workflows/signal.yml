@@ -2,7 +2,7 @@ name: Signal — Bygg signalfil
 
 on:
   schedule:
-    - cron: "0 21 * * 1-5"   # 21:00 UTC = 23:00 Oslo (sommer), etter US-børslutt
+    - cron: "0 21 * * 1-5"   # 21:00 UTC = 23:00 Oslo (CEST), etter US-børslutt
   workflow_dispatch:
     inputs:
       mode:
