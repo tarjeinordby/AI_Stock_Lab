@@ -103,6 +103,39 @@ def _build_leaderboard(results, spy_ret, qqq_ret):
     return "\n".join(lines)
 
 
+def _build_sentiment_summary(sentiment_scores, held_tickers=None):
+    """Format sentiment line: 🤖 Sentiment: NVDA +0.7 (Claude) | TSM +0.4 (Claude) | ARM 0.5 (fallback)"""
+    if not sentiment_scores:
+        return ""
+
+    if held_tickers is None:
+        held_tickers = set()
+
+    held, others = [], []
+    for ticker, data in sentiment_scores.items():
+        score = safe_float(data.get("score"), 0.5)
+        source = data.get("source", "fallback")
+        entry = (ticker, score, source)
+        (held if ticker in held_tickers else others).append(entry)
+
+    held.sort(key=lambda x: -x[1])
+    others.sort(key=lambda x: -x[1])
+    shown = (held + others)[:12]
+
+    claude_count = sum(1 for _, _, s in shown if s == "claude")
+
+    if claude_count == 0:
+        return "🤖 Sentiment: ingen API-nøkkel — alle fallback (0.5)"
+
+    parts = []
+    for ticker, score, source in shown:
+        sign = "+" if score > 0.5 else ""
+        label = "Claude" if source == "claude" else "fallback"
+        parts.append(f"{ticker} {sign}{score:.1f} ({label})")
+
+    return "🤖 Sentiment: " + " | ".join(parts)
+
+
 def _build_correlation_alerts(results):
     """Collect unique correlation log messages across all strategies."""
     seen = set()
@@ -281,7 +314,8 @@ def _build_positions_summary(results):
 
 
 def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
-                       macro=None, earnings_analysis=None, active_weights=None):
+                       macro=None, earnings_analysis=None, active_weights=None,
+                       sentiment_scores=None):
     regime = signal.get("regime", {})
     regime_name = regime.get("regime", "unknown")
     regime_label = REGIME_LABELS.get(regime_name, regime_name.upper())
@@ -308,6 +342,15 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
         val = round(active_weights.get("value", 0) * 100)
         sent = round(active_weights.get("sentiment", 0) * 100)
         lines.append(f"📊 Aktive vekter: Mom {mom}% | Kval {qual}% | Verdi {val}% | Sent {sent}%")
+
+    # Sentiment source summary
+    if sentiment_scores is not None:
+        held_tickers = set()
+        for r in results:
+            held_tickers.update(r.get("positions", {}).keys())
+        sent_line = _build_sentiment_summary(sentiment_scores, held_tickers)
+        if sent_line:
+            lines.append(sent_line)
 
     lines.append("")
     lines.append(_build_leaderboard(results, spy_ret, qqq_ret))
@@ -455,10 +498,12 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 
 def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
                        drawdown_warnings, fundamentals_cache=None, macro=None,
-                       earnings_analysis=None, active_weights=None, corr_pairs=None):
+                       earnings_analysis=None, active_weights=None, corr_pairs=None,
+                       sentiment_scores=None):
     msg = build_daily_report(
         results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
         macro=macro, earnings_analysis=earnings_analysis, active_weights=active_weights,
+        sentiment_scores=sentiment_scores,
     )
 
     if is_monday():

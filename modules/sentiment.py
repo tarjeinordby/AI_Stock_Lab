@@ -107,24 +107,26 @@ def _fetch_single(client, ticker):
         raw = run_claude_web_search(client, SENTIMENT_MODEL, prompt, max_tokens=512)
         parsed = _parse_json(raw)
         if not parsed or "score" not in parsed:
-            return None
+            return None, "Ugyldig JSON-respons fra Claude"
         score = max(0.0, min(1.0, safe_float(parsed.get("score"), 0.5)))
         return {
-            "raw_score": round((score * 2.0) - 1.0, 4),  # normalize to [-1, 1]
+            "raw_score": round((score * 2.0) - 1.0, 4),
             "score": round(score, 4),
             "summary": str(parsed.get("summary", ""))[:500],
             "key_events": (parsed.get("key_events") or [])[:5],
-        }
+            "source": "claude",
+        }, None
     except Exception as e:
-        print(f"  Sentiment feil {ticker}: {e}")
-        return None
+        err = str(e)[:120]
+        print(f"  Sentiment feil {ticker}: {err}")
+        return None, err
 
 
 def fetch_sentiment_bulk(tickers):
     """
     Fetch news sentiment for tickers using Claude Sonnet + web_search.
-    Returns {ticker: {raw_score, score, summary, key_events}}.
-    Falls back to neutral (0.5) if ANTHROPIC_API_KEY is missing.
+    Returns {ticker: {raw_score, score, summary, key_events, source, error?}}.
+    source is 'claude' when fetched via API, 'fallback' when using neutral 0.5.
     Results cached for 24 hours.
     """
     if not tickers:
@@ -147,22 +149,40 @@ def fetch_sentiment_bulk(tickers):
     if not client:
         print("ANTHROPIC_API_KEY mangler — bruker nøytral score (0.5) for alle")
         for ticker in to_fetch:
-            entry = {**_NEUTRAL, "fetched_at": datetime.now(timezone.utc).isoformat()}
+            entry = {
+                **_NEUTRAL,
+                "source": "fallback",
+                "error": "ANTHROPIC_API_KEY mangler",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            }
             cache[ticker] = entry
             result[ticker] = entry
         save_json(cache, SENTIMENT_CACHE_FILE)
         return result
 
+    errors = []
     for i, ticker in enumerate(to_fetch):
-        data = _fetch_single(client, ticker) or {**_NEUTRAL}
+        data, err = _fetch_single(client, ticker)
+        if data is None:
+            data = {**_NEUTRAL, "source": "fallback"}
+            if err:
+                data["error"] = err
+                errors.append(f"{ticker}: {err}")
         data["fetched_at"] = datetime.now(timezone.utc).isoformat()
         cache[ticker] = data
         result[ticker] = data
-        print(f"  {ticker}: sentiment {data['score']:.2f} — {data.get('summary', '')[:70]}")
+        src_tag = "Claude ✓" if data.get("source") == "claude" else "fallback"
+        print(f"  {ticker}: {data['score']:.2f} ({src_tag}) — {data.get('summary', '')[:60]}")
 
         if (i + 1) % 5 == 0:
             save_json(cache, SENTIMENT_CACHE_FILE)
 
     save_json(cache, SENTIMENT_CACHE_FILE)
-    print(f"Sentiment komplett for {len(result)} tickere")
+
+    claude_count = sum(1 for t in to_fetch if result.get(t, {}).get("source") == "claude")
+    fallback_count = len(to_fetch) - claude_count
+    print(f"Sentiment komplett: {claude_count} Claude, {fallback_count} fallback")
+    if errors:
+        print(f"  Feil ({len(errors)}): {'; '.join(errors[:3])}")
+
     return result

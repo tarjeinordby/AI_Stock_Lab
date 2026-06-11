@@ -266,6 +266,10 @@ def run_signal():
         "earnings_analysis": deep_earnings,
         "active_weights": active_weights,
         "corr_pairs": corr_pairs,
+        "sentiment_scores": {
+            t: {k: v for k, v in d.items() if k in ("score", "source", "error", "summary")}
+            for t, d in sentiment_scores.items()
+        },
     }
 
     date = today_str()
@@ -509,9 +513,10 @@ def run_execute():
     macro = get_macro_status()
     macro_mult = macro.get("exposure_mult", 1.0)
 
-    # Load precomputed correlation pairs and active weights from signal
+    # Load precomputed correlation pairs, active weights and sentiment from signal
     corr_pairs = signal.get("corr_pairs", [])
     active_weights = signal.get("active_weights")
+    sentiment_scores = signal.get("sentiment_scores", {})
 
     # --- Pre-market filter ---
     # Collect held tickers + top candidates from signal as prev_prices reference
@@ -590,6 +595,7 @@ def run_execute():
         earnings_analysis=earnings_analysis,
         active_weights=active_weights,
         corr_pairs=corr_pairs,
+        sentiment_scores=sentiment_scores,
     )
 
     send_telegram(message)
