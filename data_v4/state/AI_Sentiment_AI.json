@@ -1,58 +1,13 @@
 {
-  "cash": 6482.306603316915,
-  "cooldowns": {},
-  "created_at": "2026-06-11T07:36:57.552023+00:00",
-  "highest_portfolio_value": 10000.0,
-  "last_execution_date": "2026-06-11",
-  "positions": {
-    "ABNB": {
-      "avg_price": 129.10000610351562,
-      "buy_date": "2026-06-11",
-      "highest_price": 129.10000610351562,
-      "is_partial": true,
-      "last_price": 129.10000610351562,
-      "market_value": 1200.0000000000002,
-      "pyramid_min_price": 131.682,
-      "pyramid_remaining_value": 800.0,
-      "shares": 9.295119622518143
-    },
-    "ASML": {
-      "avg_price": 1733.0,
-      "buy_date": "2026-06-11",
-      "highest_price": 1733.0,
-      "is_partial": true,
-      "last_price": 1733.0,
-      "market_value": 557.1719914031778,
-      "pyramid_min_price": 1767.66,
-      "pyramid_remaining_value": 371.45,
-      "shares": 0.3215072079649035
-    },
-    "ROKU": {
-      "avg_price": 116.91000366210938,
-      "buy_date": "2026-06-11",
-      "highest_price": 116.91000366210938,
-      "is_partial": true,
-      "last_price": 116.91000366210938,
-      "market_value": 1200.0000000000002,
-      "pyramid_min_price": 119.2482,
-      "pyramid_remaining_value": 800.0,
-      "shares": 10.264305554794205
-    },
-    "TSM": {
-      "avg_price": 408.760009765625,
-      "buy_date": "2026-06-11",
-      "highest_price": 408.760009765625,
-      "is_partial": true,
-      "last_price": 408.760009765625,
-      "market_value": 557.0072260624406,
-      "pyramid_min_price": 416.9352,
-      "pyramid_remaining_value": 371.34,
-      "shares": 1.3626754397569802
-    }
-  },
   "strategy": "AI_Sentiment_AI",
+  "created_at": "2026-06-11T08:42:29.093561+00:00",
+  "cash": 10000.0,
+  "positions": {},
+  "highest_portfolio_value": 10000.0,
   "weekly_meta": {
-    "buys_this_week": 4,
-    "iso_week": "2026-W24"
-  }
+    "iso_week": "",
+    "buys_this_week": 0
+  },
+  "cooldowns": {},
+  "last_execution_date": null
 }
