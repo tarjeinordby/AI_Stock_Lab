@@ -137,17 +137,17 @@ def _build_sentiment_summary(sentiment_scores, held_tickers=None):
 
 
 def _build_correlation_alerts(results):
-    """Collect unique correlation log messages across all strategies."""
+    """Collect unique correlation/concentration exclusion messages across all strategies."""
     seen = set()
     lines = []
     for r in results:
         for msg in r.get("correlation_log", []):
             if msg not in seen:
                 seen.add(msg)
-                lines.append(f"  🔗 {msg}")
+                lines.append(f"  {msg}")
     if not lines:
         return ""
-    return "\n🔗 KORRELASJONSFILTER:\n" + "\n".join(lines)
+    return "\n🚫 FILTRERT UT:\n" + "\n".join(lines)
 
 
 def _build_actions(results):

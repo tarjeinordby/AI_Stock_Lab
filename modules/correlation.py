@@ -11,9 +11,49 @@ Usage:
 import numpy as np
 import pandas as pd
 
-CORRELATION_THRESHOLD = 0.85
+CORRELATION_THRESHOLD = 0.75
 HEATMAP_MIN_THRESHOLD = 0.70
 LOOKBACK_DAYS = 60
+
+MAX_SUB_SECTOR_POSITIONS = 3
+
+SUB_SECTOR_MAP = {
+    # Semiconductors
+    "NVDA": "semiconductors", "AMD": "semiconductors", "ASML": "semiconductors",
+    "TSM": "semiconductors", "QCOM": "semiconductors", "INTC": "semiconductors",
+    "ARM": "semiconductors", "SMCI": "semiconductors", "AVGO": "semiconductors",
+    "MU": "semiconductors", "AMAT": "semiconductors", "KLAC": "semiconductors",
+    "IONQ": "semiconductors",
+    # Software
+    "MSFT": "software", "ORCL": "software", "ADBE": "software",
+    "CRM": "software", "NOW": "software", "SAP": "software",
+    "PANW": "software", "CRWD": "software", "OKTA": "software",
+    "DDOG": "software", "DELL": "software",
+    # Cloud
+    "AMZN": "cloud", "GOOG": "cloud", "GOOGL": "cloud",
+    "NET": "cloud", "SNOW": "cloud", "MDB": "cloud",
+    # Fintech
+    "PYPL": "fintech", "SQ": "fintech", "V": "fintech", "MA": "fintech",
+    "SOFI": "fintech", "HOOD": "fintech", "COIN": "fintech",
+    "AFRM": "fintech", "BILL": "fintech",
+    # Biotech
+    "LLY": "biotech", "NVO": "biotech", "MRNA": "biotech",
+    "ABBV": "biotech", "JNJ": "biotech", "HIMS": "biotech",
+    # Consumer Tech
+    "META": "consumer-tech", "AAPL": "consumer-tech", "NFLX": "consumer-tech",
+    "ROKU": "consumer-tech", "SNAP": "consumer-tech", "SPOT": "consumer-tech",
+    "PINS": "consumer-tech", "U": "consumer-tech", "APP": "consumer-tech",
+    "ELF": "consumer-tech", "ABNB": "consumer-tech", "SHOP": "consumer-tech",
+}
+
+SUB_SECTOR_LABELS = {
+    "semiconductors": "halvledere",
+    "software": "programvare",
+    "cloud": "cloud",
+    "fintech": "fintech",
+    "biotech": "biotek",
+    "consumer-tech": "forbrukerteknologi",
+}
 
 
 def compute_correlation_matrix(market_data, tickers):
@@ -64,6 +104,18 @@ def find_correlated_pairs(corr_matrix, threshold=HEATMAP_MIN_THRESHOLD):
                 pass
 
     return sorted(pairs, key=lambda x: -x["correlation"])
+
+
+def check_sub_sector_concentration(ticker, held_tickers, max_count=MAX_SUB_SECTOR_POSITIONS):
+    """
+    Check if adding ticker would exceed max sub-sector positions.
+    Returns (is_blocked, sub_sector, current_count).
+    """
+    sub_sector = SUB_SECTOR_MAP.get(ticker)
+    if not sub_sector:
+        return False, None, 0
+    count = sum(1 for t in held_tickers if SUB_SECTOR_MAP.get(t) == sub_sector)
+    return (count >= max_count), sub_sector, count
 
 
 def check_correlation_against_held(ticker, held_tickers, corr_pairs, threshold=CORRELATION_THRESHOLD):
@@ -149,7 +201,7 @@ def format_correlation_heatmap(corr_pairs, held_tickers):
         a, b, corr = p["ticker_a"], p["ticker_b"], p["correlation"]
         filled = int(corr * 16)
         bar = "█" * filled + "░" * (16 - filled)
-        flag = " ⚠️" if corr >= CORRELATION_THRESHOLD else ""
+        flag = " ⚠️" if corr >= 0.75 else ""
         lines.append(f"  {a:6} ↔ {b:6}: {corr:.0%} [{bar}]{flag}")
 
     return "\n".join(lines)

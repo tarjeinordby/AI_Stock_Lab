@@ -28,9 +28,11 @@ from modules.risk import (
 )
 from modules.correlation import (
     check_correlation_against_held,
+    check_sub_sector_concentration,
     compute_correlation_matrix,
     filter_correlated_sells,
     find_correlated_pairs,
+    SUB_SECTOR_LABELS,
 )
 from modules.scoring import (
     STRATEGIES,
@@ -333,8 +335,8 @@ def run_strategy_execution(
             if trade:
                 sells.append(trade)
                 log_msg = (
-                    f"{cs['sell_ticker']} og {cs['keep_ticker']} er "
-                    f"{cs['correlation']:.0%} korrelert — holder kun {cs['keep_ticker']}"
+                    f"❌ {cs['sell_ticker']} solgt — "
+                    f"{cs['correlation']:.0%} korrelert med {cs['keep_ticker']}"
                 )
                 correlation_log.append(log_msg)
                 print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
@@ -416,13 +418,25 @@ def run_strategy_execution(
                 print(f"  [{strategy_name}] SKIP {ticker}: sektorbegrensning {sector} ({sector_counts.get(sector)}≥2)")
                 continue
 
-            # Correlation filter: skip if >85% correlated with an existing position
             held_set = set(state["positions"].keys())
+
+            # Sub-sector concentration filter: max 3 per sub-sector
+            is_concentrated, sub_sector, sub_count = check_sub_sector_concentration(
+                ticker, held_set
+            )
+            if is_concentrated:
+                sub_label = SUB_SECTOR_LABELS.get(sub_sector, sub_sector)
+                log_msg = f"❌ {ticker} ekskludert — {sub_count} {sub_label} allerede"
+                correlation_log.append(log_msg)
+                print(f"  [{strategy_name}] SKIP {ticker}: {sub_count} {sub_label} allerede")
+                continue
+
+            # Correlation filter: skip if >75% correlated with an existing position
             is_corr, corr_with, corr_val = check_correlation_against_held(
                 ticker, held_set, corr_pairs
             )
             if is_corr:
-                log_msg = f"{ticker} og {corr_with} er {corr_val:.0%} korrelert — holder kun {corr_with}"
+                log_msg = f"❌ {ticker} ekskludert — {corr_val:.0%} korrelert med {corr_with}"
                 correlation_log.append(log_msg)
                 print(f"  [{strategy_name}] SKIP {ticker}: {log_msg}")
                 continue
