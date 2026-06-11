@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import signal
 import time
 from datetime import datetime, timezone
 
@@ -10,13 +11,20 @@ from modules.state import SENTIMENT_CACHE_FILE, load_json, safe_float, save_json
 
 SENTIMENT_MODEL = "claude-sonnet-4-5"
 CACHE_MAX_AGE_HOURS = 24
-MAX_SENTIMENT_CALLS = 10      # maks API-kall per kjøring
-INTER_CALL_SLEEP = 3          # sekunder mellom hvert kall
-RATE_LIMIT_RETRY_WAIT = 60    # sekunder å vente ved 429-feil
+MAX_SENTIMENT_CALLS = 5
+PER_CALL_TIMEOUT = 10   # seconds — passed to Anthropic SDK
+TOTAL_TIMEOUT = 60      # seconds — hard wall-clock cap for entire module
 
 _NEUTRAL = {"raw_score": 0.0, "score": 0.5, "summary": "Ingen data", "key_events": []}
-
 _WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search"}
+
+
+class _SentimentTimeout(Exception):
+    pass
+
+
+def _alarm_handler(signum, frame):
+    raise _SentimentTimeout("Sentiment total timeout")
 
 
 def _cache_is_fresh(entry):
@@ -34,23 +42,18 @@ def _get_client():
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return None
-    return anthropic.Anthropic(api_key=api_key)
+    return anthropic.Anthropic(api_key=api_key, timeout=PER_CALL_TIMEOUT)
 
 
-def run_claude_web_search(client, model, prompt, max_tokens=1024):
-    """
-    Run Claude with web_search_20250305 tool, handling the agentic loop.
-    Returns the final text response.
-    """
+def _run_web_search(client, prompt):
     messages = [{"role": "user", "content": prompt}]
-    tools = [_WEB_SEARCH_TOOL]
     last_text = ""
 
-    for _ in range(10):
+    for _ in range(5):
         response = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            tools=tools,
+            model=SENTIMENT_MODEL,
+            max_tokens=512,
+            tools=[_WEB_SEARCH_TOOL],
             messages=messages,
         )
 
@@ -65,11 +68,7 @@ def run_claude_web_search(client, model, prompt, max_tokens=1024):
             return last_text
 
         if response.stop_reason == "tool_use":
-            # Add assistant turn (includes tool_use blocks)
             messages.append({"role": "assistant", "content": response.content})
-
-            # For web_search_20250305, results are filled server-side.
-            # Pass back empty tool_result to continue the loop.
             tool_results = [
                 {"type": "tool_result", "tool_use_id": b.id, "content": ""}
                 for b in response.content
@@ -84,7 +83,6 @@ def run_claude_web_search(client, model, prompt, max_tokens=1024):
 
 
 def _parse_json(text):
-    """Extract first JSON object from text."""
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         try:
@@ -107,8 +105,8 @@ def _fetch_single(client, ticker):
         "Respond ONLY with a JSON object: "
         '{"score": float, "summary": "1-2 sentence assessment", "key_events": ["event1", "event2"]}'
     )
-    def _call():
-        raw = run_claude_web_search(client, SENTIMENT_MODEL, prompt, max_tokens=512)
+    try:
+        raw = _run_web_search(client, prompt)
         parsed = _parse_json(raw)
         if not parsed or "score" not in parsed:
             return None, "Ugyldig JSON-respons fra Claude"
@@ -120,30 +118,25 @@ def _fetch_single(client, ticker):
             "key_events": (parsed.get("key_events") or [])[:5],
             "source": "claude",
         }, None
-
-    try:
-        return _call()
     except anthropic.RateLimitError:
-        print(f"  Rate limit (429) — venter {RATE_LIMIT_RETRY_WAIT}s før retry ({ticker})")
-        time.sleep(RATE_LIMIT_RETRY_WAIT)
-        try:
-            return _call()
-        except Exception as e:
-            err = str(e)[:120]
-            print(f"  Sentiment feil {ticker} (etter retry): {err}")
-            return None, err
+        print(f"  {ticker}: 429 rate limit — fallback 0.5")
+        return None, "RateLimitError"
+    except anthropic.APITimeoutError:
+        print(f"  {ticker}: timeout ({PER_CALL_TIMEOUT}s) — fallback 0.5")
+        return None, "APITimeoutError"
+    except _SentimentTimeout:
+        raise  # let total-timeout propagate
     except Exception as e:
         err = str(e)[:120]
-        print(f"  Sentiment feil {ticker}: {err}")
+        print(f"  {ticker}: feil — {err}")
         return None, err
 
 
 def fetch_sentiment_bulk(tickers):
     """
     Fetch news sentiment for tickers using Claude Sonnet + web_search.
+    Hard-capped at TOTAL_TIMEOUT seconds total and MAX_SENTIMENT_CALLS API calls.
     Returns {ticker: {raw_score, score, summary, key_events, source, error?}}.
-    source is 'claude' when fetched via API, 'fallback' when using neutral 0.5.
-    Results cached for 24 hours. Fallback cache entries are re-fetched when API key is available.
     """
     if not tickers:
         return {}
@@ -158,7 +151,6 @@ def fetch_sentiment_bulk(tickers):
     for ticker in tickers:
         entry = cache.get(ticker)
         if entry and _cache_is_fresh(entry):
-            # Re-fetch if cached as fallback and API key is now available
             if entry.get("source") == "fallback" and api_key_set:
                 to_fetch.append(ticker)
             else:
@@ -166,23 +158,19 @@ def fetch_sentiment_bulk(tickers):
         else:
             to_fetch.append(ticker)
 
-    # Cap antall API-kall — tickers er allerede prioritert (eide aksjer først)
-    skipped = []
     if len(to_fetch) > MAX_SENTIMENT_CALLS:
         skipped = to_fetch[MAX_SENTIMENT_CALLS:]
         to_fetch = to_fetch[:MAX_SENTIMENT_CALLS]
-        # Bruk gammel cache-verdi (selv om fallback) for de som hoppes over
         for ticker in skipped:
             entry = cache.get(ticker)
             if entry:
                 result[ticker] = entry
+    else:
+        skipped = []
 
-    cache_count = len(result) - len(skipped)
-    fallback_refetch = sum(1 for t in to_fetch if cache.get(t, {}).get("source") == "fallback")
+    cache_count = len(result)
     skip_msg = f", {len(skipped)} hoppet over (cap={MAX_SENTIMENT_CALLS})" if skipped else ""
-    print(f"Sentiment: {cache_count} fra cache, {len(to_fetch)} hentes nå"
-          + (f" (inkl. {fallback_refetch} fallback re-fetch)" if fallback_refetch else "")
-          + skip_msg)
+    print(f"Sentiment: {cache_count} fra cache, {len(to_fetch)} hentes nå{skip_msg}")
 
     client = _get_client()
     if not client and to_fetch:
@@ -201,26 +189,33 @@ def fetch_sentiment_bulk(tickers):
     elif not client:
         return result
 
+    old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+    signal.alarm(TOTAL_TIMEOUT)
     errors = []
-    for i, ticker in enumerate(to_fetch):
-        data, err = _fetch_single(client, ticker)
-        if data is None:
-            data = {**_NEUTRAL, "source": "fallback"}
-            if err:
-                data["error"] = err
-                errors.append(f"{ticker}: {err}")
-        data["fetched_at"] = datetime.now(timezone.utc).isoformat()
-        cache[ticker] = data
-        result[ticker] = data
-        src_tag = "Claude ✓" if data.get("source") == "claude" else "fallback"
-        print(f"  {ticker}: {data['score']:.2f} ({src_tag}) — {data.get('summary', '')[:60]}")
-
-        if (i + 1) % 5 == 0:
-            save_json(cache, SENTIMENT_CACHE_FILE)
-
-        # Pause mellom kall for å unngå rate limit
-        if i < len(to_fetch) - 1:
-            time.sleep(INTER_CALL_SLEEP)
+    try:
+        for ticker in to_fetch:
+            data, err = _fetch_single(client, ticker)
+            if data is None:
+                data = {**_NEUTRAL, "source": "fallback"}
+                if err:
+                    data["error"] = err
+                    errors.append(f"{ticker}: {err}")
+            data["fetched_at"] = datetime.now(timezone.utc).isoformat()
+            cache[ticker] = data
+            result[ticker] = data
+            src_tag = "Claude ✓" if data.get("source") == "claude" else "fallback"
+            print(f"  {ticker}: {data['score']:.2f} ({src_tag}) — {data.get('summary', '')[:60]}")
+    except _SentimentTimeout:
+        print(f"Sentiment: total timeout ({TOTAL_TIMEOUT}s) nådd — avbryter")
+        for ticker in to_fetch:
+            if ticker not in result:
+                entry = {**_NEUTRAL, "source": "fallback", "error": "total timeout",
+                         "fetched_at": datetime.now(timezone.utc).isoformat()}
+                cache[ticker] = entry
+                result[ticker] = entry
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
     save_json(cache, SENTIMENT_CACHE_FILE)
 
