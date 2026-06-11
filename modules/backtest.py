@@ -431,7 +431,7 @@ def _compute_stats(monthly_values, spy_monthly_values, strategy_name):
 def run_backtest():
     """
     Simulate all 6 strategies from 2015-2025.
-    Saves to data_v3/backtest/results.json and prints summary table.
+    Saves to data_v4/backtest/results.json and prints summary table.
     """
     _ensure_dir()
 

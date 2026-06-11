@@ -1,0 +1,46 @@
+{
+  "cash": 4988.828901599936,
+  "cooldowns": {},
+  "created_at": "2026-06-09T17:38:26.562618+00:00",
+  "highest_portfolio_value": 10082.196335860763,
+  "last_execution_date": "2026-06-11",
+  "positions": {
+    "ASML": {
+      "avg_price": 1742.800048828125,
+      "buy_date": "2026-06-09",
+      "highest_price": 1777.77001953125,
+      "last_price": 1733.0,
+      "market_value": 1350.0442507957866,
+      "shares": 0.7790214949773726
+    },
+    "DELL": {
+      "avg_price": 372.9549865722656,
+      "buy_date": "2026-06-09",
+      "highest_price": 387.5799865722656,
+      "last_price": 369.8699951171875,
+      "market_value": 925.4102239570874,
+      "shares": 2.5019878232184953
+    },
+    "ROKU": {
+      "avg_price": 120.0199966430664,
+      "buy_date": "2026-06-09",
+      "highest_price": 120.91000366210938,
+      "last_price": 116.91000366210938,
+      "market_value": 1322.4981350463704,
+      "shares": 11.31210412813453
+    },
+    "TSM": {
+      "avg_price": 419.3299865722656,
+      "buy_date": "2026-06-09",
+      "highest_price": 427.9200134277344,
+      "last_price": 408.760009765625,
+      "market_value": 1323.4559326329418,
+      "shares": 3.2377333912673736
+    }
+  },
+  "strategy": "Quality_Momentum_AI",
+  "weekly_meta": {
+    "buys_this_week": 4,
+    "iso_week": "2026-W24"
+  }
+}

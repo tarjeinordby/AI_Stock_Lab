@@ -1,0 +1,36 @@
+{
+  "cash": 6561.476560283191,
+  "cooldowns": {},
+  "created_at": "2026-06-11T07:36:57.552023+00:00",
+  "highest_portfolio_value": 10000.0,
+  "last_execution_date": "2026-06-11",
+  "positions": {
+    "ASML": {
+      "avg_price": 1733.0,
+      "buy_date": "2026-06-11",
+      "highest_price": 1733.0,
+      "is_partial": true,
+      "last_price": 1733.0,
+      "market_value": 2290.058900910295,
+      "pyramid_min_price": 1767.66,
+      "pyramid_remaining_value": 1526.71,
+      "shares": 1.3214419509003434
+    },
+    "TSM": {
+      "avg_price": 408.760009765625,
+      "buy_date": "2026-06-11",
+      "highest_price": 408.760009765625,
+      "is_partial": true,
+      "last_price": 408.760009765625,
+      "market_value": 1145.0294504551475,
+      "pyramid_min_price": 416.9352,
+      "pyramid_remaining_value": 1526.71,
+      "shares": 2.8012266931681626
+    }
+  },
+  "strategy": "MegaCap_AI",
+  "weekly_meta": {
+    "buys_this_week": 2,
+    "iso_week": "2026-W24"
+  }
+}

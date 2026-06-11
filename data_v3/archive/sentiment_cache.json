@@ -1,0 +1,182 @@
+{
+  "ABNB": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897121+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "APP": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897169+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "ARM": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897187+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "ASML": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897139+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "BILL": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897133+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "CRWD": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897157+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "DDOG": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897181+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "DELL": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897163+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "IONQ": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897114+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "MDB": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897146+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "NET": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897152+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "NVO": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897127+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "OKTA": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897086+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "PANW": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897175+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "ROKU": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897107+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "SMCI": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897193+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "SNOW": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897093+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "SOFI": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897075+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "TOST": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897047+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "TSM": {
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897101+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  }
+}

@@ -10,7 +10,7 @@ import pandas as pd
 OSLO = ZoneInfo("Europe/Oslo")
 NY = ZoneInfo("America/New_York")
 
-DATA_DIR = "data_v3"
+DATA_DIR = "data_v4"
 STATE_DIR = f"{DATA_DIR}/state"
 SIGNALS_DIR = f"{DATA_DIR}/signals"
 REPORTS_DIR = f"{DATA_DIR}/reports"

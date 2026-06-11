@@ -1,0 +1,38 @@
+{
+  "cash": 4180.828281136266,
+  "cooldowns": {},
+  "created_at": "2026-06-09T17:38:27.949740+00:00",
+  "highest_portfolio_value": 10103.661815360772,
+  "last_execution_date": "2026-06-11",
+  "positions": {
+    "ASML": {
+      "avg_price": 1742.800048828125,
+      "buy_date": "2026-06-09",
+      "highest_price": 1777.77001953125,
+      "last_price": 1733.0,
+      "market_value": 2565.8735721772214,
+      "shares": 1.4805964063342305
+    },
+    "ROKU": {
+      "avg_price": 120.0199966430664,
+      "buy_date": "2026-06-09",
+      "highest_price": 120.91000366210938,
+      "last_price": 116.91000366210938,
+      "market_value": 635.6812447329859,
+      "shares": 5.4373554428260675
+    },
+    "TSM": {
+      "avg_price": 419.3299865722656,
+      "buy_date": "2026-06-09",
+      "highest_price": 427.9200134277344,
+      "last_price": 408.760009765625,
+      "market_value": 2515.340219020487,
+      "shares": 6.153586845402841
+    }
+  },
+  "strategy": "MegaCap_AI",
+  "weekly_meta": {
+    "buys_this_week": 3,
+    "iso_week": "2026-W24"
+  }
+}
