@@ -1,7 +1,7 @@
 {
   "ABNB": {
-    "error": "Ugyldig JSON-respons fra Claude",
-    "fetched_at": "2026-06-11T12:40:14.942449+00:00",
+    "error": "APITimeoutError",
+    "fetched_at": "2026-06-11T19:28:46.259392+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -9,8 +9,8 @@
     "summary": "Ingen data"
   },
   "APP": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:59.091032+00:00",
+    "error": "APITimeoutError",
+    "fetched_at": "2026-06-11T19:30:48.525667+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -178,6 +178,15 @@
     "source": "claude",
     "summary": "PANW beat Q3 earnings expectations with strong revenue growth and raised guidance, driving multiple analyst upgrades to $300-375 targets. However, stock declined 2-3% post-earnings on profit-taking, sector volatility from AI disruption fears (Anthropic's Claude), and concerns over acquisition-driven growth quality."
   },
+  "QBTS": {
+    "error": "Connection error.",
+    "fetched_at": "2026-06-11T19:29:14.843180+00:00",
+    "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
   "ROKU": {
     "fetched_at": "2026-06-11T09:35:29.583626+00:00",
     "key_events": [
@@ -206,8 +215,8 @@
     "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T12:38:10.711976+00:00",
+    "error": "APITimeoutError",
+    "fetched_at": "2026-06-11T19:29:46.347583+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -229,13 +238,16 @@
     "summary": "SOFI faces mixed sentiment with strong Q1 earnings (43% revenue growth, record member additions) offset by unchanged 2026 guidance, a Truist price target cut to $17, March Muddy Waters short report alleging accounting irregularities, and 27% year-over-year decline in technology platform revenue from client losses."
   },
   "TOST": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:56.348692+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T19:30:17.141508+00:00",
+    "key_events": [
+      "Q1 2026 earnings miss: reported $0.20 EPS vs. $0.25 expected; stock dropped 15% post-earnings on May 8",
+      "Rothschild downgraded TOST from Buy to Neutral on May 12; multiple analysts lowered price targets following earnings",
+      "Company raised full-year 2026 adjusted EBITDA guidance to $775-795M and announced strategic partnership with Alinea Group"
+    ],
+    "raw_score": -0.2,
+    "score": 0.4,
+    "source": "claude",
+    "summary": "TOST missed Q1 EPS estimates and faces multiple analyst downgrades amid competitive pressure and hardware cost concerns, despite raising full-year guidance and strong recurring revenue growth."
   },
   "TSM": {
     "fetched_at": "2026-06-11T09:30:06.983031+00:00",
