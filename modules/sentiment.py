@@ -146,7 +146,7 @@ def fetch_sentiment_bulk(tickers):
     print(f"Sentiment: {len(result)} fra cache, {len(to_fetch)} hentes nå")
 
     client = _get_client()
-    if not client:
+    if not client and to_fetch:
         print("ANTHROPIC_API_KEY mangler — bruker nøytral score (0.5) for alle")
         for ticker in to_fetch:
             entry = {
@@ -158,6 +158,8 @@ def fetch_sentiment_bulk(tickers):
             cache[ticker] = entry
             result[ticker] = entry
         save_json(cache, SENTIMENT_CACHE_FILE)
+        return result
+    elif not client:
         return result
 
     errors = []

@@ -1,212 +1,182 @@
 {
   "ABNB": {
-    "fetched_at": "2026-06-10T16:04:10.486779+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897121+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "APP": {
-    "fetched_at": "2026-06-10T16:04:10.486759+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897169+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "ARM": {
-    "fetched_at": "2026-06-10T16:04:10.486809+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897187+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "ASML": {
-    "fetched_at": "2026-06-10T16:04:10.486726+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897139+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "BILL": {
-    "fetched_at": "2026-06-10T16:58:27.470850+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897133+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "CELH": {
-    "fetched_at": "2026-06-10T16:04:10.486822+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "COIN": {
-    "fetched_at": "2026-06-10T16:58:27.470854+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "CRWD": {
-    "fetched_at": "2026-06-10T16:04:10.486794+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897157+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "DDOG": {
-    "fetched_at": "2026-06-10T16:04:10.486764+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897181+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "DELL": {
-    "fetched_at": "2026-06-10T16:04:10.486804+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897163+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "HIMS": {
-    "fetched_at": "2026-06-10T16:58:27.470856+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "IONQ": {
-    "fetched_at": "2026-06-10T16:04:10.486789+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897114+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "MDB": {
-    "fetched_at": "2026-06-10T16:04:10.486800+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897146+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "NET": {
-    "fetched_at": "2026-06-10T16:04:10.486769+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897152+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "NVO": {
-    "fetched_at": "2026-06-10T16:04:10.486846+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897127+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-06-10T16:04:10.486832+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897086+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "PANW": {
-    "fetched_at": "2026-06-10T16:04:10.486753+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897175+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "PLTR": {
-    "fetched_at": "2026-06-10T16:04:10.486775+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "QBTS": {
-    "fetched_at": "2026-06-10T16:04:10.486746+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "RBLX": {
-    "fetched_at": "2026-06-10T16:58:27.470852+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-06-10T16:04:10.486827+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897107+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "SE": {
-    "fetched_at": "2026-06-10T16:04:10.486784+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "SMCI": {
-    "fetched_at": "2026-06-10T16:58:27.470844+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897193+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "SNOW": {
-    "fetched_at": "2026-06-10T16:04:10.486836+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897093+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "SOFI": {
-    "fetched_at": "2026-06-10T16:04:10.486841+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897075+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "TOST": {
-    "fetched_at": "2026-06-10T16:04:10.486813+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897047+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   },
   "TSM": {
-    "fetched_at": "2026-06-10T16:04:10.486818+00:00",
+    "error": "ANTHROPIC_API_KEY mangler",
+    "fetched_at": "2026-06-11T07:28:45.897101+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "U": {
-    "fetched_at": "2026-06-10T16:58:27.470847+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "UBER": {
-    "fetched_at": "2026-06-10T16:58:27.470859+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "summary": "Ingen data"
-  },
-  "ZS": {
-    "fetched_at": "2026-06-10T16:58:27.470834+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
+    "source": "fallback",
     "summary": "Ingen data"
   }
 }
