@@ -338,7 +338,7 @@ def _build_positions_summary(results):
 
 def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
                        macro=None, earnings_analysis=None, active_weights=None,
-                       sentiment_scores=None, quality_report=None):
+                       sentiment_scores=None, quality_report=None, ai_cost_usd=0.0):
     regime = signal.get("regime", {})
     regime_name = regime.get("regime", "unknown")
     regime_label = REGIME_LABELS.get(regime_name, regime_name.upper())
@@ -402,6 +402,8 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
     lines.append(_build_positions_summary(results))
     lines.append("\n💡 Faktiske handler bør vente til 09:35 ET for bedre spread og likviditet.")
     lines.append("⚠️ Paper trading — ikke ekte ordre.")
+    if ai_cost_usd and ai_cost_usd > 0:
+        lines.append(f"💰 AI-kostnad i dag: ~${ai_cost_usd:.2f}")
 
     return "\n".join(lines)
 
@@ -410,7 +412,7 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
 # WEEKLY REPORT (Mondays)
 # ============================================================
 
-def build_weekly_report(results, fundamentals_cache=None, corr_pairs=None):
+def build_weekly_report(results, fundamentals_cache=None, corr_pairs=None, weekly_analyses=None):
     lines = ["\n📅 UKENTLIG DEEP-DIVE"]
 
     for r in results:
@@ -451,6 +453,28 @@ def build_weekly_report(results, fundamentals_cache=None, corr_pairs=None):
             for sector, val in sorted(sector_exposure.items(), key=lambda x: -x[1]):
                 pct = val / total_val if total_val > 0 else 0
                 lines.append(f"    {sector}: {format_pct(pct, 1)}")
+
+    # Weekly AI thesis review (Layer 2 — Sonnet)
+    if weekly_analyses:
+        lines.append("\n🧠 Ukentlig tese-gjennomgang (Sonnet):")
+        action_icons = {"hold": "⏸", "add": "➕", "reduce": "⬇️", "sell": "🔴"}
+        conviction_icons = {"high": "●●●", "medium": "●●○", "low": "●○○"}
+        for ticker, wa in sorted(weekly_analyses.items()):
+            if wa.get("source") == "fallback":
+                continue
+            action     = wa.get("action", "hold")
+            conviction = wa.get("conviction", "low")
+            intact     = "✓" if wa.get("thesis_intact") else "✗"
+            icon       = action_icons.get(action, "•")
+            conv_str   = conviction_icons.get(conviction, conviction)
+            reasoning  = wa.get("reasoning", "")[:80]
+            lines.append(f"  {icon} {ticker} [{intact} tese | {conv_str}]: {reasoning}")
+            risks = wa.get("risks", [])
+            cats  = wa.get("catalysts", [])
+            if risks:
+                lines.append(f"    Risiko: {' | '.join(risks)}")
+            if cats:
+                lines.append(f"    Katalysator: {' | '.join(cats)}")
 
     # Correlation heatmap across all held positions
     if corr_pairs:
@@ -526,15 +550,20 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
                        drawdown_warnings, fundamentals_cache=None, macro=None,
                        earnings_analysis=None, active_weights=None, corr_pairs=None,
-                       sentiment_scores=None, quality_report=None):
+                       sentiment_scores=None, quality_report=None,
+                       weekly_analyses=None, ai_cost_usd=0.0):
     msg = build_daily_report(
         results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
         macro=macro, earnings_analysis=earnings_analysis, active_weights=active_weights,
         sentiment_scores=sentiment_scores, quality_report=quality_report,
+        ai_cost_usd=ai_cost_usd,
     )
 
     if is_monday():
-        msg += "\n" + build_weekly_report(results, fundamentals_cache, corr_pairs=corr_pairs)
+        msg += "\n" + build_weekly_report(
+            results, fundamentals_cache, corr_pairs=corr_pairs,
+            weekly_analyses=weekly_analyses,
+        )
 
     if is_first_monday_of_month():
         msg += "\n" + build_monthly_report(results, spy_ret, qqq_ret)

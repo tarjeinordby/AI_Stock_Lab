@@ -19,6 +19,7 @@ PERFORMANCE_FILE = f"{DATA_DIR}/performance.csv"
 BENCHMARK_FILE = f"{STATE_DIR}/benchmarks.json"
 FUNDAMENTALS_CACHE_FILE = f"{STATE_DIR}/fundamentals_cache.json"
 SENTIMENT_CACHE_FILE = f"{STATE_DIR}/sentiment_cache.json"
+WEEKLY_ANALYSIS_CACHE_FILE = f"{STATE_DIR}/weekly_analysis_cache.json"
 GLOBAL_STATE_FILE = f"{STATE_DIR}/_global.json"
 
 START_CAPITAL = 10_000.0

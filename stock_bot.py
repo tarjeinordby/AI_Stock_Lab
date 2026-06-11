@@ -41,7 +41,9 @@ from modules.scoring import (
     get_regime_weights,
     make_strategy_candidates,
 )
+from modules.reporting import is_monday
 from modules.sentiment import fetch_sentiment_bulk
+from modules.weekly_analysis import fetch_weekly_analysis
 from modules.state import (
     GLOBAL_STATE_FILE,
     PERFORMANCE_FILE,
@@ -288,10 +290,11 @@ def run_signal():
     print(f"Sentiment + earnings fetch for {len(sentiment_tickers)} tickere")
 
     earnings_data = fetch_earnings_bulk(sentiment_tickers)
-    sentiment_scores = fetch_sentiment_bulk(sentiment_tickers)
+    sentiment_scores, sentiment_cost = fetch_sentiment_bulk(sentiment_tickers)
 
-    # Deep earnings analysis (Claude Opus) for tickers with earnings within 14 days
-    deep_earnings = fetch_deep_earnings_analysis(earnings_data)
+    # Layer 3: Opus earnings deep-dive for tickers with earnings within 14 days
+    deep_earnings, earnings_ai_cost = fetch_deep_earnings_analysis(earnings_data)
+    signal_ai_cost = sentiment_cost + earnings_ai_cost
 
     # Expand to full universe (others get neutral)
     full_earnings = {t: neutral_earnings[t] for t in all_tickers}
@@ -358,6 +361,7 @@ def run_signal():
             for t, d in sentiment_scores.items()
         },
         "quality_report": quality_report,
+        "signal_ai_cost_usd": round(signal_ai_cost, 6),
     }
 
     date = today_str()
@@ -705,6 +709,23 @@ def run_execute():
 
     earnings_analysis = signal.get("earnings_analysis", {})
 
+    # Layer 2: Weekly Sonnet thesis review — kun mandager
+    weekly_ai_cost = 0.0
+    weekly_analyses = {}
+    if is_monday():
+        held_positions = {}
+        for strat_name in STRATEGIES:
+            strat_state = load_strategy_state(strat_name)
+            for ticker, pos in strat_state.get("positions", {}).items():
+                if ticker not in held_positions:
+                    held_positions[ticker] = pos
+        if held_positions:
+            weekly_analyses, weekly_ai_cost = fetch_weekly_analysis(held_positions)
+
+    # Total AI cost this run (signal cost from yesterday's signal + today's execute costs)
+    signal_ai_cost = safe_float(signal.get("signal_ai_cost_usd"), 0.0)
+    total_ai_cost = signal_ai_cost + weekly_ai_cost
+
     message = build_full_message(
         results=results,
         signal=signal,
@@ -719,6 +740,8 @@ def run_execute():
         corr_pairs=corr_pairs,
         sentiment_scores=sentiment_scores,
         quality_report=quality_report,
+        weekly_analyses=weekly_analyses,
+        ai_cost_usd=total_ai_cost,
     )
 
     send_telegram(message)
