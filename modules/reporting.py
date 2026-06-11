@@ -103,6 +103,29 @@ def _build_leaderboard(results, spy_ret, qqq_ret):
     return "\n".join(lines)
 
 
+def _build_data_quality_section(quality_report):
+    """Format data quality alerts. Only shown if issues exist."""
+    if not quality_report:
+        return ""
+    price_flags = quality_report.get("price_flags", [])
+    volume_excluded = quality_report.get("volume_excluded", [])
+    split_detected = quality_report.get("split_detected", [])
+    total = len(price_flags) + len(volume_excluded) + len(split_detected)
+    if total == 0:
+        return ""
+
+    lines = [f"\n⚠️ DATAKVALITET: {total} aksjer flagget i dag"]
+    for f in price_flags:
+        sign = "+" if f["pct_change"] > 0 else ""
+        lines.append(f"  {f['ticker']}: {sign}{f['pct_change']:.0%} (mistenkelig)")
+    for v in volume_excluded:
+        lines.append(f"  {v['ticker']}: 0 volum {v['zero_days']} dager")
+    for s in split_detected:
+        ratio_str = f" — {s['ratio']}:1 split?" if s.get("ratio") else ""
+        lines.append(f"  {s['ticker']}: {s['pct_drop']:.0%}{ratio_str}")
+    return "\n".join(lines)
+
+
 def _build_sentiment_summary(sentiment_scores, held_tickers=None):
     """Format sentiment line: 🤖 Sentiment: NVDA +0.7 (Claude) | TSM +0.4 (Claude) | ARM 0.5 (fallback)"""
     if not sentiment_scores:
@@ -315,7 +338,7 @@ def _build_positions_summary(results):
 
 def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
                        macro=None, earnings_analysis=None, active_weights=None,
-                       sentiment_scores=None):
+                       sentiment_scores=None, quality_report=None):
     regime = signal.get("regime", {})
     regime_name = regime.get("regime", "unknown")
     regime_label = REGIME_LABELS.get(regime_name, regime_name.upper())
@@ -371,6 +394,10 @@ def build_daily_report(results, signal, signal_path, spy_ret, qqq_ret, drawdown_
         lines.append("\n🔴 DRAWDOWN ADVARSLER:")
         for w in drawdown_warnings:
             lines.append(f"  {w}")
+
+    quality_block = _build_data_quality_section(quality_report)
+    if quality_block:
+        lines.append(quality_block)
 
     lines.append(_build_positions_summary(results))
     lines.append("\n💡 Faktiske handler bør vente til 09:35 ET for bedre spread og likviditet.")
@@ -499,11 +526,11 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
                        drawdown_warnings, fundamentals_cache=None, macro=None,
                        earnings_analysis=None, active_weights=None, corr_pairs=None,
-                       sentiment_scores=None):
+                       sentiment_scores=None, quality_report=None):
     msg = build_daily_report(
         results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
         macro=macro, earnings_analysis=earnings_analysis, active_weights=active_weights,
-        sentiment_scores=sentiment_scores,
+        sentiment_scores=sentiment_scores, quality_report=quality_report,
     )
 
     if is_monday():

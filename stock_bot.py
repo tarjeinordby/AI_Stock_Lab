@@ -7,7 +7,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk
-from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix
+from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, run_data_quality_checks
 from modules.macro import get_macro_status
 from modules.portfolio import (
     build_target_weights,
@@ -143,6 +143,41 @@ def benchmark_return(benchmark_state, symbol):
 
 
 # ============================================================
+# SPLIT ADJUSTMENTS
+# ============================================================
+
+def apply_split_adjustments(split_detected):
+    """
+    For confirmed splits, adjust shares and avg_price in all strategy states.
+    Returns list of adjustment records for logging.
+    """
+    adjustments = []
+    for split in split_detected:
+        ratio = split.get("ratio")
+        if not ratio:
+            continue
+        ticker = split["ticker"]
+        for strat_name in STRATEGIES:
+            state = load_strategy_state(strat_name)
+            pos = state["positions"].get(ticker)
+            if not pos:
+                continue
+            old_shares = pos.get("shares", 0)
+            old_avg = pos.get("avg_price", 0)
+            pos["shares"] = round(old_shares * ratio, 6)
+            pos["avg_price"] = round(old_avg / ratio, 6)
+            if pos.get("pyramid_min_price"):
+                pos["pyramid_min_price"] = round(pos["pyramid_min_price"] / ratio, 6)
+            save_strategy_state(strat_name, state)
+            adjustments.append({
+                "ticker": ticker, "strategy": strat_name, "ratio": ratio,
+                "old_shares": old_shares, "new_shares": pos["shares"],
+            })
+            print(f"  Split {ticker} {ratio}:1 [{strat_name}]: {old_shares:.2f} → {pos['shares']:.2f} aksjer")
+    return adjustments
+
+
+# ============================================================
 # SIGNAL MODE
 # ============================================================
 
@@ -153,6 +188,7 @@ def run_signal():
 
     universe = build_universe()
     market_data = download_daily_data(universe)
+    market_data, quality_report = run_data_quality_checks(market_data)
 
     # Benchmark analysis
     spy_data, qqq_data = None, None
@@ -272,6 +308,7 @@ def run_signal():
             t: {k: v for k, v in d.items() if k in ("score", "source", "error", "summary")}
             for t, d in sentiment_scores.items()
         },
+        "quality_report": quality_report,
     }
 
     date = today_str()
@@ -527,10 +564,17 @@ def run_execute():
     macro = get_macro_status()
     macro_mult = macro.get("exposure_mult", 1.0)
 
-    # Load precomputed correlation pairs, active weights and sentiment from signal
+    # Load precomputed correlation pairs, active weights, sentiment and quality from signal
     corr_pairs = signal.get("corr_pairs", [])
     active_weights = signal.get("active_weights")
     sentiment_scores = signal.get("sentiment_scores", {})
+    quality_report = signal.get("quality_report", {})
+
+    # Apply split adjustments before running strategies
+    split_detected = quality_report.get("split_detected", [])
+    if split_detected:
+        print(f"Mulige splits oppdaget: {[s['ticker'] for s in split_detected]}")
+        apply_split_adjustments(split_detected)
 
     # --- Pre-market filter ---
     # Collect held tickers + top candidates from signal as prev_prices reference
@@ -610,6 +654,7 @@ def run_execute():
         active_weights=active_weights,
         corr_pairs=corr_pairs,
         sentiment_scores=sentiment_scores,
+        quality_report=quality_report,
     )
 
     send_telegram(message)
