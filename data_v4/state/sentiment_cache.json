@@ -18,22 +18,32 @@
     "summary": "Ingen data"
   },
   "ARM": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:38.108788+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T09:32:42.206685+00:00",
+    "key_events": [
+      "Mizuho raised price target to $500 (from $425) on June 4, citing AGI CPU platform expansion with Oracle and ByteDance, projecting $20B revenue by FY2031",
+      "Q4 FY2026 earnings beat on May 6: record $1.49B revenue (+20% YoY), EPS $0.60 vs $0.582 estimate, but stock fell 10% post-earnings",
+      "Broad semiconductor selloff June 4-5: ARM dropped 4-13% following Broadcom's disappointing AI chip guidance, with SOXX down 10.4%",
+      "Continued weakness June 10: ARM fell another 5% amid risk-off sentiment, trading at 179x forward P/E with high valuation concerns",
+      "Analyst consensus remains 'Buy' but mean price target of ~$245 sits 30-38% below current price, highlighting momentum-driven valuation"
+    ],
+    "raw_score": -0.1,
+    "score": 0.45,
+    "source": "claude",
+    "summary": "ARM faces mixed sentiment with strong Q4 earnings and Mizuho's $500 price target upgrade offset by severe semiconductor sector selloff driven by Broadcom's weak guidance, resulting in 5-13% stock declines and valuation concerns despite 200%+ YTD gains."
   },
   "ASML": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:54.492754+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T09:34:46.495393+00:00",
+    "key_events": [
+      "Q1 2026 earnings beat: \u20ac8.8B revenue (vs \u20ac8.6B est), \u20ac7.15 EPS (vs \u20ac6.57 est), 53% gross margin",
+      "Raised 2026 guidance to \u20ac36-40B (from \u20ac35-40B), citing strong AI-driven demand",
+      "Multiple analyst upgrades: BofA to \u20ac1,921, JPMorgan to \u20ac1,900, Morgan Stanley to \u20ac1,660, all maintaining Buy/Overweight",
+      "Elon Musk endorsement as 'greatest company in Europe' and virtual appearance at June 9-10 tech conference for $55B+ Terafab semiconductor project",
+      "Ongoing regulatory concerns: China export restrictions and proposed MATCH Act threaten ~20% of revenue, but management says 2026 guidance accommodates export control scenarios"
+    ],
+    "raw_score": 0.5,
+    "score": 0.75,
+    "source": "claude",
+    "summary": "ASML sentiment is positive driven by strong Q1 earnings beat, raised 2026 guidance, multiple analyst upgrades with price targets to \u20ac1,900+, and Elon Musk's Terafab partnership spotlight. Regulatory risks around China export controls remain a concern but are priced into guidance."
   },
   "BILL": {
     "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
@@ -63,13 +73,18 @@
     "summary": "Ingen data"
   },
   "DELL": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:35.033994+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T09:30:55.639733+00:00",
+    "key_events": [
+      "Stock dropped ~9% in past week on heavy insider selling ($200M+) and profit-taking after reaching $469 52-week high",
+      "UBS downgraded to Neutral on June 9, citing AI upside already priced in; Morgan Stanley upgraded to Equal Weight June 1",
+      "$9.7B Pentagon contract awarded (May 28) amid Trump conflict-of-interest scrutiny",
+      "Blowout Q1 FY2027 earnings: $4.86 EPS vs $2.96 est, $43.8B revenue (up 87% YoY), raised full-year guidance",
+      "Gross margin compression and supply chain constraints tempering optimism despite strong AI server demand"
+    ],
+    "raw_score": 0.1,
+    "score": 0.55,
+    "source": "claude",
+    "summary": "Mixed sentiment with recent pullback after massive rally. Strong Q1 earnings and $9.7B Pentagon contract offset by UBS downgrade, heavy insider selling, and valuation concerns after 200% YTD gain."
   },
   "IONQ": {
     "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
@@ -131,13 +146,17 @@
     "summary": "PANW beat Q3 earnings expectations with strong revenue growth and raised guidance, driving multiple analyst upgrades to $300-375 targets. However, stock declined 2-3% post-earnings on profit-taking, sector volatility from AI disruption fears (Anthropic's Claude), and concerns over acquisition-driven growth quality."
   },
   "ROKU": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:13:04.661735+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T09:35:29.583626+00:00",
+    "key_events": [
+      "Morgan Stanley raised price target to $170 from $150 on June 4, 2026",
+      "Guggenheim raised price target to $145 from $140 on June 9, 2026",
+      "New home screen rollout with significant revenue potential ($500M+ estimated)",
+      "Strong analyst consensus: 25 Buy, 3 Hold, 1 Sell ratings with median $150 target"
+    ],
+    "raw_score": 0.44,
+    "score": 0.72,
+    "source": "claude",
+    "summary": "ROKU sentiment is positive with multiple recent analyst upgrades from Morgan Stanley ($170 target), Guggenheim ($145), and Piper Sandler, driven by strong new home screen monetization potential and robust platform growth expectations."
   },
   "SMCI": {
     "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
@@ -181,12 +200,17 @@
     "summary": "Ingen data"
   },
   "TSM": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:52.584217+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T09:30:06.983031+00:00",
+    "key_events": [
+      "May 2026 revenue of $13.19B, up 30.1% YoY, driven by strong AI chip demand",
+      "Q1 2026 earnings beat expectations with revenue of $35.9B and raised full-year 2026 revenue growth guidance above 30%",
+      "Announced planned 15% price increase on 3nm chips in H2 2026 due to tight capacity and AI demand",
+      "Republican lawmakers urged ITC to enforce patent case involving TSMC's advanced-node chips (June 10, 2026)",
+      "Analyst consensus remains 'Strong Buy' with average price target of $467.84 (9.3% upside)"
+    ],
+    "raw_score": 0.44,
+    "score": 0.72,
+    "source": "claude",
+    "summary": "TSMC reported strong May revenue growth of 30% YoY and raised 2026 guidance, but faces emerging patent dispute risks from Republican lawmakers urging ITC enforcement, alongside planned 3nm price increases of up to 15% in H2 2026."
   }
 }
