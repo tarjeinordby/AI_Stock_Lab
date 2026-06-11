@@ -40,6 +40,16 @@ def today_str():
     return now_oslo().strftime("%Y-%m-%d")
 
 
+def is_market_open():
+    """True if NYSE is currently open: Mon–Fri, 09:30–16:00 ET."""
+    now = now_ny()
+    if now.weekday() >= 5:          # lørdag=5, søndag=6
+        return False
+    open_time  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    close_time = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return open_time <= now < close_time
+
+
 def ensure_dirs():
     for path in [DATA_DIR, STATE_DIR, SIGNALS_DIR, REPORTS_DIR]:
         os.makedirs(path, exist_ok=True)

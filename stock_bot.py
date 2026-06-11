@@ -55,6 +55,7 @@ from modules.state import (
     load_performance,
     load_strategy_state,
     load_trades,
+    is_market_open,
     now_ny,
     now_oslo,
     now_utc,
@@ -330,6 +331,7 @@ def run_signal():
 def run_strategy_execution(
     strategy_name, signal, trades_df, price_cache,
     premarket_flags=None, macro_mult=1.0, corr_pairs=None,
+    market_open=True,
 ):
     if premarket_flags is None:
         premarket_flags = {}
@@ -379,17 +381,23 @@ def run_strategy_execution(
                 print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
 
     # Evaluate normal sells
+    _PROTECTIVE = ("Stop-loss", "Trailing stop")
     for ticker, pos in list(state["positions"].items()):
         candidate = candidates_by_ticker.get(ticker)
         sell, reason = should_sell_position(ticker, pos, candidate, config)
-        if sell:
-            state, trades_df, trade = execute_sell(
-                state, trades_df, strategy_name, ticker, reason,
-                candidates_by_ticker, price_cache
-            )
-            if trade:
-                sells.append(trade)
-                print(f"  [{strategy_name}] SELG {ticker}: {reason}")
+        if not sell:
+            continue
+        is_protective = any(reason.startswith(p) for p in _PROTECTIVE)
+        if not market_open and not is_protective:
+            print(f"  [{strategy_name}] SKIP SELG {ticker}: markedet stengt ({reason})")
+            continue
+        state, trades_df, trade = execute_sell(
+            state, trades_df, strategy_name, ticker, reason,
+            candidates_by_ticker, price_cache
+        )
+        if trade:
+            sells.append(trade)
+            print(f"  [{strategy_name}] SELG {ticker}: {reason}")
 
     # Re-valuate after sells
     total_now, _, state = current_portfolio_value(state, candidates_by_ticker, price_cache)
@@ -425,7 +433,10 @@ def run_strategy_execution(
         return counts
 
     # Evaluate new buys
-    if can_buy:
+    if not market_open:
+        print(f"  [{strategy_name}] Markedet er stengt, ingen kjøp utføres")
+
+    if can_buy and market_open:
         for ticker in target_tickers:
             if ticker in state["positions"]:
                 continue
@@ -600,6 +611,10 @@ def run_execute():
     all_pm_moves = compute_premarket_moves(list(pm_tickers), prev_prices)
     premarket_flags = {t: m for t, m in all_pm_moves.items() if abs(m) > 0.04}
 
+    market_open = is_market_open()
+    if not market_open:
+        print("Markedet er stengt — stop-loss kan fortsatt utføres, kjøp hoppes over")
+
     results = []
     drawdown_warnings = []
 
@@ -610,6 +625,7 @@ def run_execute():
             premarket_flags=premarket_flags,
             macro_mult=macro_mult,
             corr_pairs=corr_pairs,
+            market_open=market_open,
         )
         results.append(result)
 
