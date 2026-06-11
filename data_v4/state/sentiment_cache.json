@@ -1,7 +1,7 @@
 {
   "ABNB": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:31.429122+00:00",
+    "error": "Ugyldig JSON-respons fra Claude",
+    "fetched_at": "2026-06-11T12:40:14.942449+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -55,22 +55,32 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:13:02.938889+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:32:56.671740+00:00",
+    "key_events": [
+      "Q1 FY2027 earnings beat: Revenue $1.39B (+26% YoY) vs est. $1.36B, EPS $1.10 vs est. $1.07, ARR $5.51B (+24% YoY), net new ARR $256M (+32% YoY)",
+      "Announced 4-for-1 stock split effective July 2, 2026; raised FY27 net new ARR growth guidance by 520 bps at midpoint",
+      "Multiple analyst upgrades: JP Morgan to $800, Scotiabank to $805, Rosenblatt to $825, Needham to $780 - all with Buy/Outperform ratings",
+      "Stock declined 7-10% post-earnings despite beat, attributed to 'priced for perfection' at 39x forward sales after 60% monthly rally",
+      "Analysts flagged concerns: increased competition from Google Cloud AI Threat Defense, CEO insider selling $3.5M in May, overvaluation concerns"
+    ],
+    "raw_score": -0.1,
+    "score": 0.45,
+    "source": "claude",
+    "summary": "Despite beating Q1 earnings expectations and announcing a 4-for-1 stock split, CRWD stock fell 7-10% due to high valuations (39x forward sales), profit-taking after a 60% rally, and mixed analyst sentiment about guidance justifying premium pricing."
   },
   "DDOG": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:48.492084+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:29:16.113396+00:00",
+    "key_events": [
+      "Q1 2026 earnings beat: $1.006B revenue (32% YoY growth), EPS $0.60 beat estimates by 17.65%",
+      "Raised FY2026 guidance: revenue $4.30-4.34B, up from prior $4.06-4.10B",
+      "Multiple analyst upgrades: BofA raised PT to $280, Piper Sandler to $275, RBC to $250, Wedbush to $260",
+      "Stock surged 97% in May 2026 but pulled back 9.1% over last 7 days from highs near $278",
+      "Launched 100+ new AI capabilities at DASH conference (June 9-10)"
+    ],
+    "raw_score": 0.5,
+    "score": 0.75,
+    "source": "claude",
+    "summary": "Strong positive sentiment driven by 32% revenue growth, raised full-year guidance, and multiple analyst upgrades, tempered by a 9% pullback over the last 7 days and ongoing competitive concerns."
   },
   "DELL": {
     "fetched_at": "2026-06-11T09:30:55.639733+00:00",
@@ -87,49 +97,72 @@
     "summary": "Mixed sentiment with recent pullback after massive rally. Strong Q1 earnings and $9.7B Pentagon contract offset by UBS downgrade, heavy insider selling, and valuation concerns after 200% YTD gain."
   },
   "IONQ": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:43.965570+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:34:49.219154+00:00",
+    "key_events": [
+      "Q1 2026 record revenue of $64.7M (+755% YoY), raised FY guidance to $260-270M",
+      "SkyWater acquisition ($1.8B) approved by shareholders, expected to close Q2-Q3 2026",
+      "DARPA HARQ contract secured for modular quantum computing",
+      "Quantum sector sell-off (IONQ down ~7% over 7 days) amid IBM $10B quantum investment and Quantinuum IPO competitive pressure",
+      "High-profile critics (Martin Shkreli) and analyst price target reductions signal weakening institutional confidence"
+    ],
+    "raw_score": -0.1,
+    "score": 0.45,
+    "source": "claude",
+    "summary": "IONQ faces mixed sentiment driven by strong Q1 revenue growth (+755% YoY) and raised guidance, offset by recent sector-wide sell-offs, high-profile criticism, competitive pressure from IBM/Quantinuum IPO, and ongoing unprofitability concerns."
   },
   "MDB": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:29.501244+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:31:52.080474+00:00",
+    "key_events": [
+      "Q1 FY2027 revenue $687.6M (+25% YoY), beating consensus $664M; raised full-year guidance to $2.92-2.96B",
+      "Multiple analyst upgrades post-earnings: BofA to $450, Tigress to $515, Needham to $400, maintaining Buy ratings",
+      "Atlas revenue grew 29% YoY to $512.5M, showing strong AI adoption momentum",
+      "Stock down 14.6% in past week despite strong results, reflecting valuation concerns at 10.9x P/S"
+    ],
+    "raw_score": 0.4,
+    "score": 0.7,
+    "source": "claude",
+    "summary": "MongoDB beat Q1 earnings with strong Atlas growth and raised FY guidance, triggering multiple analyst upgrades. However, stock declined 14.6% over the past week on valuation concerns and competitive pressures."
   },
   "NET": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:45.799732+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:37:03.898475+00:00",
+    "key_events": [
+      "Q1 2026 earnings beat: $640M revenue (34% YoY growth), EPS $0.25 vs $0.23 expected, but stock initially fell 24% on May 8 due to announcement of 1,100 layoffs (20% workforce) attributed to AI automation",
+      "Morgan Stanley raised price target to $305 (from $245) on June 4 ahead of Investor Day; multiple firms upgraded targets (RBC $260, UBS $250, Barclays $250)",
+      "VoidZero acquisition announced June 4, acquiring Vite JavaScript tooling ecosystem to strengthen AI-native web development position",
+      "Investor Day (June 9) revealed ambitious targets: 'Rule of 50+' framework for 2027 (30%+ revenue growth with 20% EBIT margins), long-term operating margin raised to 30%+, $5B revenue run-rate expected by end of 2028",
+      "Stock recovered from May selloff, up 28% YTD and trading near 52-week high of $276.82; 1,700% surge in AI agent requests demonstrates strong AI tailwind positioning"
+    ],
+    "raw_score": 0.3,
+    "score": 0.65,
+    "source": "claude",
+    "summary": "Mixed sentiment with recent volatility: Strong Q1 earnings (34% revenue growth, beat expectations) and multiple analyst upgrades (Morgan Stanley to $305) offset by major workforce restructuring (20% layoffs) and governance concerns, though bullish AI positioning and VoidZero acquisition drive optimism."
   },
   "NVO": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:50.759373+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:41:30.649050+00:00",
+    "key_events": [
+      "NVO stock dropped 3.46% on June 8 following ADA conference where Eli Lilly's competitive position strengthened despite positive Reimagine 1-3 trial results for CagriSema",
+      "J.P. Morgan maintained Hold rating (June 8) amid GLP-1 competitive pressure and loss-of-exclusivity concerns",
+      "Deutsche Bank maintained Hold rating (June 9) reflecting cautious analyst consensus",
+      "FDA warning letter issued March 5 over failure to report adverse drug events including deaths, with company responses deemed inadequate",
+      "CVS reversed prior Novo preference, adding Eli Lilly's obesity drugs to formulary effective June 1, eliminating key competitive advantage"
+    ],
+    "raw_score": -0.3,
+    "score": 0.35,
+    "source": "claude",
+    "summary": "Sentiment is moderately negative driven by intensifying Eli Lilly competition, negative 2026 guidance (-5% to -13% sales/profit), J.P. Morgan downgrade to Hold, FDA warning letter over adverse event reporting, and stock underperformance despite positive CagriSema trial results."
   },
   "OKTA": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:13:01.007181+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:30:24.388230+00:00",
+    "key_events": [
+      "Q1 FY2027 earnings beat: EPS $0.91 vs $0.85 est, revenue $765M vs $752M est, with raised full-year guidance to $3.17-3.19B",
+      "Multiple analyst upgrades: UBS raised target to $150, Truist to $120, Macquarie to $120, all with Buy ratings",
+      "Mizuho downgrade to Neutral from Outperform on June 2, 2026 citing valuation concerns after stock surged 48% in two days",
+      "Strong AI-agent security product traction with net retention rate improving to 107%"
+    ],
+    "raw_score": 0.3,
+    "score": 0.65,
+    "source": "claude",
+    "summary": "OKTA delivered strong Q1 earnings beating estimates with raised FY27 guidance and AI-driven growth opportunities, but faced a Mizuho downgrade to Neutral on June 2 citing full valuation after a 48% two-day surge despite solid fundamentals."
   },
   "PANW": {
     "fetched_at": "2026-06-11T09:12:03.324864+00:00",
@@ -159,17 +192,22 @@
     "summary": "ROKU sentiment is positive with multiple recent analyst upgrades from Morgan Stanley ($170 target), Guggenheim ($145), and Piper Sandler, driven by strong new home screen monetization potential and robust platform growth expectations."
   },
   "SMCI": {
-    "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:33.247272+00:00",
-    "key_events": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-11T12:29:40.190016+00:00",
+    "key_events": [
+      "$7 billion equity offering announced June 9 to fund $39B AI server orders from 20+ customers, causing sharp selloff due to dilution concerns",
+      "Stock declined 22-27% over past week from ~$40 to $29-35 range despite strong business fundamentals",
+      "Q3 earnings showed 123% YoY revenue growth to $10.24B and 84 cents adjusted EPS beating estimates",
+      "Mizuho raised price target from $36 to $44 on June 1",
+      "Fiscal 2026 guidance maintained at $38.9-40.4B revenue despite lowered from prior $41.5B estimate"
+    ],
+    "raw_score": -0.3,
+    "score": 0.35,
+    "source": "claude",
+    "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
     "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
-    "fetched_at": "2026-06-11T09:12:42.155330+00:00",
+    "fetched_at": "2026-06-11T12:38:10.711976+00:00",
     "key_events": [],
     "raw_score": 0.0,
     "score": 0.5,
