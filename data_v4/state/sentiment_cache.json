@@ -1,17 +1,17 @@
 {
   "ABNB": {
-    "error": "APITimeoutError",
-    "fetched_at": "2026-06-11T19:28:46.259392+00:00",
-    "key_events": [],
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-06-11T19:54:47.440120+00:00",
+    "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
   },
   "APP": {
-    "error": "APITimeoutError",
-    "fetched_at": "2026-06-11T19:30:48.525667+00:00",
-    "key_events": [],
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-06-11T19:54:49.616559+00:00",
+    "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
@@ -49,6 +49,15 @@
     "error": "Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"This request would exceed your org",
     "fetched_at": "2026-06-11T09:12:40.347824+00:00",
     "key_events": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "CELH": {
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-06-11T19:54:50.370225+00:00",
+    "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
@@ -179,9 +188,9 @@
     "summary": "PANW beat Q3 earnings expectations with strong revenue growth and raised guidance, driving multiple analyst upgrades to $300-375 targets. However, stock declined 2-3% post-earnings on profit-taking, sector volatility from AI disruption fears (Anthropic's Claude), and concerns over acquisition-driven growth quality."
   },
   "QBTS": {
-    "error": "Connection error.",
-    "fetched_at": "2026-06-11T19:29:14.843180+00:00",
-    "key_events": [],
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-06-11T19:54:48.908319+00:00",
+    "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
@@ -215,9 +224,9 @@
     "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
-    "error": "APITimeoutError",
-    "fetched_at": "2026-06-11T19:29:46.347583+00:00",
-    "key_events": [],
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-06-11T19:54:48.213799+00:00",
+    "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
