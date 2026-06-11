@@ -241,8 +241,8 @@ def run_signal():
     corr_matrix = compute_correlation_matrix(market_data, all_tickers)
     corr_pairs = find_correlated_pairs(corr_matrix, threshold=0.70)
     if corr_pairs:
-        high_corr = [p for p in corr_pairs if p["correlation"] >= 0.85]
-        print(f"Korrelasjonspar ≥70%: {len(corr_pairs)} | ≥85%: {len(high_corr)}")
+        high_corr = [p for p in corr_pairs if p["correlation"] >= 0.75]
+        print(f"Korrelasjonspar ≥70%: {len(corr_pairs)} | ≥75%: {len(high_corr)}")
 
     # Build signal payload
     strategies_payload = {}
