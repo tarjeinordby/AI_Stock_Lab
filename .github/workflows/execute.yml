@@ -1,4 +1,4 @@
-name: Execute — Oppdater porteføljer og send rapport
+name: Execute — Oppdater porteføljer og send rapport  # v3
 
 on:
   schedule:
