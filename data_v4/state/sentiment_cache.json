@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:57:08.272445+00:00",
+    "fetched_at": "2026-06-12T11:30:26.008006+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -32,7 +32,7 @@
   },
   "ASML": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:57:02.732319+00:00",
+    "fetched_at": "2026-06-12T11:30:17.221743+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -50,7 +50,7 @@
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:57:18.841186+00:00",
+    "fetched_at": "2026-06-12T11:30:34.242140+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -72,18 +72,15 @@
     "summary": "Despite beating Q1 earnings expectations and announcing a 4-for-1 stock split, CRWD stock fell 7-10% due to high valuations (39x forward sales), profit-taking after a 60% rally, and mixed analyst sentiment about guidance justifying premium pricing."
   },
   "DDOG": {
-    "fetched_at": "2026-06-11T12:29:16.113396+00:00",
-    "key_events": [
-      "Q1 2026 earnings beat: $1.006B revenue (32% YoY growth), EPS $0.60 beat estimates by 17.65%",
-      "Raised FY2026 guidance: revenue $4.30-4.34B, up from prior $4.06-4.10B",
-      "Multiple analyst upgrades: BofA raised PT to $280, Piper Sandler to $275, RBC to $250, Wedbush to $260",
-      "Stock surged 97% in May 2026 but pulled back 9.1% over last 7 days from highs near $278",
-      "Launched 100+ new AI capabilities at DASH conference (June 9-10)"
+    "fetched_at": "2026-06-12T11:30:20.333906+00:00",
+    "key_factors": [
+      "Perfect earnings record: 4 consecutive beats",
+      "Overwhelming analyst support: 131 Buy+ vs 4 Sell ratings"
     ],
-    "raw_score": 0.5,
-    "score": 0.75,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong positive sentiment driven by 32% revenue growth, raised full-year guidance, and multiple analyst upgrades, tempered by a 9% pullback over the last 7 days and ongoing competitive concerns."
+    "summary": "Strong fundamentals offset valuation concerns; AI catalysts emerging"
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -175,7 +172,7 @@
   },
   "PANW": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:57:13.206159+00:00",
+    "fetched_at": "2026-06-12T11:30:28.660073+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -204,7 +201,7 @@
   },
   "ROKU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:57:05.325810+00:00",
+    "fetched_at": "2026-06-12T11:30:22.996896+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -259,13 +256,15 @@
     "summary": "Strong fundamentals with AI tailwinds offset valuation concerns and macro uncert"
   },
   "SOFI": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:57:15.830490+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-12T11:30:31.619055+00:00",
+    "key_factors": [
+      "Consensus slightly bullish (24 buy vs 41 hold/sell) but not compelling",
+      "49% drawdown from 52w high raises technical concern despite potential value"
+    ],
+    "raw_score": -0.15,
+    "score": 0.425,
+    "source": "claude",
+    "summary": "Mixed signals: analyst optimism offset by valuation concerns and recent underper"
   },
   "TOST": {
     "fetched_at": "2026-06-11T19:30:17.141508+00:00",
@@ -291,12 +290,14 @@
     "summary": "Strong fundamentals offset near-term headwinds. Consistent earnings beats with o"
   },
   "U": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:57:26.908351+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-12T11:30:36.933148+00:00",
+    "key_factors": [
+      "Bullish analyst consensus (52 buy/strongBuy vs 28 hold)",
+      "Stock down 48.8% from 52w high suggests oversold conditions"
+    ],
+    "raw_score": 0.42,
+    "score": 0.71,
+    "source": "claude",
+    "summary": "Mixed signals: Strong analyst support offset by valuation concerns and earnings "
   }
 }
