@@ -1,7 +1,7 @@
 {
   "ABNB": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:44.897361+00:00",
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-12T10:44:32.183515+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -9,26 +9,30 @@
     "summary": "Ingen data"
   },
   "APP": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-11T19:54:49.616559+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-12T10:44:42.612824+00:00",
+    "key_factors": [
+      "77 buy/strongBuy ratings (88.5%) vs 0 sell ratings",
+      "Perfect 4Q earnings beat streak demonstrates execution"
+    ],
+    "raw_score": 0.65,
+    "score": 0.825,
+    "source": "claude",
+    "summary": "Strong analyst support & earnings execution offset recent weakness"
   },
   "ARM": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:43.308930+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-12T10:44:22.894025+00:00",
+    "key_factors": [
+      "83 bullish vs 5 bearish analyst ratings (94% buy-side)",
+      "3 consecutive earnings beats show execution strength"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with positive AI narrative offset by valuation"
   },
   "ASML": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:43.906124+00:00",
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-12T10:44:25.674027+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -159,13 +163,24 @@
     "summary": "OKTA delivered strong Q1 earnings beating estimates with raised FY27 guidance and AI-driven growth opportunities, but faced a Mizuho downgrade to Neutral on June 2 citing full valuation after a 48% two-day surge despite solid fundamentals."
   },
   "PANW": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:45.473277+00:00",
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-12T10:44:34.645048+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "PLTR": {
+    "fetched_at": "2026-06-12T10:44:45.343710+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4) demonstrates operational excellence",
+      "Commercial AI expansion signals new growth driver beyond government"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong fundamentals offset valuation concerns; consistent execution supports ups"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -177,8 +192,8 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:44.390101+00:00",
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-12T10:44:28.668327+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -200,17 +215,19 @@
     "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:46.523005+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-12T10:44:37.209922+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4/4 beats) demonstrates execution",
+      "Overwhelming analyst support (134/155 buy/strongBuy = 86.5%)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with AI tailwinds offset valuation concerns and macro uncert"
   },
   "SOFI": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:46.999334+00:00",
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-12T10:44:40.039128+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -230,12 +247,14 @@
     "summary": "TOST missed Q1 EPS estimates and faces multiple analyst downgrades amid competitive pressure and hardware cost concerns, despite raising full-year guidance and strong recurring revenue growth."
   },
   "TSM": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-12T10:07:41.827107+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-12T10:44:20.220883+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4/4 beats)",
+      "52 analysts bullish (93.5% buy/strongBuy rating)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals offset near-term headwinds. Consistent earnings beats with o"
   }
 }
