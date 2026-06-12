@@ -1,4 +1,4 @@
-from modules.state import START_CAPITAL, safe_float, safe_round
+from modules.state import START_CAPITAL, safe_float, safe_round, trading_days_between
 
 
 def get_portfolio_drawdown(state, total_value):
@@ -35,6 +35,13 @@ def should_sell_position(ticker, pos, candidate, config):
     score = safe_float(candidate.get("strategy_score"), 0)
     if rank > config["sell_rank_threshold"] and score < 45:
         return True, f"Svekket ranking (#{rank}, score {safe_round(score, 1)})"
+
+    # Selg hvis score har forringet seg ≥35% fra kjøpstidspunkt (tese-forringelse)
+    buy_score = safe_float(pos.get("buy_score"), 0)
+    days_held = trading_days_between(pos.get("buy_date"))
+    if buy_score > 20 and days_held >= 10 and score < buy_score * 0.65:
+        drop_pct = round((1 - score / buy_score) * 100)
+        return True, f"Score forringet -{drop_pct}% fra kjøp ({safe_round(buy_score,1)}→{safe_round(score,1)})"
 
     return False, ""
 

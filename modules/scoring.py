@@ -12,9 +12,9 @@ STRATEGIES = {
     "Max_Return_AI": {
         "description": "Mest aggressiv. Jakter høyest mulig avkastning med mer risiko.",
         "score_column": "score_max_return",
-        "weights": {"momentum": 0.45, "quality": 0.25, "value": 0.20, "sentiment": 0.10},
-        "max_positions": 15,
-        "max_position_weight": 0.12,
+        "weights": {"momentum": 0.45, "quality": 0.30, "value": 0.20, "sentiment": 0.05},
+        "max_positions": 10,
+        "max_position_weight": 0.15,
         "max_new_buys_per_week": 5,
         "buy_top_n": 20,
         "min_score_percentile": 0.80,
@@ -33,9 +33,9 @@ STRATEGIES = {
     "Quality_Momentum_AI": {
         "description": "Sterk momentum, men med mer kvalitets- og risikokontroll.",
         "score_column": "score_quality_momentum",
-        "weights": {"momentum": 0.35, "quality": 0.30, "value": 0.20, "sentiment": 0.15},
-        "max_positions": 15,
-        "max_position_weight": 0.10,
+        "weights": {"momentum": 0.35, "quality": 0.40, "value": 0.20, "sentiment": 0.05},
+        "max_positions": 10,
+        "max_position_weight": 0.13,
         "max_new_buys_per_week": 4,
         "buy_top_n": 20,
         "min_score_percentile": 0.78,
@@ -54,9 +54,9 @@ STRATEGIES = {
     "Balanced_AI": {
         "description": "Balanserer momentum, trend, risiko og stabilitet.",
         "score_column": "score_balanced",
-        "weights": {"momentum": 0.35, "quality": 0.30, "value": 0.20, "sentiment": 0.15},
-        "max_positions": 15,
-        "max_position_weight": 0.09,
+        "weights": {"momentum": 0.35, "quality": 0.40, "value": 0.20, "sentiment": 0.05},
+        "max_positions": 10,
+        "max_position_weight": 0.12,
         "max_new_buys_per_week": 4,
         "buy_top_n": 18,
         "min_score_percentile": 0.75,
@@ -75,9 +75,9 @@ STRATEGIES = {
     "Low_Risk_AI": {
         "description": "Prøver å slå indeks med lavere svingninger og mindre drawdown.",
         "score_column": "score_low_risk",
-        "weights": {"momentum": 0.25, "quality": 0.35, "value": 0.25, "sentiment": 0.15},
-        "max_positions": 15,
-        "max_position_weight": 0.08,
+        "weights": {"momentum": 0.25, "quality": 0.45, "value": 0.25, "sentiment": 0.05},
+        "max_positions": 12,
+        "max_position_weight": 0.10,
         "max_new_buys_per_week": 3,
         "buy_top_n": 25,
         "min_score_percentile": 0.70,
@@ -96,9 +96,9 @@ STRATEGIES = {
     "MegaCap_AI": {
         "description": "Fokuserer på store, robuste kvalitetsselskaper.",
         "score_column": "score_megacap",
-        "weights": {"momentum": 0.30, "quality": 0.35, "value": 0.20, "sentiment": 0.15},
-        "max_positions": 12,
-        "max_position_weight": 0.11,
+        "weights": {"momentum": 0.30, "quality": 0.45, "value": 0.20, "sentiment": 0.05},
+        "max_positions": 8,
+        "max_position_weight": 0.15,
         "max_new_buys_per_week": 3,
         "buy_top_n": 25,
         "min_score_percentile": 0.65,
@@ -115,11 +115,11 @@ STRATEGIES = {
         },
     },
     "AI_Sentiment_AI": {
-        "description": "Vekter nyhetssentiment tyngre — satser på AI-drevne nyhessignaler.",
+        "description": "Tester earnings-quality-signal (beat/miss-historikk) som differensiator.",
         "score_column": "score_ai_sentiment",
-        "weights": {"momentum": 0.30, "quality": 0.25, "value": 0.15, "sentiment": 0.30},
-        "max_positions": 15,
-        "max_position_weight": 0.10,
+        "weights": {"momentum": 0.30, "quality": 0.45, "value": 0.15, "sentiment": 0.10},
+        "max_positions": 10,
+        "max_position_weight": 0.13,
         "max_new_buys_per_week": 4,
         "buy_top_n": 20,
         "min_score_percentile": 0.75,
@@ -145,11 +145,11 @@ TOP_CANDIDATES_TO_REPORT = 5
 # ============================================================
 
 REGIME_WEIGHTS = {
-    "explosive": {"momentum": 0.45, "quality": 0.25, "value": 0.15, "sentiment": 0.15},
-    "bullish":   {"momentum": 0.35, "quality": 0.30, "value": 0.20, "sentiment": 0.15},
-    "neutral":   {"momentum": 0.25, "quality": 0.35, "value": 0.25, "sentiment": 0.15},
-    "defensive": {"momentum": 0.15, "quality": 0.40, "value": 0.30, "sentiment": 0.15},
-    "unknown":   {"momentum": 0.30, "quality": 0.30, "value": 0.25, "sentiment": 0.15},
+    "explosive": {"momentum": 0.45, "quality": 0.35, "value": 0.15, "sentiment": 0.05},
+    "bullish":   {"momentum": 0.35, "quality": 0.40, "value": 0.20, "sentiment": 0.05},
+    "neutral":   {"momentum": 0.25, "quality": 0.45, "value": 0.25, "sentiment": 0.05},
+    "defensive": {"momentum": 0.15, "quality": 0.50, "value": 0.30, "sentiment": 0.05},
+    "unknown":   {"momentum": 0.30, "quality": 0.40, "value": 0.25, "sentiment": 0.05},
 }
 
 _MACRO_INVERTED_ADJ = {"momentum": -0.10, "quality": +0.10, "value": 0.0, "sentiment": 0.0}
@@ -367,7 +367,7 @@ def build_score_table(analyzed_stocks, fundamentals, sentiment_scores, earnings_
         earn_bonus = safe_float(earn.get("earnings_bonus"), 0)
         earn_contrib = 0.5 + earn_bonus / 100.0  # center at 0.5
 
-        combined = max(0.0, min(1.0, 0.60 * sent_score + 0.40 * earn_contrib))
+        combined = max(0.0, min(1.0, 0.25 * sent_score + 0.75 * earn_contrib))
         sent_raw.append(combined)
     df["sentiment_raw"] = sent_raw
     s_median = df["sentiment_raw"].median()

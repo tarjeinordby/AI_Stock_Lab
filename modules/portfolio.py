@@ -187,6 +187,7 @@ def execute_buy(
         "highest_price": price,
         "market_value": shares * price,
         "buy_date": today_str(),
+        "buy_score": round(safe_float(candidate.get("strategy_score"), 0.0), 1),
         "is_partial": is_partial,
         "pyramid_remaining_value": round(pyramid_remaining, 2) if is_partial else 0.0,
         "pyramid_min_price": round(price * 1.02, 4) if is_partial else 0.0,
