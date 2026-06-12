@@ -6,7 +6,7 @@ import pandas as pd
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
-from modules.fundamentals import fetch_fundamentals_bulk
+from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
 from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, run_data_quality_checks
 from modules.macro import get_macro_status
 from modules.portfolio import (
@@ -40,6 +40,7 @@ from modules.scoring import (
     build_score_table,
     get_regime_weights,
     make_strategy_candidates,
+    passes_quality_filter,
 )
 from modules.reporting import is_monday
 from modules.sentiment import fetch_sentiment_bulk
@@ -261,15 +262,27 @@ def run_signal():
 
     all_tickers = [a["ticker"] for a in analyzed]
 
-    # Fundamentals for all tickers (cached, 7 days)
+    # Fundamentals for all tickers (cached, 7 days) — inkluderer nå FCF
     fundamentals = fetch_fundamentals_bulk(all_tickers)
+
+    # Quality filter: fjern lavkvalitet-tickere fra scoring
+    # Eide posisjoner beholdes alltid (kan fortsatt selges)
+    held_set = set()
+    for sn in STRATEGIES:
+        held_set.update(load_strategy_state(sn).get("positions", {}).keys())
+    before_count = len(analyzed)
+    analyzed = [a for a in analyzed if passes_quality_filter(a["ticker"], fundamentals, held_set)]
+    filtered_count = before_count - len(analyzed)
+    print(f"Quality filter: {before_count} → {len(analyzed)} tickere ({filtered_count} filtrert bort)")
+
+    all_tickers = [a["ticker"] for a in analyzed]
 
     # Preliminary scoring (neutral data, default weights) to identify top candidates
     neutral_sentiment = {t: {"score": 0.5, "raw_score": 0.0} for t in all_tickers}
     neutral_earnings = {t: {"earnings_bonus": 0, "earnings_soon": False} for t in all_tickers}
     prelim_df = build_score_table(analyzed, fundamentals, neutral_sentiment, neutral_earnings)
 
-    # Identify tickers needing real sentiment/earnings.
+    # Identify tickers needing real sentiment/earnings + insider fetch.
     # Eide aksjer prioriteres først, deretter topp-kandidater per strategi.
     seen = set()
     sentiment_tickers = []
@@ -287,7 +300,13 @@ def run_signal():
                 if t in all_tickers and t not in seen:
                     sentiment_tickers.append(t)
                     seen.add(t)
-    print(f"Sentiment + earnings fetch for {len(sentiment_tickers)} tickere")
+    print(f"Sentiment + earnings + insider fetch for {len(sentiment_tickers)} tickere")
+
+    # Insider-signal for topp-kandidater (ingen cache, liten subset)
+    insider_data = fetch_insider_bulk(sentiment_tickers)
+    for ticker, insider in insider_data.items():
+        if ticker in fundamentals:
+            fundamentals[ticker].update(insider)
 
     earnings_data = fetch_earnings_bulk(sentiment_tickers)
     sentiment_scores, sentiment_cost = fetch_sentiment_bulk(sentiment_tickers)
@@ -362,6 +381,7 @@ def run_signal():
         },
         "quality_report": quality_report,
         "signal_ai_cost_usd": round(signal_ai_cost, 6),
+        "quality_filtered_count": filtered_count,
     }
 
     date = today_str()

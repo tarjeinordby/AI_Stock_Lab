@@ -141,6 +141,55 @@ TOP_CANDIDATES_TO_SAVE = 150
 TOP_CANDIDATES_TO_REPORT = 5
 
 # ============================================================
+# QUALITY FILTER — mekanisk terskel for univers-innsnevring
+# ============================================================
+
+_QF_GROSS_MARGIN  = 0.30   # 30% bruttomarginkrav
+_QF_REVENUE_GROWTH = 0.05  # 5% omsetningsvekst
+_QF_DEBT_EQUITY   = 2.0    # maks gjeldsgrad
+_QF_MARKET_CAP    = 2e9    # maks $2B minimumsmarkedsverdi
+
+# Sektorer med annen regnskapsstruktur — gross margin-krav frafalles
+_MARGIN_EXEMPT = {"Financial Services", "Energy", "Utilities", "Real Estate", "Basic Materials"}
+
+
+def passes_quality_filter(ticker, fundamentals, held_tickers=None):
+    """
+    Mekanisk kvalitetsfilter. Returnerer True hvis tickeren er godkjent for scoring.
+    Eide posisjoner og benchmarks unntas alltid — de evalueres uansett (mulig salg).
+    """
+    if held_tickers and ticker in held_tickers:
+        return True
+    if ticker in ("SPY", "QQQ"):
+        return True
+
+    f = fundamentals.get(ticker) or {}
+    sector = f.get("sector", "Unknown")
+
+    market_cap = safe_float(f.get("market_cap"))
+    if market_cap is not None and market_cap < _QF_MARKET_CAP:
+        return False
+
+    gross_margin = safe_float(f.get("gross_margin"))
+    if gross_margin is not None and sector not in _MARGIN_EXEMPT:
+        if gross_margin < _QF_GROSS_MARGIN:
+            return False
+
+    revenue_growth = safe_float(f.get("revenue_growth"))
+    if revenue_growth is not None and revenue_growth < _QF_REVENUE_GROWTH:
+        return False
+
+    debt_equity = safe_float(f.get("debt_equity"))
+    if debt_equity is not None and sector not in _MARGIN_EXEMPT and debt_equity > _QF_DEBT_EQUITY:
+        return False
+
+    fcf_positive = f.get("fcf_positive")
+    if fcf_positive is False:    # None = ingen data = godkjent
+        return False
+
+    return True
+
+# ============================================================
 # DYNAMIC REGIME WEIGHTS
 # ============================================================
 
@@ -405,6 +454,19 @@ def build_score_table(analyzed_stocks, fundamentals, sentiment_scores, earnings_
         df.loc[df["overbought"], col] *= 0.90
         df.loc[df["very_weak_rsi"], col] *= 0.70
         df.loc[df["vol60"] > 1.20, col] *= 0.80
+
+    # Insider-bonus: +10% på final score ved signifikant netto insider-kjøp
+    df["insider_buying"] = [
+        bool((fundamentals.get(t) or {}).get("insider_buying", False))
+        for t in df.index
+    ]
+    insider_buyers = df[df["insider_buying"]].index.tolist()
+    if insider_buyers:
+        print(f"  Insider-bonus (+10%): {insider_buyers}")
+        for strat_name, config in STRATEGIES.items():
+            col = config["score_column"]
+            if col in df.columns:
+                df.loc[df["insider_buying"], col] *= 1.10
 
     return df
 
