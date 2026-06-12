@@ -1,3 +1,4 @@
+import datetime as dt
 from datetime import datetime, timezone
 from io import StringIO
 
@@ -6,9 +7,14 @@ import requests
 
 from modules.state import STATE_DIR, load_json, save_json
 
-FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y"
 MACRO_CACHE_FILE = f"{STATE_DIR}/macro_cache.json"
 INVERSION_THRESHOLD = -0.5  # percent (not decimal)
+
+_TREASURY_URL = (
+    "https://home.treasury.gov/resource-center/data-chart-center/"
+    "interest-rates/daily-treasury-rates.csv/{year}/all"
+    "?type=daily_treasury_yield_curve&field_tdr_date_value={year}&download=true"
+)
 
 
 def _cache_is_fresh(cache):
@@ -38,9 +44,28 @@ def _build_status(spread):
     return label, exposure_mult, inverted
 
 
+def _fetch_treasury_spread():
+    """Fetch 10Y-2Y spread from Treasury.gov (no API key needed)."""
+    year = dt.date.today().year
+    url = _TREASURY_URL.format(year=year)
+    resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    resp.raise_for_status()
+    df = pd.read_csv(StringIO(resp.text))
+    df.columns = [c.strip() for c in df.columns]
+    df["2 Yr"] = pd.to_numeric(df["2 Yr"], errors="coerce")
+    df["10 Yr"] = pd.to_numeric(df["10 Yr"], errors="coerce")
+    df = df.dropna(subset=["2 Yr", "10 Yr"])
+    if df.empty:
+        return None, None
+    last = df.iloc[0]  # newest row is first
+    spread = float(last["10 Yr"]) - float(last["2 Yr"])
+    date = str(last["Date"]).strip()
+    return spread, date
+
+
 def get_macro_status():
     """
-    Fetch 10Y-2Y Treasury yield spread from FRED (no API key required).
+    Fetch 10Y-2Y Treasury yield spread from Treasury.gov (no API key required).
     Returns dict: spread, date, inverted, exposure_mult, status.
     If spread < -0.5%: exposure_mult = 0.80 (reduce all exposure by 20%).
     Cached for 24 hours.
@@ -51,18 +76,9 @@ def get_macro_status():
 
     spread, date = None, None
     try:
-        resp = requests.get(FRED_URL, timeout=30)
-        resp.raise_for_status()
-        df = pd.read_csv(StringIO(resp.text))
-        df.columns = ["date", "spread"]
-        df["spread"] = pd.to_numeric(df["spread"], errors="coerce")
-        df = df.dropna()
-        if not df.empty:
-            last = df.iloc[-1]
-            spread = float(last["spread"])
-            date = str(last["date"])
+        spread, date = _fetch_treasury_spread()
     except Exception as e:
-        print(f"FRED API feil: {e} — bruker nøytral makro (mult=1.0)")
+        print(f"Treasury.gov feil: {e} — bruker nøytral makro (mult=1.0)")
 
     label, exposure_mult, inverted = _build_status(spread)
 
