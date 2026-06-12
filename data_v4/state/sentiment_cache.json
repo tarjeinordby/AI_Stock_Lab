@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:44:32.183515+00:00",
+    "fetched_at": "2026-06-12T10:57:08.272445+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -32,7 +32,7 @@
   },
   "ASML": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:44:25.674027+00:00",
+    "fetched_at": "2026-06-12T10:57:02.732319+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -49,8 +49,8 @@
     "summary": "Ingen data"
   },
   "CELH": {
-    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-06-11T19:54:50.370225+00:00",
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-12T10:57:18.841186+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -93,6 +93,17 @@
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "HOOD": {
+    "fetched_at": "2026-06-12T10:57:24.428976+00:00",
+    "key_factors": [
+      "59 buy/strongBuy ratings (78%) vs 9 sell ratings show strong consensus",
+      "SpaceX IPO approval timing positions HOOD as underwriter for mega-deal"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong analyst support and SpaceX IPO tailwinds offset valuation concerns."
   },
   "IONQ": {
     "fetched_at": "2026-06-11T12:34:49.219154+00:00",
@@ -164,7 +175,7 @@
   },
   "PANW": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:44:34.645048+00:00",
+    "fetched_at": "2026-06-12T10:57:13.206159+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -193,12 +204,34 @@
   },
   "ROKU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:44:28.668327+00:00",
+    "fetched_at": "2026-06-12T10:57:05.325810+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "SE": {
+    "fetched_at": "2026-06-12T10:57:21.513135+00:00",
+    "key_factors": [
+      "92% buy/strong buy ratings show consensus confidence",
+      "Recent 6.9% decline on strategic reinvestment reflects growth investments"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong analyst support and recent beat offset valuation concerns and recent sell"
+  },
+  "SHOP": {
+    "fetched_at": "2026-06-12T10:57:29.947603+00:00",
+    "key_factors": [
+      "Overwhelmingly bullish analyst consensus (117 buy/strong buy vs 39 sell/hold)",
+      "39% discount from 52w high presents attractive entry valuation"
+    ],
+    "raw_score": 0.65,
+    "score": 0.825,
+    "source": "claude",
+    "summary": "Strong analyst support and strategic initiatives offset valuation concerns from "
   },
   "SMCI": {
     "fetched_at": "2026-06-11T12:29:40.190016+00:00",
@@ -227,7 +260,7 @@
   },
   "SOFI": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T10:44:40.039128+00:00",
+    "fetched_at": "2026-06-12T10:57:15.830490+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -256,5 +289,14 @@
     "score": 0.86,
     "source": "claude",
     "summary": "Strong fundamentals offset near-term headwinds. Consistent earnings beats with o"
+  },
+  "U": {
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-12T10:57:26.908351+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   }
 }
