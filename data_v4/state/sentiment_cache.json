@@ -22,17 +22,19 @@
     "summary": "Strong analyst support & earnings execution offset recent weakness"
   },
   "ARM": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-16T16:03:20.136154+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-17T12:39:30.380344+00:00",
+    "key_factors": [
+      "83 of 118 analysts rate buy/strong buy (70%)",
+      "Recent 3-quarter beat streak demonstrates execution"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong positive momentum with solid fundamentals; licensing growth drives confid"
   },
   "ASML": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-16T16:03:25.270454+00:00",
+    "fetched_at": "2026-06-17T12:39:32.953961+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -58,15 +60,13 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "fetched_at": "2026-06-13T08:40:29.543439+00:00",
-    "key_factors": [
-      "Exceptional earnings execution: 4 consecutive beats",
-      "Overwhelming analyst support: 128 buy/strongBuy vs 1 sell"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong fundamentals offset valuation concerns; consistent execution supports ups"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-17T12:39:44.117388+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "DDOG": {
     "fetched_at": "2026-06-16T16:03:22.596036+00:00",
@@ -101,7 +101,7 @@
   },
   "IONQ": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-16T16:03:39.533698+00:00",
+    "fetched_at": "2026-06-17T12:39:38.330357+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -109,13 +109,15 @@
     "summary": "Ingen data"
   },
   "MDB": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-16T16:03:42.314634+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-17T12:39:41.173500+00:00",
+    "key_factors": [
+      "92 buy/strong buy ratings vs 0 sell ratings - overwhelming analyst consensus",
+      "Perfect 4/4 earnings beats demonstrate execution excellence"
+    ],
+    "raw_score": 0.68,
+    "score": 0.84,
+    "source": "claude",
+    "summary": "Strong fundamentals offset recent volatility. Consensus bullish with consistent "
   },
   "NET": {
     "fetched_at": "2026-06-11T12:37:03.898475+00:00",
@@ -133,7 +135,7 @@
   },
   "NVO": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-13T08:40:32.038504+00:00",
+    "fetched_at": "2026-06-17T12:39:50.594073+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -141,13 +143,15 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-16T16:03:30.540537+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-17T12:39:35.469316+00:00",
+    "key_factors": [
+      "Consistent earnings beats (4 consecutive quarters)",
+      "Strong subscription revenue growth driving positive sentiment"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals & analyst support offset near-term pullback"
   },
   "PANW": {
     "fetched_at": "2026-06-16T16:03:35.887184+00:00",
@@ -182,7 +186,7 @@
   },
   "ROKU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-16T16:03:27.860206+00:00",
+    "fetched_at": "2026-06-17T12:39:27.898195+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -226,15 +230,15 @@
     "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
-    "fetched_at": "2026-06-12T10:44:37.209922+00:00",
+    "fetched_at": "2026-06-17T12:39:47.089342+00:00",
     "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "Overwhelming analyst support (134/155 buy/strongBuy = 86.5%)"
+      "Perfect 4Q earnings beat streak demonstrates execution excellence",
+      "134 buy/strongBuy vs 1 sell shows overwhelming analyst conviction"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with AI tailwinds offset valuation concerns and macro uncert"
+    "summary": "Strong fundamentals with consistent execution offset by near-term valuation pull"
   },
   "SOFI": {
     "fetched_at": "2026-06-12T11:30:31.619055+00:00",
@@ -260,13 +264,15 @@
     "summary": "TOST missed Q1 EPS estimates and faces multiple analyst downgrades amid competitive pressure and hardware cost concerns, despite raising full-year guidance and strong recurring revenue growth."
   },
   "TSM": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-16T16:03:17.668974+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-17T12:39:24.903260+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4/4 beats)",
+      "Overwhelming analyst consensus (52 buy-rated vs 5 hold, 0 sell)"
+    ],
+    "raw_score": 0.82,
+    "score": 0.91,
+    "source": "claude",
+    "summary": "Strong bullish setup with consistent execution and sector tailwinds"
   },
   "U": {
     "fetched_at": "2026-06-12T11:30:36.933148+00:00",
