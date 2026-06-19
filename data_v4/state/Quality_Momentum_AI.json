@@ -1,13 +1,50 @@
 {
-  "cash": 10000.0,
+  "cash": 6740.181370656097,
   "cooldowns": {},
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10000.0,
-  "last_execution_date": "2026-06-18",
-  "positions": {},
+  "last_execution_date": "2026-06-19",
+  "positions": {
+    "ARM": {
+      "avg_price": 439.75,
+      "buy_date": "2026-06-19",
+      "buy_score": 76.2,
+      "highest_price": 439.75,
+      "is_partial": true,
+      "last_price": 439.75,
+      "market_value": 617.3432420792868,
+      "pyramid_min_price": 448.545,
+      "pyramid_remaining_value": 411.56,
+      "shares": 1.4038504652172525
+    },
+    "ROKU": {
+      "avg_price": 138.13999938964844,
+      "buy_date": "2026-06-19",
+      "buy_score": 70.9,
+      "highest_price": 138.13999938964844,
+      "is_partial": true,
+      "last_price": 138.13999938964844,
+      "market_value": 1847.3684210526317,
+      "pyramid_min_price": 140.9028,
+      "pyramid_remaining_value": 1231.58,
+      "shares": 13.373160773237014
+    },
+    "TSM": {
+      "avg_price": 462.2200012207031,
+      "buy_date": "2026-06-19",
+      "buy_score": 88.9,
+      "highest_price": 462.2200012207031,
+      "is_partial": true,
+      "last_price": 462.2200012207031,
+      "market_value": 791.8504041447079,
+      "pyramid_min_price": 471.4644,
+      "pyramid_remaining_value": 527.9,
+      "shares": 1.713146125337426
+    }
+  },
   "strategy": "Quality_Momentum_AI",
   "weekly_meta": {
-    "buys_this_week": 0,
+    "buys_this_week": 3,
     "iso_week": "2026-W25"
   }
 }
