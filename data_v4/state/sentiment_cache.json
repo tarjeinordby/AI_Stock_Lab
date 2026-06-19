@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-18T11:57:15.853364+00:00",
+    "fetched_at": "2026-06-19T12:34:21.105972+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -20,26 +20,24 @@
     "summary": "Strong analyst support & earnings execution offset recent weakness"
   },
   "ARM": {
-    "fetched_at": "2026-06-18T11:57:04.084770+00:00",
+    "fetched_at": "2026-06-19T12:34:06.970605+00:00",
     "key_factors": [
-      "83 buy/strong buy ratings (73.5% positive) signal strong conviction",
-      "Recent Neural Dawn launch taps growing mobile AI gaming market"
+      "83 buy/strongBuy vs 5 sell ratings (94% bullish consensus)",
+      "Recent 52w high proximity suggests momentum continuation"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong bullish momentum with AI tailwinds and solid fundamentals."
+    "summary": "Strong bullish setup with solid fundamentals and consensus support"
   },
   "ASML": {
-    "fetched_at": "2026-06-18T11:57:09.567433+00:00",
-    "key_factors": [
-      "Overwhelming analyst support: 113 buy/strongBuy vs 19 sell/hold",
-      "AI demand secular growth driver; CEO highlights Terafab opportunity"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong buy consensus, AI tailwinds offset macro headwinds. Near 52w highs."
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-19T12:34:09.928993+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "BILL": {
     "error": "Ugyldig JSON-respons",
@@ -60,24 +58,26 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-18T11:57:24.129692+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-19T12:34:26.320912+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4 quarters)",
+      "Overwhelming buy ratings (128/166 = 77%)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals offset recent volatility. Consistent execution with overwhel"
   },
   "DDOG": {
-    "fetched_at": "2026-06-18T11:57:06.771877+00:00",
+    "fetched_at": "2026-06-19T12:34:12.735239+00:00",
     "key_factors": [
-      "Perfect earnings execution (4/4 beats) demonstrates operational strength",
-      "Overwhelming analyst consensus (131 buy/strongBuy vs 13 sell)"
+      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
+      "Overwhelming analyst consensus: 131 buy vs 4 sell ratings"
     ],
-    "raw_score": 0.65,
-    "score": 0.825,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals offset near-term headwinds; bullish outlook"
+    "summary": "Strong fundamentals offset by valuation concerns; upgrade momentum bullish"
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -109,15 +109,15 @@
     "summary": "Ingen data"
   },
   "MDB": {
-    "fetched_at": "2026-06-18T11:57:27.238685+00:00",
+    "fetched_at": "2026-06-19T12:34:28.874279+00:00",
     "key_factors": [
       "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "Overwhelmingly bullish analyst consensus (92 buy/strong buy vs 28 hold)"
+      "92 buy/strongBuy vs 28 hold ratings show strong analyst conviction"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with valuation reset; positive near-term outlook"
+    "summary": "Strong fundamentals with recent pullback creating entry opportunity"
   },
   "NET": {
     "fetched_at": "2026-06-11T12:37:03.898475+00:00",
@@ -143,24 +143,26 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-06-18T11:57:18.472798+00:00",
+    "fetched_at": "2026-06-19T12:34:18.578094+00:00",
     "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "100 buy-rated analysts vs 3 sell signals strong conviction"
+      "Consistent earnings beats (4/4 last quarters)",
+      "100 buy/strongBuy vs 3 sell ratings (97% bullish)"
     ],
-    "raw_score": 0.68,
-    "score": 0.84,
+    "raw_score": 0.62,
+    "score": 0.81,
     "source": "claude",
-    "summary": "Strong fundamentals offset near-term headwinds. AI upside and consistent executi"
+    "summary": "Strong fundamentals offset near-term headwinds. AI catalysts and earnings moment"
   },
   "PANW": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-18T11:57:21.311631+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-19T12:34:23.619177+00:00",
+    "key_factors": [
+      "Perfect earnings record (4/4 beats) demonstrates consistent execution",
+      "Overwhelming analyst support (135 buy/strongBuy vs 3 sell)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with consistent execution offset by near-term headwinds"
   },
   "PLTR": {
     "fetched_at": "2026-06-12T10:44:45.343710+00:00",
@@ -184,7 +186,7 @@
   },
   "ROKU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-18T11:57:13.060871+00:00",
+    "fetched_at": "2026-06-19T12:34:15.916622+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -262,15 +264,15 @@
     "summary": "TOST missed Q1 EPS estimates and faces multiple analyst downgrades amid competitive pressure and hardware cost concerns, despite raising full-year guidance and strong recurring revenue growth."
   },
   "TSM": {
-    "fetched_at": "2026-06-18T11:57:00.455776+00:00",
+    "fetched_at": "2026-06-19T12:34:04.502149+00:00",
     "key_factors": [
-      "Intel 18A production + Apple partnership threaten TSM's foundry dominance",
-      "52/57 (91%) analyst bullish rating shows continued confidence"
+      "52 analyst buy/strongBuy ratings (93%) vs minimal sell interest",
+      "Perfect 4Q earnings beat streak demonstrates execution"
     ],
-    "raw_score": -0.35,
-    "score": 0.325,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals offset by competitive Intel headwinds and valuation"
+    "summary": "Strong fundamentals with positive industry tailwinds offset geopolitical risks"
   },
   "U": {
     "fetched_at": "2026-06-12T11:30:36.933148+00:00",
