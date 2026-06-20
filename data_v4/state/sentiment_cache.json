@@ -1,12 +1,14 @@
 {
   "ABNB": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-19T12:34:21.105972+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-06-20T08:34:20.539823+00:00",
+    "key_factors": [
+      "Positive momentum: Near 52w highs, outpacing market",
+      "Analyst consensus bullish: 63 buy/strongBuy vs 66 hold/sell"
+    ],
+    "raw_score": 0.15,
+    "score": 0.575,
+    "source": "claude",
+    "summary": "Mixed sentiment: Strong analyst support offset by execution concerns and valuati"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -32,7 +34,7 @@
   },
   "ASML": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-19T12:34:09.928993+00:00",
+    "fetched_at": "2026-06-20T08:34:17.878427+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -89,15 +91,13 @@
     "summary": "Ingen data"
   },
   "HOOD": {
-    "fetched_at": "2026-06-12T10:57:24.428976+00:00",
-    "key_factors": [
-      "59 buy/strongBuy ratings (78%) vs 9 sell ratings show strong consensus",
-      "SpaceX IPO approval timing positions HOOD as underwriter for mega-deal"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong analyst support and SpaceX IPO tailwinds offset valuation concerns."
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-20T08:34:24.035417+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "IONQ": {
     "error": "Ugyldig JSON-respons",
@@ -186,7 +186,7 @@
   },
   "ROKU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-19T12:34:15.916622+00:00",
+    "fetched_at": "2026-06-20T08:34:09.598879+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -194,24 +194,24 @@
     "summary": "Ingen data"
   },
   "SE": {
-    "fetched_at": "2026-06-12T10:57:21.513135+00:00",
+    "fetched_at": "2026-06-20T08:34:32.393862+00:00",
     "key_factors": [
-      "92% buy/strong buy ratings show consensus confidence",
-      "Recent 6.9% decline on strategic reinvestment reflects growth investments"
+      "Overwhelming bullish analyst consensus (86 buy/strongBuy vs 6 hold)",
+      "Recent earnings beat breaks 3-quarter miss streak, suggests turnaround"
     ],
     "raw_score": 0.62,
     "score": 0.81,
     "source": "claude",
-    "summary": "Strong analyst support and recent beat offset valuation concerns and recent sell"
+    "summary": "Strong analyst support with recent beat offsetting valuation concerns from 54% d"
   },
   "SHOP": {
-    "fetched_at": "2026-06-12T10:57:29.947603+00:00",
+    "fetched_at": "2026-06-20T08:34:38.156543+00:00",
     "key_factors": [
-      "Overwhelmingly bullish analyst consensus (117 buy/strong buy vs 39 sell/hold)",
-      "39% discount from 52w high presents attractive entry valuation"
+      "117 buy/strongBuy ratings (75% bullish) signals strong conviction",
+      "40% pullback from 52w high presents attractive entry for long-term investors"
     ],
-    "raw_score": 0.65,
-    "score": 0.825,
+    "raw_score": 0.62,
+    "score": 0.81,
     "source": "claude",
     "summary": "Strong analyst support and strategic initiatives offset valuation concerns from "
   },
@@ -230,26 +230,26 @@
     "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
-    "fetched_at": "2026-06-17T12:39:47.089342+00:00",
+    "fetched_at": "2026-06-20T08:34:26.701687+00:00",
     "key_factors": [
-      "Perfect 4Q earnings beat streak demonstrates execution excellence",
-      "134 buy/strongBuy vs 1 sell shows overwhelming analyst conviction"
+      "Perfect earnings record (4/4 beats) demonstrates operational excellence",
+      "Overwhelming analyst support (134 buy/strongBuy vs 1 sell)"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with consistent execution offset by near-term valuation pull"
+    "summary": "Strong fundamental setup with consistent execution and institutional tailwinds"
   },
   "SOFI": {
-    "fetched_at": "2026-06-12T11:30:31.619055+00:00",
+    "fetched_at": "2026-06-20T08:34:29.526596+00:00",
     "key_factors": [
-      "Consensus slightly bullish (24 buy vs 41 hold/sell) but not compelling",
-      "49% drawdown from 52w high raises technical concern despite potential value"
+      "CEO insider buying signals confidence despite 45% drawdown",
+      "Consensus tilts neutral-to-hold (35/71 ratings); weak conviction"
     ],
-    "raw_score": -0.15,
-    "score": 0.425,
+    "raw_score": 0.15,
+    "score": 0.575,
     "source": "claude",
-    "summary": "Mixed signals: analyst optimism offset by valuation concerns and recent underper"
+    "summary": "Mixed outlook; CEO confidence offset by valuation concerns and rating skepticism"
   },
   "TOST": {
     "fetched_at": "2026-06-11T19:30:17.141508+00:00",
@@ -275,14 +275,23 @@
     "summary": "Strong fundamentals with positive industry tailwinds offset geopolitical risks"
   },
   "U": {
-    "fetched_at": "2026-06-12T11:30:36.933148+00:00",
+    "fetched_at": "2026-06-20T08:34:35.362173+00:00",
     "key_factors": [
-      "Bullish analyst consensus (52 buy/strongBuy vs 28 hold)",
-      "Stock down 48.8% from 52w high suggests oversold conditions"
+      "Strong analyst consensus: 52 buy/strongBuy vs 28 hold",
+      "Stock rebounding from -47% 52w low suggests oversold recovery"
     ],
-    "raw_score": 0.42,
-    "score": 0.71,
+    "raw_score": 0.62,
+    "score": 0.81,
     "source": "claude",
-    "summary": "Mixed signals: Strong analyst support offset by valuation concerns and earnings "
+    "summary": "Moderately positive. Strong analyst support and recent outperformance offset val"
+  },
+  "UBER": {
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-06-20T08:34:41.074067+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   }
 }
