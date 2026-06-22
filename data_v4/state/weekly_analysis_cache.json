@@ -1,0 +1,82 @@
+{
+  "ARM": {
+    "action": "reduce",
+    "catalysts": [
+      "Neural Dawn tech could drive mobile AI gaming adoption",
+      "CPU renaissance thesis supports long-term ARM architecture growth"
+    ],
+    "conviction": "low",
+    "fetched_at": "2026-06-22T21:39:35.362214+00:00",
+    "reasoning": "Revenue declining 30% YoY despite AI tailwinds. Trading 47% above avg analyst target. Valuation unsustainable amid weakening fundamentals.",
+    "risks": [
+      "Sequential revenue decline for 4 quarters signals demand weakness",
+      "Price 47% above $278 avg target suggests significant downside"
+    ],
+    "source": "claude",
+    "thesis_intact": false
+  },
+  "ASML": {
+    "action": "hold",
+    "catalysts": [
+      "AI chip demand driving need for advanced node production requiring EUV tools",
+      "Irreplaceable technology moat - only EUV supplier globally"
+    ],
+    "conviction": "medium",
+    "fetched_at": "2026-06-22T21:40:02.678076+00:00",
+    "reasoning": "Monopoly in EUV lithography intact. Revenue volatility reflects cyclical demand. China export risks elevated but manageable long-term.",
+    "risks": [
+      "US-China export restrictions could limit ~50% of potential market",
+      "Revenue declined 30% Q2\u2192Q3, showing cyclical volatility in chip equipment demand"
+    ],
+    "source": "claude",
+    "thesis_intact": true
+  },
+  "DDOG": {
+    "action": "reduce",
+    "catalysts": [
+      "Strong Q1 results mentioned could reverse revenue trend",
+      "Truist upgrade to Buy may attract momentum"
+    ],
+    "conviction": "low",
+    "fetched_at": "2026-06-22T21:39:56.171586+00:00",
+    "reasoning": "Revenue declining sequentially for 4 quarters (DDOG\u2192$0.83B) signals demand weakness. Recent upgrade and price hold don't offset core growth concerns.",
+    "risks": [
+      "Continued revenue contraction suggests market saturation or competitive pressure",
+      "Software sector weakness creating headwinds"
+    ],
+    "source": "claude",
+    "thesis_intact": false
+  },
+  "ROKU": {
+    "action": "reduce",
+    "catalysts": [
+      "Potential Fox acquisition at premium to current price",
+      "Advertising market recovery could stabilize revenue"
+    ],
+    "conviction": "low",
+    "fetched_at": "2026-06-22T21:39:41.892530+00:00",
+    "reasoning": "Revenue declining 3 consecutive quarters (-18% peak-to-trough). Acquisition speculation unreliable. Fundamentals deteriorating despite EPS growth.",
+    "risks": [
+      "Continued revenue decline suggests weakening streaming market position",
+      "M&A speculation appears speculative/unreliable after Netflix passed"
+    ],
+    "source": "claude",
+    "thesis_intact": false
+  },
+  "TSM": {
+    "action": "reduce",
+    "catalysts": [
+      "AI chip demand recovery could stabilize revenue trends",
+      "Advanced node leadership in 3nm/2nm maintains technology moat"
+    ],
+    "conviction": "low",
+    "fetched_at": "2026-06-22T21:39:49.368097+00:00",
+    "reasoning": "Declining revenue (-17.7% over 4Q) and compressing margins (66.2%\u219258.6%) signal structural headwinds despite AI tailwinds. Rising Intel competition.",
+    "risks": [
+      "Continued revenue decline and margin compression trending wrong direction",
+      "Intel 18A advancement threatens foundry dominance and market share"
+    ],
+    "source": "claude",
+    "thesis_intact": false
+  }
+}
