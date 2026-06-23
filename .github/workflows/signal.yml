@@ -54,13 +54,25 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
 
-          git pull --rebase origin main || true
+          git pull --rebase origin main
 
           git add data_v4/ || true
 
           if git diff --cached --quiet; then
             echo "Ingen endringer å committe."
-          else
-            git commit -m "${BOT_MODE^}: $(date -u +%Y-%m-%d)"
-            git push origin main
+            exit 0
           fi
+
+          git commit -m "${BOT_MODE^}: $(date -u +%Y-%m-%d)"
+
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "Push OK ✅"
+              exit 0
+            fi
+            echo "Push feilet (forsøk $attempt/3) — henter nyeste og prøver igjen..."
+            git pull --rebase origin main
+          done
+
+          echo "Push feilet etter 3 forsøk ❌"
+          exit 1
