@@ -1,0 +1,444 @@
+# Model version registry — FROZEN entries must never be modified.
+#
+# VALIDATION RULE:
+#   config_hash is SHA-256 of the canonical JSON of all fields except
+#   config_hash itself. modules/versioning.py validates this at import
+#   and cross-checks key config values against the live code.
+#
+#   If code diverges from the frozen config WITHOUT a new model version,
+#   ModelVersionMismatchError is raised.
+#
+#   To add a new model version:
+#     1. Add a new top-level key (quant_baseline_v2, etc.)
+#     2. Compute config_hash via: python3 -m modules.versioning --compute-hash
+#     3. Code changes must match the new config exactly.
+
+quant_baseline_v1:
+  description: >
+    Baseline 4-factor scoring model (momentum, quality, value, sentiment).
+    FROZEN as of 2026-08-05. Do not modify. Create quant_baseline_v2 instead.
+  created_at: "2026-08-05"
+  frozen: true
+  config_hash: "3bf91114c48814a092ec6f190be4ec03ad867298bd88c09af75fe43d0916ffa1"
+
+  config:
+
+    # ------------------------------------------------------------------
+    # AI MODELS
+    # ------------------------------------------------------------------
+    ai_models:
+      sentiment_model: "claude-haiku-4-5-20251001"
+      earnings_model: "claude-opus-4-8"
+      weekly_model: "claude-sonnet-4-6"
+      sentiment_prompt_version: "sentiment_v1"
+      earnings_prompt_version: "earnings_v1"
+      weekly_prompt_version: "weekly_v1"
+
+    # ------------------------------------------------------------------
+    # MOMENTUM FACTOR (rank-based, 0-100)
+    # Source: modules/scoring.py build_score_table()
+    # ------------------------------------------------------------------
+    momentum_factor:
+      mom_12_1_weight: 0.40
+      mom_6_1_weight: 0.25
+      rank_rs_weight: 0.20
+      ret_1m_weight: 0.15
+      winsorize_quantile_low: 0.02
+      winsorize_quantile_high: 0.98
+
+    # ------------------------------------------------------------------
+    # QUALITY FACTOR (fundamental breakpoints → 0-100 score)
+    # Source: modules/scoring.py _quality_sub_score()
+    # Breakpoints: [threshold, score_if_above_or_below]
+    # For roe/earnings_growth/gross_margin: score if value > threshold
+    # For debt_equity: score if value < threshold
+    # ------------------------------------------------------------------
+    quality_factor:
+      roe_thresholds:
+        - {above: 0.20, score: 1.00}
+        - {above: 0.15, score: 0.85}
+        - {above: 0.10, score: 0.65}
+        - {above: 0.00, score: 0.40}
+        - {default: 0.10}
+      gross_margin_thresholds:
+        - {above: 0.60, score: 1.00}
+        - {above: 0.40, score: 0.80}
+        - {above: 0.25, score: 0.60}
+        - {above: 0.10, score: 0.35}
+        - {default: 0.10}
+      debt_equity_thresholds:
+        - {below: 0.30, score: 1.00}
+        - {below: 0.70, score: 0.80}
+        - {below: 1.00, score: 0.60}
+        - {below: 1.50, score: 0.35}
+        - {default: 0.10}
+      earnings_growth_thresholds:
+        - {above: 0.30, score: 1.00}
+        - {above: 0.20, score: 0.85}
+        - {above: 0.10, score: 0.65}
+        - {above: 0.00, score: 0.40}
+        - {default: 0.10}
+      missing_value_fill: "universe_median"
+
+    # ------------------------------------------------------------------
+    # VALUE / GROWTH FACTOR (0-100 score)
+    # Source: modules/scoring.py _value_sub_score()
+    # ------------------------------------------------------------------
+    value_factor:
+      forward_pe_thresholds:
+        - {range: [8, 15], score: 1.00}
+        - {range: [15, 25], score: 0.75}
+        - {range: [25, 35], score: 0.50}
+        - {range: [0, 8], score: 0.30}
+        - {default: 0.20}
+      peg_ratio_thresholds:
+        - {below: 1.0, score: 1.00}
+        - {below: 1.5, score: 0.80}
+        - {below: 2.0, score: 0.60}
+        - {below: 3.0, score: 0.35}
+        - {default: 0.15}
+      price_to_sales_thresholds:
+        - {below: 2, score: 1.00}
+        - {below: 5, score: 0.75}
+        - {below: 10, score: 0.50}
+        - {below: 20, score: 0.30}
+        - {default: 0.10}
+      missing_value_fill: "universe_median"
+
+    # ------------------------------------------------------------------
+    # SENTIMENT FACTOR (0-100)
+    # Source: modules/scoring.py build_score_table()
+    # ------------------------------------------------------------------
+    sentiment_factor:
+      news_score_weight: 0.25
+      earnings_contribution_weight: 0.75
+      earnings_center: 0.50
+      earnings_bonus_scale: 100.0
+      missing_value_fill: "universe_median"
+
+    # ------------------------------------------------------------------
+    # SCORE PENALTIES / BONUSES (multipliers on final per-strategy score)
+    # Source: modules/scoring.py build_score_table()
+    # ------------------------------------------------------------------
+    score_adjustments:
+      penalty_below_sma200: 0.45
+      penalty_overbought: 0.90
+      penalty_very_weak_rsi: 0.70
+      penalty_vol60_above_1_20: 0.80
+      penalty_non_megacap_in_megacap_strategy: 0.10
+      bonus_insider_buying: 1.10
+
+    # ------------------------------------------------------------------
+    # REGIME WEIGHTS (pure regime weights, before strategy blend)
+    # Source: modules/scoring.py REGIME_WEIGHTS
+    # ------------------------------------------------------------------
+    regime_weights:
+      explosive:  {momentum: 0.45, quality: 0.35, value: 0.15, sentiment: 0.05}
+      bullish:    {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
+      neutral:    {momentum: 0.25, quality: 0.45, value: 0.25, sentiment: 0.05}
+      defensive:  {momentum: 0.15, quality: 0.50, value: 0.30, sentiment: 0.05}
+      unknown:    {momentum: 0.30, quality: 0.40, value: 0.25, sentiment: 0.05}
+
+    # ------------------------------------------------------------------
+    # MACRO INVERSION ADJUSTMENT
+    # Source: modules/scoring.py _MACRO_INVERTED_ADJ, modules/macro.py
+    # Applied when 10Y-2Y spread < inversion_threshold_pct
+    # ------------------------------------------------------------------
+    macro_inversion:
+      inversion_threshold_pct: -0.50
+      inverted_exposure_multiplier: 0.80
+      momentum_delta: -0.10
+      quality_delta: 0.10
+      value_delta: 0.0
+      sentiment_delta: 0.0
+
+    # ------------------------------------------------------------------
+    # WEIGHT BLENDING (strategy weights × regime weights)
+    # Source: modules/scoring.py get_effective_weights()
+    # ------------------------------------------------------------------
+    weight_blending:
+      strategy_fraction: 0.50
+      regime_fraction: 0.50
+
+    # ------------------------------------------------------------------
+    # QUALITY FILTER (mechanical pre-scoring gate)
+    # Source: modules/scoring.py passes_quality_filter()
+    # ------------------------------------------------------------------
+    quality_filter:
+      min_gross_margin: 0.30
+      min_revenue_growth: 0.05
+      max_debt_equity: 2.0
+      min_market_cap_usd: 2000000000
+      require_fcf_positive: true
+      margin_exempt_sectors:
+        - "Financial Services"
+        - "Energy"
+        - "Utilities"
+        - "Real Estate"
+        - "Basic Materials"
+      held_positions_exempt: true
+      benchmarks_exempt:
+        - "SPY"
+        - "QQQ"
+
+    # ------------------------------------------------------------------
+    # UNIVERSE CONSTRUCTION
+    # Source: modules/universe.py build_universe()
+    # ------------------------------------------------------------------
+    universe:
+      sources:
+        - "sp500_wikipedia_current"
+        - "nasdaq100_wikipedia_current"
+        - "extra_watchlist"
+      note_survivorship_bias: >
+        Uses current index constituents, not historical. Creates survivorship
+        bias in backtests. Acceptable for live forward-testing only.
+      extra_watchlist:
+        - "PLTR"
+        - "ARM"
+        - "SMCI"
+        - "TSM"
+        - "ASML"
+        - "NVO"
+        - "SHOP"
+        - "SE"
+        - "COIN"
+        - "RBLX"
+        - "U"
+        - "SNOW"
+        - "MDB"
+        - "DDOG"
+        - "NET"
+        - "CRWD"
+        - "CELH"
+        - "ELF"
+        - "TOST"
+        - "APP"
+        - "HOOD"
+        - "SOFI"
+        - "MSTR"
+        - "UBER"
+        - "ABNB"
+        - "PANW"
+        - "ZS"
+        - "OKTA"
+        - "BILL"
+        - "ROKU"
+        - "DELL"
+        - "HIMS"
+        - "IONQ"
+        - "RGTI"
+        - "QBTS"
+      megacap_tickers:
+        - "AAPL"
+        - "MSFT"
+        - "NVDA"
+        - "GOOGL"
+        - "GOOG"
+        - "AMZN"
+        - "META"
+        - "AVGO"
+        - "TSLA"
+        - "BRK-B"
+        - "LLY"
+        - "JPM"
+        - "V"
+        - "MA"
+        - "NFLX"
+        - "COST"
+        - "ORCL"
+        - "AMD"
+        - "CRM"
+        - "ADBE"
+        - "QCOM"
+        - "CSCO"
+        - "PEP"
+        - "KO"
+        - "MCD"
+        - "WMT"
+        - "HD"
+        - "UNH"
+        - "ABBV"
+        - "NVO"
+        - "ASML"
+        - "TSM"
+      benchmarks_included:
+        - "SPY"
+        - "QQQ"
+
+    # ------------------------------------------------------------------
+    # DATA SOURCES
+    # ------------------------------------------------------------------
+    data_sources:
+      price_data: "yfinance daily period=2y auto_adjust=False"
+      fundamentals: "yfinance .info (current NOT point-in-time)"
+      macro: "Treasury.gov 10Y-2Y yield curve no-api-key cache=24h"
+      insider: "yfinance .insider_transactions"
+      earnings_calendar: "yfinance .calendar"
+
+    # ------------------------------------------------------------------
+    # PER-STRATEGY SIGNAL AND EXECUTION CONFIG
+    # Source: modules/scoring.py STRATEGIES
+    # ------------------------------------------------------------------
+    strategies:
+      Max_Return_AI:
+        score_column: "score_max_return"
+        base_weights: {momentum: 0.45, quality: 0.30, value: 0.20, sentiment: 0.05}
+        max_positions: 10
+        max_position_weight: 0.15
+        max_new_buys_per_week: 5
+        buy_top_n: 20
+        min_score_percentile: 0.80
+        sell_rank_threshold: 120
+        stop_loss: -0.22
+        trailing_stop: -0.28
+        buyback_cooldown_days: 7
+        exposure:
+          explosive: 1.00
+          bullish: 1.00
+          neutral: 0.70
+          defensive: 0.40
+          unknown: 0.60
+
+      Quality_Momentum_AI:
+        score_column: "score_quality_momentum"
+        base_weights: {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
+        max_positions: 10
+        max_position_weight: 0.13
+        max_new_buys_per_week: 4
+        buy_top_n: 20
+        min_score_percentile: 0.78
+        sell_rank_threshold: 110
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.95
+          bullish: 0.90
+          neutral: 0.65
+          defensive: 0.35
+          unknown: 0.55
+
+      Balanced_AI:
+        score_column: "score_balanced"
+        base_weights: {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
+        max_positions: 10
+        max_position_weight: 0.12
+        max_new_buys_per_week: 4
+        buy_top_n: 18
+        min_score_percentile: 0.75
+        sell_rank_threshold: 110
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.90
+          bullish: 0.85
+          neutral: 0.60
+          defensive: 0.30
+          unknown: 0.50
+
+      Low_Risk_AI:
+        score_column: "score_low_risk"
+        base_weights: {momentum: 0.25, quality: 0.45, value: 0.25, sentiment: 0.05}
+        max_positions: 12
+        max_position_weight: 0.10
+        max_new_buys_per_week: 3
+        buy_top_n: 25
+        min_score_percentile: 0.70
+        sell_rank_threshold: 100
+        stop_loss: -0.15
+        trailing_stop: -0.22
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.80
+          bullish: 0.75
+          neutral: 0.50
+          defensive: 0.25
+          unknown: 0.45
+
+      MegaCap_AI:
+        score_column: "score_megacap"
+        base_weights: {momentum: 0.30, quality: 0.45, value: 0.20, sentiment: 0.05}
+        max_positions: 8
+        max_position_weight: 0.15
+        max_new_buys_per_week: 3
+        buy_top_n: 25
+        min_score_percentile: 0.65
+        sell_rank_threshold: 100
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.90
+          bullish: 0.85
+          neutral: 0.55
+          defensive: 0.30
+          unknown: 0.50
+
+      AI_Sentiment_AI:
+        score_column: "score_ai_sentiment"
+        base_weights: {momentum: 0.30, quality: 0.45, value: 0.15, sentiment: 0.10}
+        max_positions: 10
+        max_position_weight: 0.13
+        max_new_buys_per_week: 4
+        buy_top_n: 20
+        min_score_percentile: 0.75
+        sell_rank_threshold: 110
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 7
+        exposure:
+          explosive: 0.95
+          bullish: 0.90
+          neutral: 0.60
+          defensive: 0.30
+          unknown: 0.50
+
+    # ------------------------------------------------------------------
+    # EXIT RULES (applied per position, source: modules/risk.py)
+    # ------------------------------------------------------------------
+    exit_rules:
+      stop_loss_source: "per_strategy"
+      trailing_stop_source: "per_strategy"
+      sell_if_below_sma200: true
+      rank_score_exit:
+        rank_above: "sell_rank_threshold"
+        score_below: 45
+      score_degradation_exit:
+        min_days_held: 10
+        min_buy_score: 20
+        max_retained_fraction: 0.65
+
+    # ------------------------------------------------------------------
+    # PORTFOLIO EXECUTION (source: modules/portfolio.py)
+    # ------------------------------------------------------------------
+    portfolio_execution:
+      min_position_value_usd: 500
+      sector_cap: 0.25
+      risk_parity_formula: "score_squared_divided_by_vol60"
+      vol60_clip_low: 0.15
+      vol60_clip_high: 1.50
+      pyramid_initial_fraction: 0.60
+      pyramid_fill_fraction: 0.40
+      pyramid_min_days: 5
+      pyramid_min_gain: 0.02
+      pyramid_min_price_multiplier: 1.02
+      gap_skip_threshold: 0.05
+      gap_halve_threshold: 0.025
+      premarket_halve_threshold: 0.04
+      commission_rate: 0.001
+      sec_fee_rate: 0.00003
+      drawdown_level1_threshold: -0.20
+      drawdown_level1_max_exposure: 0.50
+      drawdown_level2_threshold: -0.30
+      drawdown_level2_max_exposure: 0.20
+
+    # ------------------------------------------------------------------
+    # SCORING OUTPUT
+    # ------------------------------------------------------------------
+    scoring_output:
+      top_candidates_to_save: 150
+      top_candidates_to_report: 5
+      score_range_min: 0
+      score_range_max: 100

@@ -1,0 +1,97 @@
+# Portfolio version registry — describes execution logic, not signal scoring.
+#
+# portfolio_version identifies HOW the portfolio acts on signal recommendations:
+#   position sizing, entry/exit rules, risk management.
+#
+# model_version (in model_versions.yml) identifies WHAT signal scores are produced.
+#
+# These are intentionally separate: the same signal model can feed multiple
+# portfolio versions (e.g. a full-managed version and a simple equal-weight
+# control portfolio).
+
+# ============================================================================
+# EXISTING MANAGED STRATEGIES (one entry per signal strategy)
+# ============================================================================
+
+risk_parity_pyramid_v1:
+  description: >
+    Full risk-managed portfolio execution using all current strategy configs.
+    Applies risk-parity sizing (score²/vol60), pyramid buying (60%+40%),
+    trailing stop, stop-loss, correlation filter, macro exposure adjustment,
+    sector cap, drawdown protection, and weekly buy limits.
+    This is the ORIGINAL live paper portfolio logic, frozen for tracking.
+  created_at: "2026-08-05"
+  frozen: false
+  applies_to_strategies:
+    - "Max_Return_AI"
+    - "Quality_Momentum_AI"
+    - "Balanced_AI"
+    - "Low_Risk_AI"
+    - "MegaCap_AI"
+    - "AI_Sentiment_AI"
+  signal_to_execution:
+    entry: "risk_parity_sizing_with_pyramid"
+    exit: "trailing_stop_plus_score_degradation"
+    position_limit: "per_strategy_max_positions"
+    sizing: "score_squared_divided_by_vol60"
+  notes: >
+    Strategy-specific parameters (stop_loss, trailing_stop, max_positions, etc.)
+    come from model_versions.yml quant_baseline_v1.strategies.
+
+# ============================================================================
+# PLANNED CONTROL PORTFOLIOS (not yet implemented — Fase 2)
+# ============================================================================
+
+equal_weight_top10_next_open_v1:
+  description: >
+    Simple equal-weight control portfolio. Buys equal dollar amounts in
+    the top-10 ranked candidates from the signal at next session open price.
+    No pyramid, no trailing stop, no correlation filter.
+    Isolates signal quality from execution complexity.
+  created_at: null
+  frozen: false
+  status: "planned"
+
+spy_buy_hold_v1:
+  description: >
+    SPY buy-and-hold benchmark. Buys SPY on first signal date, holds.
+    Used as market baseline for alpha measurement.
+  created_at: null
+  frozen: false
+  status: "planned"
+
+equal_weight_universe_top20_v1:
+  description: >
+    Buys equal weights in top-20 from each signal. Monthly rebalance.
+    No active risk management. Second control portfolio.
+  created_at: null
+  frozen: false
+  status: "planned"
+
+# ============================================================================
+# EXECUTION VERSIONS
+# ============================================================================
+
+execution_versions:
+  exec_signal_price_v0:
+    description: >
+      LEGACY. Used signal price (previous day close) as paper fill price.
+      Execute ran before NYSE open; get_latest_price() returned previous close.
+      This version produced invalid paper fills — not a true next-open price.
+    active_until: "2026-08-05"
+    status: "deprecated"
+
+  exec_next_open_v1:
+    description: >
+      First bar of regular session after NYSE open on intended_execution_session.
+      Uses exchange_calendars for DST-correct open time.
+      Fails closed if bar not available — no fallback to signal price or previous close.
+    created_at: "2026-08-05"
+    status: "implementing"
+    stores:
+      - "exchange_session"
+      - "execution_bar_timestamp"
+      - "execution_price"
+      - "price_source"
+      - "price_interval"
+      - "execution_model_version"
