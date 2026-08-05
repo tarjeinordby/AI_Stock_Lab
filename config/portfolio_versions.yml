@@ -1,51 +1,216 @@
-# Portfolio version registry — describes execution logic, not signal scoring.
+# Portfolio version registry — execution logic, risk management, and position sizing.
 #
-# portfolio_version identifies HOW the portfolio acts on signal recommendations:
-#   position sizing, entry/exit rules, risk management.
+# SCOPE: Rules that determine HOW the portfolio acts on signal recommendations:
+#   - position sizing and target weights
+#   - pyramid buying rules
+#   - sector concentration limits
+#   - stop-loss and trailing stop thresholds
+#   - drawdown protection
+#   - rebalancing and buy/sell rules based on signal ranking
+#   - cash management
+#   - macro portfolio exposure multiplier (capital allocation, not scoring)
 #
-# model_version (in model_versions.yml) identifies WHAT signal scores are produced.
+# NOT in this file:
+#   - Signal scoring weights and factor definitions → model_versions.yml
+#   - Fill/price/commission/gap/execution rules → execution_versions.yml
 #
-# These are intentionally separate: the same signal model can feed multiple
-# portfolio versions (e.g. a full-managed version and a simple equal-weight
-# control portfolio).
-
-# ============================================================================
-# EXISTING MANAGED STRATEGIES (one entry per signal strategy)
-# ============================================================================
+# MACRO REGIME SPLIT (see also model_versions.yml):
+#   model_versions.yml:     momentum_delta / quality_delta → affects ticker ranking
+#   HERE (portfolio):       inverted_exposure_multiplier = 0.80
+#                           → reduces capital deployed when yield curve inverted
+#   Same inversion_threshold_pct = -0.50% triggers both.
+#
+# portfolio_config_hash: SHA-256 of all fields except portfolio_config_hash.
+# Cross-validated against live scoring.STRATEGIES by modules/versioning.py.
 
 risk_parity_pyramid_v1:
   description: >
-    Full risk-managed portfolio execution using all current strategy configs.
-    Applies risk-parity sizing (score²/vol60), pyramid buying (60%+40%),
-    trailing stop, stop-loss, correlation filter, macro exposure adjustment,
-    sector cap, drawdown protection, and weekly buy limits.
-    This is the ORIGINAL live paper portfolio logic, frozen for tracking.
+    Full risk-managed portfolio. Risk-parity position sizing (score²/vol60),
+    pyramid buying (60% initial + 40% fill), per-strategy stop-loss and trailing
+    stop, sector cap, correlation filter, macro exposure adjustment, and
+    drawdown protection. This is the original live paper portfolio logic.
   created_at: "2026-08-05"
   frozen: false
-  applies_to_strategies:
-    - "Max_Return_AI"
-    - "Quality_Momentum_AI"
-    - "Balanced_AI"
-    - "Low_Risk_AI"
-    - "MegaCap_AI"
-    - "AI_Sentiment_AI"
-  signal_to_execution:
-    entry: "risk_parity_sizing_with_pyramid"
-    exit: "trailing_stop_plus_score_degradation"
-    position_limit: "per_strategy_max_positions"
-    sizing: "score_squared_divided_by_vol60"
-  notes: >
-    Strategy-specific parameters (stop_loss, trailing_stop, max_positions, etc.)
-    come from model_versions.yml quant_baseline_v1.strategies.
+  portfolio_config_hash: "f2821d58d24d3093ce57ea11c698e3cfc7fb1ac64d2aba3e433004f74af2fd5f"
+
+  config:
+
+    # ------------------------------------------------------------------
+    # PER-STRATEGY PORTFOLIO PARAMETERS
+    # Source: modules/scoring.py STRATEGIES (non-signal fields)
+    # These control how the portfolio uses signal rankings — not how scores
+    # are computed.
+    # ------------------------------------------------------------------
+    strategies:
+      Max_Return_AI:
+        max_positions: 10
+        max_position_weight: 0.15
+        max_new_buys_per_week: 5
+        buy_top_n: 20
+        min_score_percentile: 0.80
+        sell_rank_threshold: 120
+        stop_loss: -0.22
+        trailing_stop: -0.28
+        buyback_cooldown_days: 7
+        exposure:
+          explosive: 1.00
+          bullish: 1.00
+          neutral: 0.70
+          defensive: 0.40
+          unknown: 0.60
+
+      Quality_Momentum_AI:
+        max_positions: 10
+        max_position_weight: 0.13
+        max_new_buys_per_week: 4
+        buy_top_n: 20
+        min_score_percentile: 0.78
+        sell_rank_threshold: 110
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.95
+          bullish: 0.90
+          neutral: 0.65
+          defensive: 0.35
+          unknown: 0.55
+
+      Balanced_AI:
+        max_positions: 10
+        max_position_weight: 0.12
+        max_new_buys_per_week: 4
+        buy_top_n: 18
+        min_score_percentile: 0.75
+        sell_rank_threshold: 110
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.90
+          bullish: 0.85
+          neutral: 0.60
+          defensive: 0.30
+          unknown: 0.50
+
+      Low_Risk_AI:
+        max_positions: 12
+        max_position_weight: 0.10
+        max_new_buys_per_week: 3
+        buy_top_n: 25
+        min_score_percentile: 0.70
+        sell_rank_threshold: 100
+        stop_loss: -0.15
+        trailing_stop: -0.22
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.80
+          bullish: 0.75
+          neutral: 0.50
+          defensive: 0.25
+          unknown: 0.45
+
+      MegaCap_AI:
+        max_positions: 8
+        max_position_weight: 0.15
+        max_new_buys_per_week: 3
+        buy_top_n: 25
+        min_score_percentile: 0.65
+        sell_rank_threshold: 100
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.90
+          bullish: 0.85
+          neutral: 0.55
+          defensive: 0.30
+          unknown: 0.50
+
+      AI_Sentiment_AI:
+        max_positions: 10
+        max_position_weight: 0.13
+        max_new_buys_per_week: 4
+        buy_top_n: 20
+        min_score_percentile: 0.75
+        sell_rank_threshold: 110
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 7
+        exposure:
+          explosive: 0.95
+          bullish: 0.90
+          neutral: 0.60
+          defensive: 0.30
+          unknown: 0.50
+
+    # ------------------------------------------------------------------
+    # GENERAL PORTFOLIO RULES
+    # Source: modules/portfolio.py
+    # ------------------------------------------------------------------
+    general:
+      min_position_value_usd: 500
+      sector_cap: 0.25
+      risk_parity_formula: "score_squared_divided_by_vol60"
+      vol60_clip_low: 0.15
+      vol60_clip_high: 1.50
+      start_capital_usd: 10000.0
+
+    # ------------------------------------------------------------------
+    # PYRAMID BUYING
+    # Source: modules/portfolio.py execute_buy() / execute_pyramid_fill()
+    # ------------------------------------------------------------------
+    pyramid:
+      initial_fill_fraction: 0.60
+      pyramid_fill_fraction: 0.40
+      min_trading_days_before_fill: 5
+      min_gain_before_fill: 0.02
+      min_price_multiplier: 1.02
+
+    # ------------------------------------------------------------------
+    # EXIT RULES
+    # Source: modules/risk.py should_sell_position()
+    # stop_loss / trailing_stop thresholds are per-strategy (above).
+    # ------------------------------------------------------------------
+    exit_rules:
+      sell_if_below_sma200: true
+      rank_score_exit:
+        rank_above: "sell_rank_threshold"
+        score_below: 45
+      score_degradation_exit:
+        min_days_held: 10
+        min_buy_score: 20
+        max_retained_fraction: 0.65
+
+    # ------------------------------------------------------------------
+    # DRAWDOWN PROTECTION
+    # Source: modules/portfolio.py _get_effective_exposure()
+    #         modules/risk.py drawdown_protection_message()
+    # ------------------------------------------------------------------
+    drawdown_protection:
+      level_1_threshold: -0.20
+      level_1_max_exposure: 0.50
+      level_2_threshold: -0.30
+      level_2_max_exposure: 0.20
+
+    # ------------------------------------------------------------------
+    # MACRO PORTFOLIO EXPOSURE (capital allocation, not scoring)
+    # Counterpart to macro_inversion_score_adjustment in model_versions.yml.
+    # When inverted, exposure across all strategies is scaled by this multiplier.
+    # Source: modules/macro.py INVERSION_THRESHOLD, exposure_mult
+    # ------------------------------------------------------------------
+    macro_portfolio_exposure:
+      inversion_threshold_pct: -0.50
+      inverted_exposure_multiplier: 0.80
 
 # ============================================================================
-# PLANNED CONTROL PORTFOLIOS (not yet implemented — Fase 2)
+# PLANNED CONTROL PORTFOLIOS (Fase 2 — not yet implemented)
 # ============================================================================
 
 equal_weight_top10_next_open_v1:
   description: >
-    Simple equal-weight control portfolio. Buys equal dollar amounts in
-    the top-10 ranked candidates from the signal at next session open price.
+    Simple equal-weight control portfolio. Buys equal dollar amounts in the
+    top-10 ranked candidates from the signal at next-session open price.
     No pyramid, no trailing stop, no correlation filter.
     Isolates signal quality from execution complexity.
   created_at: null
@@ -54,44 +219,8 @@ equal_weight_top10_next_open_v1:
 
 spy_buy_hold_v1:
   description: >
-    SPY buy-and-hold benchmark. Buys SPY on first signal date, holds.
+    SPY buy-and-hold benchmark. Buys SPY on first signal date, holds forever.
     Used as market baseline for alpha measurement.
   created_at: null
   frozen: false
   status: "planned"
-
-equal_weight_universe_top20_v1:
-  description: >
-    Buys equal weights in top-20 from each signal. Monthly rebalance.
-    No active risk management. Second control portfolio.
-  created_at: null
-  frozen: false
-  status: "planned"
-
-# ============================================================================
-# EXECUTION VERSIONS
-# ============================================================================
-
-execution_versions:
-  exec_signal_price_v0:
-    description: >
-      LEGACY. Used signal price (previous day close) as paper fill price.
-      Execute ran before NYSE open; get_latest_price() returned previous close.
-      This version produced invalid paper fills — not a true next-open price.
-    active_until: "2026-08-05"
-    status: "deprecated"
-
-  exec_next_open_v1:
-    description: >
-      First bar of regular session after NYSE open on intended_execution_session.
-      Uses exchange_calendars for DST-correct open time.
-      Fails closed if bar not available — no fallback to signal price or previous close.
-    created_at: "2026-08-05"
-    status: "implementing"
-    stores:
-      - "exchange_session"
-      - "execution_bar_timestamp"
-      - "execution_price"
-      - "price_source"
-      - "price_interval"
-      - "execution_model_version"

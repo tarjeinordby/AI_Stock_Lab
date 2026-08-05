@@ -1,17 +1,32 @@
 # Model version registry — FROZEN entries must never be modified.
 #
-# VALIDATION RULE:
-#   config_hash is SHA-256 of the canonical JSON of all fields except
-#   config_hash itself. modules/versioning.py validates this at import
-#   and cross-checks key config values against the live code.
+# SCOPE: Only parameters that determine WHICH stocks are recommended and HOW
+# they are scored. This includes feature definitions, factor weights, scoring
+# thresholds, bonuses/penalties, quality filter, universe rules, and the
+# signal-score impact of macro regime.
 #
-#   If code diverges from the frozen config WITHOUT a new model version,
-#   ModelVersionMismatchError is raised.
+# NOT in this file:
+#   - Portfolio execution rules (max_positions, stop_loss, pyramid, sector_cap)
+#     → portfolio_versions.yml
+#   - Fill/price/commission/execution rules
+#     → execution_versions.yml
+#   - Macro portfolio exposure multiplier (inverted_exposure_multiplier)
+#     → portfolio_versions.yml (it controls capital allocation, not scoring)
 #
-#   To add a new model version:
-#     1. Add a new top-level key (quant_baseline_v2, etc.)
-#     2. Compute config_hash via: python3 -m modules.versioning --compute-hash
-#     3. Code changes must match the new config exactly.
+# MACRO REGIME SPLIT (documented here for clarity):
+#   model_versions.yml:     momentum_delta / quality_delta applied to scoring weights
+#                           → changes how tickers are ranked (model concern)
+#   portfolio_versions.yml: inverted_exposure_multiplier = 0.80
+#                           → changes how much capital is deployed (portfolio concern)
+#   Both share the same inversion_threshold_pct = -0.50% as the trigger condition.
+#
+# model_config_hash: SHA-256 of all fields except model_config_hash itself.
+# Verified by modules/versioning.py against live scoring.py at startup.
+#
+# To add a new model version:
+#   1. Add new top-level key (quant_baseline_v2, ...)
+#   2. Run: python3 -m modules.versioning --compute-hash
+#   3. Code changes must match the new config exactly.
 
 quant_baseline_v1:
   description: >
@@ -19,12 +34,12 @@ quant_baseline_v1:
     FROZEN as of 2026-08-05. Do not modify. Create quant_baseline_v2 instead.
   created_at: "2026-08-05"
   frozen: true
-  config_hash: "3bf91114c48814a092ec6f190be4ec03ad867298bd88c09af75fe43d0916ffa1"
+  model_config_hash: "d303b9a12ce0f0552eeaddee6f9625dbd713d1e08d3f527f25ddec1412ac41d2"
 
   config:
 
     # ------------------------------------------------------------------
-    # AI MODELS
+    # AI MODELS (signal scoring only — not portfolio/reporting models)
     # ------------------------------------------------------------------
     ai_models:
       sentiment_model: "claude-haiku-4-5-20251001"
@@ -49,9 +64,6 @@ quant_baseline_v1:
     # ------------------------------------------------------------------
     # QUALITY FACTOR (fundamental breakpoints → 0-100 score)
     # Source: modules/scoring.py _quality_sub_score()
-    # Breakpoints: [threshold, score_if_above_or_below]
-    # For roe/earnings_growth/gross_margin: score if value > threshold
-    # For debt_equity: score if value < threshold
     # ------------------------------------------------------------------
     quality_factor:
       roe_thresholds:
@@ -118,6 +130,7 @@ quant_baseline_v1:
 
     # ------------------------------------------------------------------
     # SCORE PENALTIES / BONUSES (multipliers on final per-strategy score)
+    # These affect the final score and therefore the ranking of tickers.
     # Source: modules/scoring.py build_score_table()
     # ------------------------------------------------------------------
     score_adjustments:
@@ -130,6 +143,8 @@ quant_baseline_v1:
 
     # ------------------------------------------------------------------
     # REGIME WEIGHTS (pure regime weights, before strategy blend)
+    # These are blended 50/50 with per-strategy base_weights to determine
+    # the effective scoring weights. Regime affects RANKING, not just exposure.
     # Source: modules/scoring.py REGIME_WEIGHTS
     # ------------------------------------------------------------------
     regime_weights:
@@ -140,13 +155,17 @@ quant_baseline_v1:
       unknown:    {momentum: 0.30, quality: 0.40, value: 0.25, sentiment: 0.05}
 
     # ------------------------------------------------------------------
-    # MACRO INVERSION ADJUSTMENT
+    # MACRO INVERSION — SIGNAL-SCORE IMPACT ONLY
     # Source: modules/scoring.py _MACRO_INVERTED_ADJ, modules/macro.py
-    # Applied when 10Y-2Y spread < inversion_threshold_pct
+    #
+    # SPLIT with portfolio_versions.yml:
+    #   HERE (model):      Weight adjustments → changes ticker RANKING
+    #   PORTFOLIO FILE:    inverted_exposure_multiplier = 0.80
+    #                      → reduces capital deployed (does not affect ranking)
+    # Both use the same inversion_threshold_pct as the trigger condition.
     # ------------------------------------------------------------------
-    macro_inversion:
+    macro_inversion_score_adjustment:
       inversion_threshold_pct: -0.50
-      inverted_exposure_multiplier: 0.80
       momentum_delta: -0.10
       quality_delta: 0.10
       value_delta: 0.0
@@ -162,6 +181,8 @@ quant_baseline_v1:
 
     # ------------------------------------------------------------------
     # QUALITY FILTER (mechanical pre-scoring gate)
+    # Determines which tickers are analyzed. This is a model concern because
+    # it defines the eligible universe for scoring.
     # Source: modules/scoring.py passes_quality_filter()
     # ------------------------------------------------------------------
     quality_filter:
@@ -183,6 +204,7 @@ quant_baseline_v1:
 
     # ------------------------------------------------------------------
     # UNIVERSE CONSTRUCTION
+    # Determines which tickers the model can recommend.
     # Source: modules/universe.py build_universe()
     # ------------------------------------------------------------------
     universe:
@@ -267,7 +289,7 @@ quant_baseline_v1:
         - "QQQ"
 
     # ------------------------------------------------------------------
-    # DATA SOURCES
+    # DATA SOURCES (what data feeds into the score)
     # ------------------------------------------------------------------
     data_sources:
       price_data: "yfinance daily period=2y auto_adjust=False"
@@ -277,162 +299,35 @@ quant_baseline_v1:
       earnings_calendar: "yfinance .calendar"
 
     # ------------------------------------------------------------------
-    # PER-STRATEGY SIGNAL AND EXECUTION CONFIG
+    # PER-STRATEGY SIGNAL CONFIG (model side only: score_column, base_weights)
+    # Portfolio-side params (stop_loss, max_positions, etc.) are in
+    # portfolio_versions.yml under risk_parity_pyramid_v1.
     # Source: modules/scoring.py STRATEGIES
     # ------------------------------------------------------------------
     strategies:
       Max_Return_AI:
         score_column: "score_max_return"
         base_weights: {momentum: 0.45, quality: 0.30, value: 0.20, sentiment: 0.05}
-        max_positions: 10
-        max_position_weight: 0.15
-        max_new_buys_per_week: 5
-        buy_top_n: 20
-        min_score_percentile: 0.80
-        sell_rank_threshold: 120
-        stop_loss: -0.22
-        trailing_stop: -0.28
-        buyback_cooldown_days: 7
-        exposure:
-          explosive: 1.00
-          bullish: 1.00
-          neutral: 0.70
-          defensive: 0.40
-          unknown: 0.60
 
       Quality_Momentum_AI:
         score_column: "score_quality_momentum"
         base_weights: {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
-        max_positions: 10
-        max_position_weight: 0.13
-        max_new_buys_per_week: 4
-        buy_top_n: 20
-        min_score_percentile: 0.78
-        sell_rank_threshold: 110
-        stop_loss: -0.18
-        trailing_stop: -0.25
-        buyback_cooldown_days: 10
-        exposure:
-          explosive: 0.95
-          bullish: 0.90
-          neutral: 0.65
-          defensive: 0.35
-          unknown: 0.55
 
       Balanced_AI:
         score_column: "score_balanced"
         base_weights: {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
-        max_positions: 10
-        max_position_weight: 0.12
-        max_new_buys_per_week: 4
-        buy_top_n: 18
-        min_score_percentile: 0.75
-        sell_rank_threshold: 110
-        stop_loss: -0.18
-        trailing_stop: -0.25
-        buyback_cooldown_days: 10
-        exposure:
-          explosive: 0.90
-          bullish: 0.85
-          neutral: 0.60
-          defensive: 0.30
-          unknown: 0.50
 
       Low_Risk_AI:
         score_column: "score_low_risk"
         base_weights: {momentum: 0.25, quality: 0.45, value: 0.25, sentiment: 0.05}
-        max_positions: 12
-        max_position_weight: 0.10
-        max_new_buys_per_week: 3
-        buy_top_n: 25
-        min_score_percentile: 0.70
-        sell_rank_threshold: 100
-        stop_loss: -0.15
-        trailing_stop: -0.22
-        buyback_cooldown_days: 10
-        exposure:
-          explosive: 0.80
-          bullish: 0.75
-          neutral: 0.50
-          defensive: 0.25
-          unknown: 0.45
 
       MegaCap_AI:
         score_column: "score_megacap"
         base_weights: {momentum: 0.30, quality: 0.45, value: 0.20, sentiment: 0.05}
-        max_positions: 8
-        max_position_weight: 0.15
-        max_new_buys_per_week: 3
-        buy_top_n: 25
-        min_score_percentile: 0.65
-        sell_rank_threshold: 100
-        stop_loss: -0.18
-        trailing_stop: -0.25
-        buyback_cooldown_days: 10
-        exposure:
-          explosive: 0.90
-          bullish: 0.85
-          neutral: 0.55
-          defensive: 0.30
-          unknown: 0.50
 
       AI_Sentiment_AI:
         score_column: "score_ai_sentiment"
         base_weights: {momentum: 0.30, quality: 0.45, value: 0.15, sentiment: 0.10}
-        max_positions: 10
-        max_position_weight: 0.13
-        max_new_buys_per_week: 4
-        buy_top_n: 20
-        min_score_percentile: 0.75
-        sell_rank_threshold: 110
-        stop_loss: -0.18
-        trailing_stop: -0.25
-        buyback_cooldown_days: 7
-        exposure:
-          explosive: 0.95
-          bullish: 0.90
-          neutral: 0.60
-          defensive: 0.30
-          unknown: 0.50
-
-    # ------------------------------------------------------------------
-    # EXIT RULES (applied per position, source: modules/risk.py)
-    # ------------------------------------------------------------------
-    exit_rules:
-      stop_loss_source: "per_strategy"
-      trailing_stop_source: "per_strategy"
-      sell_if_below_sma200: true
-      rank_score_exit:
-        rank_above: "sell_rank_threshold"
-        score_below: 45
-      score_degradation_exit:
-        min_days_held: 10
-        min_buy_score: 20
-        max_retained_fraction: 0.65
-
-    # ------------------------------------------------------------------
-    # PORTFOLIO EXECUTION (source: modules/portfolio.py)
-    # ------------------------------------------------------------------
-    portfolio_execution:
-      min_position_value_usd: 500
-      sector_cap: 0.25
-      risk_parity_formula: "score_squared_divided_by_vol60"
-      vol60_clip_low: 0.15
-      vol60_clip_high: 1.50
-      pyramid_initial_fraction: 0.60
-      pyramid_fill_fraction: 0.40
-      pyramid_min_days: 5
-      pyramid_min_gain: 0.02
-      pyramid_min_price_multiplier: 1.02
-      gap_skip_threshold: 0.05
-      gap_halve_threshold: 0.025
-      premarket_halve_threshold: 0.04
-      commission_rate: 0.001
-      sec_fee_rate: 0.00003
-      drawdown_level1_threshold: -0.20
-      drawdown_level1_max_exposure: 0.50
-      drawdown_level2_threshold: -0.30
-      drawdown_level2_max_exposure: 0.20
 
     # ------------------------------------------------------------------
     # SCORING OUTPUT

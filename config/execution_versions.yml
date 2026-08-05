@@ -1,0 +1,120 @@
+# Execution version registry — how orders are filled and priced.
+#
+# SCOPE: Rules that determine HOW a paper order is executed:
+#   - price determination method and data source
+#   - execution bar selection (first bar after open)
+#   - gap filters and pre-market size adjustments
+#   - slippage model
+#   - commission and fees
+#   - failure handling and fail-closed rules
+#
+# NOT in this file:
+#   - Signal scoring weights → model_versions.yml
+#   - Portfolio-level rules (stop-loss, sector cap, etc.) → portfolio_versions.yml
+#
+# execution_config_hash: SHA-256 of all fields except execution_config_hash.
+# Verified by modules/versioning.py.
+
+# ============================================================================
+# DEPRECATED — INVALID EXECUTION MODEL
+# ============================================================================
+
+exec_signal_price_v0:
+  description: >
+    LEGACY — INVALID. Used signal price (previous day's close) as paper fill
+    price. Execute ran before NYSE open (09:25 ET); get_latest_price() with
+    prepost=False returned previous session's last 1-min bar = previous close.
+    This was NOT a valid next-open price. Paper performance from this version
+    is not comparable to live trading.
+  deprecated_at: "2026-08-05"
+  status: "deprecated"
+  execution_config_hash: "n/a"
+
+# ============================================================================
+# CURRENT — NEXT REGULAR-SESSION OPEN
+# ============================================================================
+
+exec_next_open_v1:
+  description: >
+    Fill paper orders at the first valid 1-minute bar after NYSE regular-session
+    open on the intended_execution_session date. Uses exchange_calendars for
+    DST-correct open timestamps. Fails closed if no valid bar is found.
+  created_at: "2026-08-05"
+  status: "implementing"
+  execution_config_hash: "b893c7f9482bae206f1551f547bc239c3e2c12690cdedc3deadafd707a5ed679"
+
+  config:
+
+    # ------------------------------------------------------------------
+    # PRICE DETERMINATION
+    # ------------------------------------------------------------------
+    price_method: "first_bar_after_regular_session_open"
+    price_interval: "1m"
+    price_source: "yfinance"
+    session_type: "regular"
+    prepost: false
+
+    # ------------------------------------------------------------------
+    # FAIL-CLOSED RULES
+    # If a valid fill price cannot be obtained, the order must NOT be filled.
+    # No fallback to any of the following:
+    # ------------------------------------------------------------------
+    fail_closed:
+      no_fallback_to_signal_price: true
+      no_fallback_to_previous_close: true
+      no_fallback_to_premarket_price: true
+      no_fallback_to_latest_available: true
+      on_missing_bar: "mark_order_pending_or_failed"
+      on_calendar_unavailable: "abort_all_new_fills"
+
+    # ------------------------------------------------------------------
+    # FIELDS STORED PER FILL
+    # ------------------------------------------------------------------
+    fill_fields_stored:
+      - "exchange_session"
+      - "execution_bar_timestamp"
+      - "execution_price"
+      - "price_source"
+      - "price_interval"
+      - "execution_model_version"
+
+    # ------------------------------------------------------------------
+    # GAP FILTERS (applied relative to signal_price at time of execution)
+    # Source: modules/portfolio.py execute_buy()
+    # ------------------------------------------------------------------
+    gap_filters:
+      skip_if_gap_above: 0.05
+      halve_size_if_gap_above: 0.025
+
+    # ------------------------------------------------------------------
+    # PRE-MARKET SIZE ADJUSTMENT
+    # Applied if the pre-market move vs previous close exceeds the threshold.
+    # Source: modules/portfolio.py execute_buy()
+    # ------------------------------------------------------------------
+    premarket_size_adjustment:
+      halve_size_if_premarket_move_above: 0.04
+
+    # ------------------------------------------------------------------
+    # TRANSACTION COSTS (paper simulation)
+    # Source: modules/portfolio.py estimate_trade_cost()
+    # ------------------------------------------------------------------
+    transaction_costs:
+      commission_rate: 0.001
+      sec_fee_rate_on_sells: 0.00003
+
+    # ------------------------------------------------------------------
+    # SLIPPAGE MODEL
+    # Currently no explicit slippage model beyond gap filters.
+    # Fill at exact first-bar close price.
+    # ------------------------------------------------------------------
+    slippage:
+      model: "none"
+      note: "Slippage not explicitly modeled beyond gap filters"
+
+    # ------------------------------------------------------------------
+    # CALENDAR
+    # ------------------------------------------------------------------
+    market_calendar:
+      library: "exchange_calendars"
+      min_version: "4.0"
+      exchange: "XNYS"

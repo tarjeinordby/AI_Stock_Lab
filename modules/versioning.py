@@ -1,22 +1,24 @@
 """
-Model and portfolio versioning.
+Model, portfolio, and execution versioning.
 
-Provides:
-  - VERSION constants used throughout the system
-  - Config loading from config/model_versions.yml and config/portfolio_versions.yml
-  - config_hash validation: SHA-256 of all config fields except config_hash itself
-  - Cross-validation of YAML config against live code (scoring.py)
+Three separate YAML registries, each with its own hash:
+  config/model_versions.yml     → model_config_hash
+  config/portfolio_versions.yml → portfolio_config_hash
+  config/execution_versions.yml → execution_config_hash
+
+A change in portfolio rules (stop-loss, pyramid) requires a new portfolio_version
+but does NOT require a new model_version.
+
+A change in signal weights requires a new model_version but NOT a new portfolio_version.
+
+A change in fill methodology requires a new execution_version only.
 
 ModelVersionMismatchError is raised when:
-  1. The YAML config_hash field does not match the computed hash, OR
-  2. Key config values in the YAML do not match the live code
+  1. A stored hash does not match the computed hash, OR
+  2. Key config values in the YAML do not match the live code.
 
-Run as CLI to compute and update the hash:
+CLI usage:
   python3 -m modules.versioning --compute-hash
-
-Usage in code:
-  from modules.versioning import MODEL_VERSION, PORTFOLIO_VERSION, EXECUTION_VERSION
-  from modules.versioning import get_model_config, validate_all
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,21 +34,21 @@ from typing import Any
 import yaml
 
 _CONFIG_DIR = Path(__file__).parent.parent / "config"
-_MODEL_VERSIONS_FILE = _CONFIG_DIR / "model_versions.yml"
-_PORTFOLIO_VERSIONS_FILE = _CONFIG_DIR / "portfolio_versions.yml"
+_MODEL_VERSIONS_FILE      = _CONFIG_DIR / "model_versions.yml"
+_PORTFOLIO_VERSIONS_FILE  = _CONFIG_DIR / "portfolio_versions.yml"
+_EXECUTION_VERSIONS_FILE  = _CONFIG_DIR / "execution_versions.yml"
 
 # ---------------------------------------------------------------------------
 # Version constants — single source of truth for all callers
 # ---------------------------------------------------------------------------
 
-MODEL_VERSION = "quant_baseline_v1"
+MODEL_VERSION     = "quant_baseline_v1"
 PORTFOLIO_VERSION = "risk_parity_pyramid_v1"
 EXECUTION_VERSION = "exec_next_open_v1"
 
-# Prompt versions (per AI module)
 SENTIMENT_PROMPT_VERSION = "sentiment_v1"
-EARNINGS_PROMPT_VERSION = "earnings_v1"
-WEEKLY_PROMPT_VERSION = "weekly_v1"
+EARNINGS_PROMPT_VERSION  = "earnings_v1"
+WEEKLY_PROMPT_VERSION    = "weekly_v1"
 
 
 # ---------------------------------------------------------------------------
@@ -55,14 +57,13 @@ WEEKLY_PROMPT_VERSION = "weekly_v1"
 
 class ModelVersionMismatchError(Exception):
     """
-    Raised when the frozen model config in YAML diverges from the live code,
-    or when config_hash does not match the computed hash.
-    Requires explicit version bump (e.g. quant_baseline_v2) to resolve.
+    Raised when a frozen config diverges from the live code, or when a hash
+    does not match. Requires an explicit version bump to resolve.
     """
 
 
 # ---------------------------------------------------------------------------
-# Config loading
+# YAML loading
 # ---------------------------------------------------------------------------
 
 def _load_yaml(path: Path) -> dict:
@@ -83,8 +84,11 @@ def get_portfolio_registry() -> dict:
     return _load_yaml(_PORTFOLIO_VERSIONS_FILE)
 
 
+def get_execution_registry() -> dict:
+    return _load_yaml(_EXECUTION_VERSIONS_FILE)
+
+
 def get_model_config(model_version: str = MODEL_VERSION) -> dict:
-    """Return the 'config' sub-dict for the given model version."""
     registry = get_model_registry()
     entry = registry.get(model_version)
     if entry is None:
@@ -92,159 +96,180 @@ def get_model_config(model_version: str = MODEL_VERSION) -> dict:
     return entry.get("config", {})
 
 
+def get_portfolio_config(portfolio_version: str = PORTFOLIO_VERSION) -> dict:
+    registry = get_portfolio_registry()
+    entry = registry.get(portfolio_version)
+    if entry is None:
+        raise KeyError(f"Portfolio version '{portfolio_version}' not found in {_PORTFOLIO_VERSIONS_FILE}")
+    return entry.get("config", {})
+
+
+def get_execution_config(execution_version: str = EXECUTION_VERSION) -> dict:
+    registry = get_execution_registry()
+    entry = registry.get(execution_version)
+    if entry is None:
+        raise KeyError(f"Execution version '{execution_version}' not found in {_EXECUTION_VERSIONS_FILE}")
+    return entry.get("config", {})
+
+
 # ---------------------------------------------------------------------------
-# config_hash computation
+# Hash helpers — for embedding in ledger records
+# ---------------------------------------------------------------------------
+
+def get_model_config_hash(model_version: str = MODEL_VERSION) -> str:
+    """Return the stored model_config_hash (not recomputed at runtime)."""
+    registry = get_model_registry()
+    return registry.get(model_version, {}).get("model_config_hash", "")
+
+
+def get_portfolio_config_hash(portfolio_version: str = PORTFOLIO_VERSION) -> str:
+    registry = get_portfolio_registry()
+    return registry.get(portfolio_version, {}).get("portfolio_config_hash", "")
+
+
+def get_execution_config_hash(execution_version: str = EXECUTION_VERSION) -> str:
+    registry = get_execution_registry()
+    return registry.get(execution_version, {}).get("execution_config_hash", "")
+
+
+# ---------------------------------------------------------------------------
+# Canonical JSON and hash computation
 # ---------------------------------------------------------------------------
 
 def _canonical_json(obj: Any) -> str:
-    """Deterministic JSON: sorted keys, no whitespace, None → null."""
+    """Deterministic JSON: sorted keys, no whitespace, Python None → JSON null."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def compute_config_hash(model_version: str = MODEL_VERSION) -> str:
+def _compute_entry_hash(registry: dict, version: str, hash_key: str) -> str:
     """
-    Compute SHA-256 of all fields in the model version entry EXCEPT config_hash.
-    Returns hex string (64 chars).
+    Compute SHA-256 of all fields in registry[version] except hash_key.
+    Returns 64-char hex string.
     """
-    registry = get_model_registry()
-    entry = registry.get(model_version)
+    entry = registry.get(version)
     if entry is None:
-        raise KeyError(f"Model version '{model_version}' not found")
-
-    # Deep copy and remove config_hash before hashing
+        raise KeyError(f"Version '{version}' not found in registry")
     entry_copy = copy.deepcopy(entry)
-    entry_copy.pop("config_hash", None)
-
-    canonical = _canonical_json(entry_copy)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    entry_copy.pop(hash_key, None)
+    return hashlib.sha256(_canonical_json(entry_copy).encode("utf-8")).hexdigest()
 
 
-def validate_config_hash(model_version: str = MODEL_VERSION) -> None:
-    """
-    Verify that config_hash in the YAML matches the computed hash.
-    Raises ModelVersionMismatchError on mismatch.
-    """
-    registry = get_model_registry()
-    entry = registry.get(model_version)
-    if entry is None:
-        raise KeyError(f"Model version '{model_version}' not found")
+def compute_model_config_hash(model_version: str = MODEL_VERSION) -> str:
+    return _compute_entry_hash(get_model_registry(), model_version, "model_config_hash")
 
-    stored_hash = entry.get("config_hash", "")
-    if stored_hash in ("", "PLACEHOLDER", None):
+
+def compute_portfolio_config_hash(portfolio_version: str = PORTFOLIO_VERSION) -> str:
+    return _compute_entry_hash(get_portfolio_registry(), portfolio_version, "portfolio_config_hash")
+
+
+def compute_execution_config_hash(execution_version: str = EXECUTION_VERSION) -> str:
+    return _compute_entry_hash(get_execution_registry(), execution_version, "execution_config_hash")
+
+
+# ---------------------------------------------------------------------------
+# Hash validation
+# ---------------------------------------------------------------------------
+
+def _validate_hash(stored: str, computed: str, version: str, hash_key: str) -> None:
+    if stored in ("", "PLACEHOLDER", None, "n/a"):
         raise ModelVersionMismatchError(
-            f"config_hash for '{model_version}' is not set. "
+            f"{hash_key} for '{version}' is not set. "
             f"Run: python3 -m modules.versioning --compute-hash"
         )
-
-    computed = compute_config_hash(model_version)
-    if stored_hash != computed:
+    if stored != computed:
         raise ModelVersionMismatchError(
-            f"config_hash mismatch for '{model_version}'.\n"
-            f"  Stored:   {stored_hash}\n"
+            f"{hash_key} mismatch for '{version}'.\n"
+            f"  Stored:   {stored}\n"
             f"  Computed: {computed}\n"
-            f"The YAML was modified without updating config_hash, or "
-            f"config_hash was corrupted. Run --compute-hash to update."
+            "The config was modified without updating the hash, or the hash was corrupted.\n"
+            "Run: python3 -m modules.versioning --compute-hash"
         )
 
 
+def validate_model_config_hash(model_version: str = MODEL_VERSION) -> None:
+    registry = get_model_registry()
+    stored = registry.get(model_version, {}).get("model_config_hash", "")
+    computed = compute_model_config_hash(model_version)
+    _validate_hash(stored, computed, model_version, "model_config_hash")
+
+
+def validate_portfolio_config_hash(portfolio_version: str = PORTFOLIO_VERSION) -> None:
+    registry = get_portfolio_registry()
+    stored = registry.get(portfolio_version, {}).get("portfolio_config_hash", "")
+    computed = compute_portfolio_config_hash(portfolio_version)
+    _validate_hash(stored, computed, portfolio_version, "portfolio_config_hash")
+
+
+def validate_execution_config_hash(execution_version: str = EXECUTION_VERSION) -> None:
+    registry = get_execution_registry()
+    stored = registry.get(execution_version, {}).get("execution_config_hash", "")
+    computed = compute_execution_config_hash(execution_version)
+    _validate_hash(stored, computed, execution_version, "execution_config_hash")
+
+
 # ---------------------------------------------------------------------------
-# Cross-validation: YAML config vs live scoring code
+# Code cross-validation: YAML config vs live scoring.py
 # ---------------------------------------------------------------------------
 
-def _get_live_strategies() -> dict:
-    """Import STRATEGIES from scoring.py without side effects."""
+def _live_strategies() -> dict:
     from modules.scoring import STRATEGIES  # noqa: PLC0415
     return STRATEGIES
 
 
-def _get_live_regime_weights() -> dict:
+def _live_regime_weights() -> dict:
     from modules.scoring import REGIME_WEIGHTS  # noqa: PLC0415
     return REGIME_WEIGHTS
 
 
-def validate_strategies_match_code(model_version: str = MODEL_VERSION) -> None:
+def validate_model_strategies_match_code(model_version: str = MODEL_VERSION) -> None:
     """
-    Cross-validate per-strategy config in YAML against live modules/scoring.py.
-    Checks base_weights, stop_loss, trailing_stop, and key sizing parameters.
-    Raises ModelVersionMismatchError on any mismatch.
+    Verify that base_weights and score_column for each strategy in model_versions.yml
+    match the live scoring.STRATEGIES. Only model-side fields are checked here.
     """
     config = get_model_config(model_version)
     yaml_strategies = config.get("strategies", {})
-    live_strategies = _get_live_strategies()
-
+    live_strategies = _live_strategies()
     errors: list[str] = []
 
-    for strat_name, yaml_cfg in yaml_strategies.items():
-        live_cfg = live_strategies.get(strat_name)
+    for name, yaml_cfg in yaml_strategies.items():
+        live_cfg = live_strategies.get(name)
         if live_cfg is None:
-            errors.append(f"Strategy '{strat_name}' in YAML but missing from scoring.STRATEGIES")
+            errors.append(f"'{name}' in YAML but missing from scoring.STRATEGIES")
             continue
-
-        # Check base_weights
-        yaml_weights = yaml_cfg.get("base_weights", {})
-        live_weights = live_cfg.get("weights", {})
-        for factor in ("momentum", "quality", "value", "sentiment"):
-            y = round(float(yaml_weights.get(factor, -1)), 4)
-            l = round(float(live_weights.get(factor, -1)), 4)
-            if y != l:
-                errors.append(
-                    f"{strat_name}.base_weights.{factor}: "
-                    f"YAML={y} vs code={l}"
-                )
-
-        # Check scalar thresholds
-        scalar_fields = [
-            ("stop_loss", "stop_loss"),
-            ("trailing_stop", "trailing_stop"),
-            ("max_positions", "max_positions"),
-            ("max_position_weight", "max_position_weight"),
-            ("max_new_buys_per_week", "max_new_buys_per_week"),
-            ("buy_top_n", "buy_top_n"),
-            ("min_score_percentile", "min_score_percentile"),
-            ("sell_rank_threshold", "sell_rank_threshold"),
-            ("buyback_cooldown_days", "buyback_cooldown_days"),
-        ]
-        for yaml_key, code_key in scalar_fields:
-            y = yaml_cfg.get(yaml_key)
-            l = live_cfg.get(code_key)
-            if y is not None and l is not None and round(float(y), 6) != round(float(l), 6):
-                errors.append(
-                    f"{strat_name}.{yaml_key}: YAML={y} vs code={l}"
-                )
-
-        # Check exposure by regime
-        yaml_exposure = yaml_cfg.get("exposure", {})
-        live_exposure = live_cfg.get("exposure", {})
-        for regime, y_val in yaml_exposure.items():
-            l_val = live_exposure.get(regime)
-            if l_val is not None and round(float(y_val), 4) != round(float(l_val), 4):
-                errors.append(
-                    f"{strat_name}.exposure.{regime}: YAML={y_val} vs code={l_val}"
-                )
-
-    # Check for strategies in code not in YAML
-    for strat_name in live_strategies:
-        if strat_name not in yaml_strategies:
+        # Check score_column
+        if yaml_cfg.get("score_column") != live_cfg.get("score_column"):
             errors.append(
-                f"Strategy '{strat_name}' in scoring.STRATEGIES but missing from YAML"
+                f"{name}.score_column: YAML={yaml_cfg.get('score_column')} "
+                f"vs code={live_cfg.get('score_column')}"
             )
+        # Check base_weights
+        yaml_w = yaml_cfg.get("base_weights", {})
+        live_w = live_cfg.get("weights", {})
+        for factor in ("momentum", "quality", "value", "sentiment"):
+            y = round(float(yaml_w.get(factor, -1)), 4)
+            l = round(float(live_w.get(factor, -1)), 4)
+            if y != l:
+                errors.append(f"{name}.base_weights.{factor}: YAML={y} vs code={l}")
+
+    for name in live_strategies:
+        if name not in yaml_strategies:
+            errors.append(f"'{name}' in scoring.STRATEGIES but missing from YAML")
 
     if errors:
         raise ModelVersionMismatchError(
-            f"Model '{model_version}' config does not match live code "
-            f"({len(errors)} mismatch(es)):\n"
+            f"Model '{model_version}' strategies do not match live code "
+            f"({len(errors)} error(s)):\n"
             + "\n".join(f"  • {e}" for e in errors)
-            + "\n\nEither update the YAML to match the code, or bump the model version."
+            + "\n\nUpdate YAML to match code, or bump model_version."
         )
 
 
 def validate_regime_weights_match_code(model_version: str = MODEL_VERSION) -> None:
-    """Cross-validate regime_weights in YAML against scoring.REGIME_WEIGHTS."""
     config = get_model_config(model_version)
     yaml_rw = config.get("regime_weights", {})
-    live_rw = _get_live_regime_weights()
-
+    live_rw = _live_regime_weights()
     errors: list[str] = []
+
     for regime, yaml_weights in yaml_rw.items():
         live_weights = live_rw.get(regime)
         if live_weights is None:
@@ -264,65 +289,201 @@ def validate_regime_weights_match_code(model_version: str = MODEL_VERSION) -> No
         )
 
 
-def validate_all(model_version: str = MODEL_VERSION) -> None:
+def validate_portfolio_strategies_match_code(portfolio_version: str = PORTFOLIO_VERSION) -> None:
     """
-    Full validation: config_hash + code cross-validation.
-    Call this at system startup to verify the frozen model is intact.
+    Verify that portfolio-side strategy params (stop_loss, trailing_stop, etc.)
+    in portfolio_versions.yml match the live scoring.STRATEGIES.
+    These live in scoring.STRATEGIES pending a future code refactor that
+    separates signal config from portfolio config.
     """
-    validate_config_hash(model_version)
-    validate_strategies_match_code(model_version)
+    config = get_portfolio_config(portfolio_version)
+    yaml_strategies = config.get("strategies", {})
+    live_strategies = _live_strategies()
+    errors: list[str] = []
+
+    portfolio_fields = [
+        ("stop_loss",              "stop_loss"),
+        ("trailing_stop",          "trailing_stop"),
+        ("max_positions",          "max_positions"),
+        ("max_position_weight",    "max_position_weight"),
+        ("max_new_buys_per_week",  "max_new_buys_per_week"),
+        ("buy_top_n",              "buy_top_n"),
+        ("min_score_percentile",   "min_score_percentile"),
+        ("sell_rank_threshold",    "sell_rank_threshold"),
+        ("buyback_cooldown_days",  "buyback_cooldown_days"),
+    ]
+
+    for name, yaml_cfg in yaml_strategies.items():
+        live_cfg = live_strategies.get(name)
+        if live_cfg is None:
+            errors.append(f"'{name}' in portfolio YAML but missing from scoring.STRATEGIES")
+            continue
+        for yaml_key, code_key in portfolio_fields:
+            y = yaml_cfg.get(yaml_key)
+            l = live_cfg.get(code_key)
+            if y is not None and l is not None and round(float(y), 6) != round(float(l), 6):
+                errors.append(f"{name}.{yaml_key}: YAML={y} vs code={l}")
+        # exposure per regime
+        for regime, y_val in yaml_cfg.get("exposure", {}).items():
+            l_val = live_cfg.get("exposure", {}).get(regime)
+            if l_val is not None and round(float(y_val), 4) != round(float(l_val), 4):
+                errors.append(f"{name}.exposure.{regime}: YAML={y_val} vs code={l_val}")
+
+    if errors:
+        raise ModelVersionMismatchError(
+            f"Portfolio '{portfolio_version}' strategies do not match live code "
+            f"({len(errors)} error(s)):\n"
+            + "\n".join(f"  • {e}" for e in errors)
+            + "\n\nUpdate YAML to match code, or bump portfolio_version."
+        )
+
+
+def validate_execution_constants_match_code(execution_version: str = EXECUTION_VERSION) -> None:
+    """
+    Verify that commission/fee constants in execution_versions.yml match
+    the live modules/portfolio.py estimate_trade_cost() constants.
+    """
+    from modules.portfolio import estimate_trade_cost  # noqa: PLC0415
+
+    config = get_execution_config(execution_version)
+    costs = config.get("transaction_costs", {})
+
+    yaml_commission = float(costs.get("commission_rate", -1))
+    yaml_sec_fee    = float(costs.get("sec_fee_rate_on_sells", -1))
+
+    # Probe the live function with known values to infer the constants.
+    # estimate_trade_cost(value, "BUY")  = value * 0.001
+    # estimate_trade_cost(value, "SELL") = value * 0.001 + value * 0.00003
+    probe = 10_000.0
+    live_buy_cost  = estimate_trade_cost(probe, "BUY")
+    live_sell_cost = estimate_trade_cost(probe, "SELL")
+
+    inferred_commission = live_buy_cost / probe
+    inferred_sec_fee    = (live_sell_cost - live_buy_cost) / probe
+
+    errors: list[str] = []
+    if abs(yaml_commission - inferred_commission) > 1e-7:
+        errors.append(
+            f"commission_rate: YAML={yaml_commission} vs inferred={inferred_commission:.6f}"
+        )
+    if abs(yaml_sec_fee - inferred_sec_fee) > 1e-7:
+        errors.append(
+            f"sec_fee_rate_on_sells: YAML={yaml_sec_fee} vs inferred={inferred_sec_fee:.6f}"
+        )
+
+    if errors:
+        raise ModelVersionMismatchError(
+            f"Execution '{execution_version}' constants do not match portfolio.estimate_trade_cost:\n"
+            + "\n".join(f"  • {e}" for e in errors)
+        )
+
+
+# ---------------------------------------------------------------------------
+# validate_all
+# ---------------------------------------------------------------------------
+
+def validate_all(
+    model_version:     str = MODEL_VERSION,
+    portfolio_version: str = PORTFOLIO_VERSION,
+    execution_version: str = EXECUTION_VERSION,
+) -> None:
+    """
+    Full validation: hashes + code cross-validation for all three configs.
+    Call at system startup to verify all frozen configs are intact.
+    """
+    validate_model_config_hash(model_version)
+    validate_portfolio_config_hash(portfolio_version)
+    validate_execution_config_hash(execution_version)
+    validate_model_strategies_match_code(model_version)
     validate_regime_weights_match_code(model_version)
+    validate_portfolio_strategies_match_code(portfolio_version)
+    validate_execution_constants_match_code(execution_version)
 
 
 # ---------------------------------------------------------------------------
-# CLI: --compute-hash
+# CLI: --compute-hash  (writes to all three YAML files)
 # ---------------------------------------------------------------------------
 
-def _update_config_hash(model_version: str) -> str:
-    """Compute hash and write it back into the YAML file. Returns the hash."""
-    registry = get_model_registry()
-    if model_version not in registry:
-        raise KeyError(f"Model version '{model_version}' not found")
+def _write_hash_to_file(path: Path, version_name: str, hash_key: str, new_hash: str) -> None:
+    """
+    Replace hash_key within version_name's YAML block only.
+    Uses the version name to scope the replacement, so a deprecated version's
+    hash key in the same file is never accidentally modified.
+    """
+    raw = path.read_text()
+    lines = raw.splitlines(keepends=True)
 
-    new_hash = compute_config_hash(model_version)
+    # Find the line where this version's top-level block starts.
+    version_line = -1
+    for i, line in enumerate(lines):
+        if re.match(rf'^{re.escape(version_name)}\s*:', line):
+            version_line = i
+            break
+    if version_line < 0:
+        raise KeyError(f"Version '{version_name}' not found in {path}")
 
-    # Read raw YAML text and replace the PLACEHOLDER line
-    raw = _MODEL_VERSIONS_FILE.read_text()
-    import re  # noqa: PLC0415
-    pattern = rf'(config_hash:\s*")[^"]*(")'
-    replacement = rf'\g<1>{new_hash}\g<2>'
-    updated = re.sub(pattern, replacement, raw, count=1)
+    # Find where the block ends: the next non-indented, non-empty, non-comment line.
+    block_end = len(lines)
+    for i in range(version_line + 1, len(lines)):
+        line = lines[i]
+        if line and line[0] not in (" ", "\t", "#", "\n", "\r"):
+            block_end = i
+            break
 
-    if updated == raw:
-        # Try without quotes (PLACEHOLDER without quotes)
-        pattern2 = r'(config_hash:\s*)PLACEHOLDER'
-        updated = re.sub(pattern2, rf'\g<1>"{new_hash}"', raw, count=1)
+    prefix  = "".join(lines[:version_line])
+    block   = "".join(lines[version_line:block_end])
+    suffix  = "".join(lines[block_end:])
 
-    _MODEL_VERSIONS_FILE.write_text(updated)
-    return new_hash
+    # Replace the hash value within the block.
+    # Use re.search to check which form is present before substituting,
+    # so identical replacement text can't cause the fallback branch to also run.
+    quoted_pattern   = rf'({re.escape(hash_key)}:\s*)"[^"]*"'
+    unquoted_pattern = rf'({re.escape(hash_key)}:\s*)([^\n\r"]+)'
+
+    if re.search(quoted_pattern, block):
+        new_block = re.sub(quoted_pattern, rf'\g<1>"{new_hash}"', block, count=1)
+    elif re.search(unquoted_pattern, block):
+        new_block = re.sub(unquoted_pattern, rf'\g<1>"{new_hash}"', block, count=1)
+    else:
+        raise ValueError(f"{hash_key} not found in {version_name} block of {path}")
+
+    path.write_text(prefix + new_block + suffix)
 
 
 if __name__ == "__main__":
-    if "--compute-hash" in sys.argv:
-        version = MODEL_VERSION
-        for arg in sys.argv[1:]:
-            if not arg.startswith("--"):
-                version = arg
-                break
-        try:
-            new_hash = _update_config_hash(version)
-            print(f"config_hash for '{version}' computed and written:")
-            print(f"  {new_hash}")
-            print(f"  File: {_MODEL_VERSIONS_FILE}")
-            print()
-            print("Verifying...")
-            validate_config_hash(version)
-            print("Hash verification: OK")
-            validate_strategies_match_code(version)
-            print("Code cross-validation: OK")
-        except Exception as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print("Usage: python3 -m modules.versioning --compute-hash [version]")
+    if "--compute-hash" not in sys.argv:
+        print("Usage: python3 -m modules.versioning --compute-hash")
         sys.exit(0)
+
+    print("Computing and writing config hashes...\n")
+
+    try:
+        h_model = compute_model_config_hash(MODEL_VERSION)
+        _write_hash_to_file(_MODEL_VERSIONS_FILE, MODEL_VERSION, "model_config_hash", h_model)
+        print(f"model_config_hash ({MODEL_VERSION}): {h_model}")
+
+        h_portfolio = compute_portfolio_config_hash(PORTFOLIO_VERSION)
+        _write_hash_to_file(_PORTFOLIO_VERSIONS_FILE, PORTFOLIO_VERSION, "portfolio_config_hash", h_portfolio)
+        print(f"portfolio_config_hash ({PORTFOLIO_VERSION}): {h_portfolio}")
+
+        h_execution = compute_execution_config_hash(EXECUTION_VERSION)
+        _write_hash_to_file(_EXECUTION_VERSIONS_FILE, EXECUTION_VERSION, "execution_config_hash", h_execution)
+        print(f"execution_config_hash ({EXECUTION_VERSION}): {h_execution}")
+
+        print("\nVerifying all hashes...")
+        validate_model_config_hash(MODEL_VERSION)
+        validate_portfolio_config_hash(PORTFOLIO_VERSION)
+        validate_execution_config_hash(EXECUTION_VERSION)
+        print("Hash verification: OK")
+
+        print("\nCross-validating against live code...")
+        validate_model_strategies_match_code(MODEL_VERSION)
+        validate_regime_weights_match_code(MODEL_VERSION)
+        validate_portfolio_strategies_match_code(PORTFOLIO_VERSION)
+        validate_execution_constants_match_code(EXECUTION_VERSION)
+        print("Code cross-validation: OK\n")
+        print("All config hashes written and verified.")
+
+    except Exception as exc:
+        print(f"\nError: {exc}", file=sys.stderr)
+        sys.exit(1)
