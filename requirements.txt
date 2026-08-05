@@ -4,3 +4,5 @@ requests
 lxml
 numpy
 anthropic
+exchange_calendars>=4.0
+pytest
