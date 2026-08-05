@@ -1,0 +1,93 @@
+{
+  "ABNB": {
+    "beat_probability": 0.42,
+    "expected_reaction": "volatile; downside skew given recent misses",
+    "fetched_at": "2026-08-05T22:10:22.450503+00:00",
+    "key_metrics_to_watch": [
+      "Nights & Experiences Booked",
+      "Gross Booking Value",
+      "Q3 revenue guidance"
+    ],
+    "position_recommendation": "reduce_before",
+    "reasoning": "3 consecutive misses with worsening surprises (-4.8%, -15.6%, -14.1%). Consensus $5.99 EPS looks aggressive vs recent trend. Negative momentum warrants caution.",
+    "risk_level": "high"
+  },
+  "BILL": {
+    "beat_probability": 0.82,
+    "expected_reaction": "Positive if beat continues, but muted given decelerating revenue; sharp downside if guidance disappoints",
+    "fetched_at": "2026-08-05T22:10:18.502180+00:00",
+    "key_metrics_to_watch": [
+      "Total payment volume (TPV) growth",
+      "Revenue guidance & take rate",
+      "Operating margin expansion"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-qtr beat streak (avg +22%) supports EPS beat, but flat-to-declining revenue trend signals growth concerns; guidance is the key risk.",
+    "risk_level": "high"
+  },
+  "CELH": {
+    "beat_probability": 0.78,
+    "expected_reaction": "positive if beat continues, but muted given flat revenue; volatile move likely",
+    "fetched_at": "2026-08-05T22:10:37.326725+00:00",
+    "key_metrics_to_watch": [
+      "revenue growth/Alani Nu contribution",
+      "gross margin trends",
+      "international expansion & market share"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-quarter beat streak (+37-93%) supports beat, but flat/declining revenue and high consensus EPS create risk. Hold given uncertainty.",
+    "risk_level": "high"
+  },
+  "DDOG": {
+    "beat_probability": 0.82,
+    "expected_reaction": "positive if beat sustains, but muted given decelerating revenue trend raises guidance concerns",
+    "fetched_at": "2026-08-05T22:10:14.453096+00:00",
+    "key_metrics_to_watch": [
+      "revenue growth/guidance",
+      "net revenue retention rate",
+      "large customer additions ($100k+ ARR)"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-quarter beat streak (avg +14%) supports EPS beat, but declining sequential revenue signals growth deceleration\u2014guidance is the key risk, warranting caution.",
+    "risk_level": "high"
+  },
+  "ROKU": {
+    "beat_probability": 0.7,
+    "expected_reaction": "positive if platform revenue and margins expand; muted if EPS consensus reflects unrealistic $3.69 vs recent sub-$1 actu",
+    "fetched_at": "2026-08-05T22:10:10.085398+00:00",
+    "key_metrics_to_watch": [
+      "Platform revenue growth & ARPU",
+      "Adjusted EBITDA margin",
+      "Free cash flow & active accounts"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-quarter beat streak favors upside, but $3.69 consensus looks anomalous vs history; revenue softening adds uncertainty. Hold ahead of volatile print.",
+    "risk_level": "high"
+  },
+  "SE": {
+    "beat_probability": 0.42,
+    "expected_reaction": "Elevated volatility; likely negative bias given declining revenue trend and inconsistent beat history, though last quart",
+    "fetched_at": "2026-08-05T22:10:29.409828+00:00",
+    "key_metrics_to_watch": [
+      "Revenue trajectory/sequential decline",
+      "Gross margin & operating leverage",
+      "Forward guidance vs $5.25 EPS consensus"
+    ],
+    "position_recommendation": "reduce_before",
+    "reasoning": "Revenue falling 4 straight quarters (-26% peak), mixed surprise history with a -19.8% miss, and huge EPS jump to $5.25 raises bar. Trim risk pre-print.",
+    "risk_level": "high"
+  },
+  "U": {
+    "beat_probability": 0.55,
+    "expected_reaction": "volatile; declining revenue tempers upside despite historical beats",
+    "fetched_at": "2026-08-05T22:10:33.296032+00:00",
+    "key_metrics_to_watch": [
+      "revenue trajectory/stabilization",
+      "Create Solutions subscription growth",
+      "operating margin & guidance"
+    ],
+    "position_recommendation": "reduce_before",
+    "reasoning": "Beat streak broke last quarter (-4.2%) and revenue in steady decline ($0.51B\u2192$0.44B). Consensus EPS figures inconsistent; downside risk elevated.",
+    "risk_level": "high"
+  }
+}

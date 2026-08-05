@@ -1,14 +1,14 @@
 {
   "ABNB": {
-    "fetched_at": "2026-06-23T08:47:59.130155+00:00",
+    "fetched_at": "2026-08-05T22:10:05.606063+00:00",
     "key_factors": [
-      "Analyst consensus bullish (63 buy/strongBuy vs 6 sell)",
-      "Three consecutive earnings misses raise execution concerns"
+      "Analyst consensus strongly bullish (70 buy/strongBuy vs 6 sell)",
+      "Recent earnings misses (3 of last 4 quarters) signal execution challenges"
     ],
-    "raw_score": 0.15,
-    "score": 0.575,
+    "raw_score": 0.32,
+    "score": 0.66,
     "source": "claude",
-    "summary": "Mixed signals: strong analyst support offset by earnings misses and recent under"
+    "summary": "Moderately bullish. Strong analyst support offset by earnings misses and lack of"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -23,7 +23,7 @@
   },
   "ARM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-23T08:47:34.208898+00:00",
+    "fetched_at": "2026-08-05T22:09:40.687694+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -31,24 +31,24 @@
     "summary": "Ingen data"
   },
   "ASML": {
-    "fetched_at": "2026-06-23T08:47:48.213695+00:00",
-    "key_factors": [
-      "Overwhelming analyst support: 113 buy/strongBuy vs 3 sell ratings",
-      "Near 52-week highs suggest momentum continuation potential"
-    ],
-    "raw_score": 0.78,
-    "score": 0.89,
-    "source": "claude",
-    "summary": "Strong bullish sentiment with institutional backing; geopolitical risks present"
-  },
-  "BILL": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-13T08:40:34.542654+00:00",
+    "fetched_at": "2026-08-05T22:09:50.982805+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "BILL": {
+    "fetched_at": "2026-08-05T22:09:56.427520+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4 quarters) signals operational excellence",
+      "Bullish analyst consensus: 42 buy/strongBuy vs 27 hold, zero sells"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with consistent execution offset by valuation"
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
@@ -60,24 +60,24 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "fetched_at": "2026-06-23T08:48:10.934544+00:00",
-    "key_factors": [
-      "Perfect earnings track record: 4 consecutive beats",
-      "Overwhelming analyst support: 128 buy ratings vs 1 sell"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong bullish setup with consistent execution, though valuation stretched"
-  },
-  "DDOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-23T08:47:45.196375+00:00",
+    "fetched_at": "2026-08-05T22:10:02.442142+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "DDOG": {
+    "fetched_at": "2026-08-05T22:09:48.427706+00:00",
+    "key_factors": [
+      "Perfect 4-quarter earnings beat streak demonstrates execution",
+      "Overwhelming analyst consensus: 129 buy/strongBuy vs 6 hold/sell"
+    ],
+    "raw_score": 0.82,
+    "score": 0.91,
+    "source": "claude",
+    "summary": "Strong bullish setup with perfect earnings execution and broad analyst support."
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -141,26 +141,22 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-06-23T08:48:08.285775+00:00",
-    "key_factors": [
-      "100% earnings beat track record demonstrates execution excellence",
-      "100 buy/strongBuy ratings (74% of coverage) shows analyst confidence"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Positive outlook with strong fundamentals offset by recent pullback"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-08-05T22:09:53.630235+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PANW": {
-    "fetched_at": "2026-06-23T08:48:01.732586+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4) demonstrates operational excellence",
-      "Overwhelmingly bullish analyst consensus (135 buy/strongBuy vs 3 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with consistent execution offset by valuation concerns"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-08-05T22:09:59.075541+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PLTR": {
     "fetched_at": "2026-06-12T10:44:45.343710+00:00",
@@ -183,15 +179,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-06-23T08:47:36.693498+00:00",
+    "fetched_at": "2026-08-05T22:09:43.271843+00:00",
     "key_factors": [
-      "Exceptional analyst sentiment: 75 buy-rated vs 2 sell-rated",
-      "Perfect earnings execution: 4 consecutive beats"
+      "Perfect earnings track record (4 consecutive beats)",
+      "Bullish analyst consensus (45 buy/strongBuy vs 36 hold/sell)"
     ],
     "raw_score": 0.62,
     "score": 0.81,
     "source": "claude",
-    "summary": "Strong fundamentals offset near-term weakness; bullish analyst consensus and ear"
+    "summary": "Positive. Strong fundamentals offset valuation concerns at 3-year highs."
   },
   "SE": {
     "fetched_at": "2026-06-20T08:34:32.393862+00:00",
@@ -265,7 +261,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-23T08:47:39.477604+00:00",
+    "fetched_at": "2026-08-05T22:09:46.046294+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
