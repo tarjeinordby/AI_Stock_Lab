@@ -19,7 +19,7 @@ from modules.state import STATE_DIR, load_json, safe_float, save_json, today_str
 
 EARNINGS_ALERT_DAYS = 14
 EARNINGS_ANALYSIS_CACHE_FILE = f"{STATE_DIR}/earnings_analysis_cache.json"
-EARNINGS_ANALYSIS_MODEL = "claude-opus-4-5"
+EARNINGS_ANALYSIS_MODEL = "claude-opus-4-8"
 
 PER_CALL_TIMEOUT = 30   # seconds — Anthropic SDK timeout
 TOTAL_TIMEOUT    = 120  # seconds — hard wall-clock cap via SIGALRM

@@ -16,12 +16,12 @@ import yfinance as yf
 
 from modules.state import WEEKLY_ANALYSIS_CACHE_FILE, load_json, safe_float, save_json
 
-WEEKLY_MODEL = "claude-sonnet-4-5"
+WEEKLY_MODEL = "claude-sonnet-4-6"
 CACHE_MAX_AGE_HOURS = 6 * 24   # 6 dager — trygt over en uke
 PER_CALL_TIMEOUT = 15
 TOTAL_TIMEOUT = 90
 
-# Approx cost per token (USD) — Sonnet 4.5
+# Approx cost per token (USD) — Sonnet 4.6
 _IN_CPT  = 3.00 / 1_000_000
 _OUT_CPT = 15.00 / 1_000_000
 
