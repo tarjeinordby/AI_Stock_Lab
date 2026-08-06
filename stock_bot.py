@@ -76,6 +76,18 @@ from modules.state import (
 from modules.technicals import analyze_stock
 from modules.universe import build_universe
 from modules.fundamentals import FUNDAMENTALS_CACHE_FILE
+from modules.ledger import (
+    LedgerWriteError,
+    build_all_ledger_records,
+    build_signal_run_record,
+    get_signal_run_status,
+    make_signal_run_id,
+    update_signal_run_status,
+    write_feature_snapshots,
+    write_signal_records,
+    write_signal_run,
+)
+from modules.versioning import MODEL_VERSION, get_model_config_hash
 
 
 # ============================================================
@@ -361,11 +373,66 @@ def run_signal():
             "candidates": candidates,
         }
 
+    date = today_str()
+    year_month = date[:7]
+
+    # ----------------------------------------------------------------
+    # Ledger write — must succeed before signal file is saved.
+    # Failure → status=failed, Telegram alert, no signal file.
+    # ----------------------------------------------------------------
+    model_cfg_hash = get_model_config_hash()
+    signal_run_id = make_signal_run_id(date, MODEL_VERSION, model_cfg_hash)
+
+    existing = get_signal_run_status(signal_run_id, year_month)
+    if existing and existing.get("status") == "completed":
+        print(f"Ledger: run {signal_run_id} allerede fullført (idempotent retry).")
+    else:
+        run_record = build_signal_run_record(
+            signal_run_id=signal_run_id,
+            intended_session=date,
+            model_version=MODEL_VERSION,
+            model_config_hash=model_cfg_hash,
+            universe_count=len(universe),
+            analyzed_count=len(analyzed),
+        )
+        write_signal_run(run_record, year_month)
+        update_signal_run_status(signal_run_id, "pending", year_month)
+
+        analyzed_by_ticker = score_df.reset_index().to_dict(orient="records")
+        try:
+            feature_snapshots, signal_records = build_all_ledger_records(
+                signal_run_id=signal_run_id,
+                analyzed_by_ticker=analyzed_by_ticker,
+                strategies_payload=strategies_payload,
+                fundamentals=fundamentals,
+                sentiment_scores=full_sentiment,
+                full_earnings=full_earnings,
+                macro=macro,
+                regime=regime["regime"],
+                model_version=MODEL_VERSION,
+                model_config_hash=model_cfg_hash,
+                strategies_config=STRATEGIES,
+            )
+            n_fs = write_feature_snapshots(feature_snapshots, year_month)
+            n_sr = write_signal_records(signal_records, year_month)
+            update_signal_run_status(
+                signal_run_id, "completed", year_month,
+                n_feature_snapshots=n_fs, n_signal_records=n_sr,
+            )
+            print(f"Ledger: {n_fs} feature snapshots, {n_sr} signal records skrevet.")
+        except LedgerWriteError as exc:
+            update_signal_run_status(
+                signal_run_id, "failed", year_month, error=str(exc)
+            )
+            send_telegram(f"⚠️ LEDGER-FEIL — signal ikke lagret: {exc}")
+            raise
+
     payload = {
         "created_at_utc": now_utc().isoformat(),
         "created_at_oslo": now_oslo().isoformat(),
         "created_at_ny": now_ny().isoformat(),
-        "date": today_str(),
+        "date": date,
+        "signal_run_id": signal_run_id,
         "universe_count": len(universe),
         "analyzed_count": len(analyzed),
         "regime": regime,
@@ -384,7 +451,6 @@ def run_signal():
         "quality_filtered_count": filtered_count,
     }
 
-    date = today_str()
     signal_path = f"{SIGNALS_DIR}/{date}_signal.json"
     save_json(payload, signal_path)
     save_json(
