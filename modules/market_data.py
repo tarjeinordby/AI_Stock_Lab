@@ -192,6 +192,58 @@ def get_price_cached(ticker, fallback_price, price_cache):
     return price
 
 
+def prefetch_open_prices(tickers, fallback_prices=None, chunk_size=80):
+    """
+    Batch-fetch today's opening prices for execute-mode fills (MOO model).
+    Falls back to fallback_prices[ticker] (yesterday's close) when unavailable.
+    Returns {ticker: price} for all tickers with a known price.
+    """
+    if not tickers:
+        return {}
+    if fallback_prices is None:
+        fallback_prices = {}
+    cache = {}
+
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i : i + chunk_size]
+        try:
+            raw = yf.download(
+                tickers=chunk,
+                period="2d",
+                interval="1d",
+                auto_adjust=True,
+                group_by="ticker",
+                threads=True,
+                progress=False,
+            )
+            if raw is None or raw.empty:
+                continue
+            for ticker in chunk:
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        if ticker not in raw.columns.get_level_values(0):
+                            continue
+                        open_s = raw[ticker]["Open"].dropna()
+                    else:
+                        open_col = raw["Open"]
+                        open_s = (open_col if isinstance(open_col, pd.Series) else open_col.squeeze()).dropna()
+                    if not open_s.empty:
+                        price = float(open_s.iloc[-1])
+                        if price > 0:
+                            cache[ticker] = price
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"prefetch_open_prices feil: {e}")
+
+    for ticker in tickers:
+        if ticker not in cache and fallback_prices.get(ticker):
+            cache[ticker] = fallback_prices[ticker]
+
+    print(f"Åpningspriser (MOO): {len(cache)}/{len(tickers)} tickere")
+    return cache
+
+
 def _get_latest_close_from_raw(raw, ticker):
     """Extract latest close price for a ticker from a yf.download result."""
     try:

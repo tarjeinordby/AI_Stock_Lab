@@ -7,7 +7,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
-from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, run_data_quality_checks
+from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, prefetch_open_prices, run_data_quality_checks
 from modules.macro import get_macro_status
 from modules.portfolio import (
     build_target_weights,
@@ -727,13 +727,6 @@ def run_execute():
 
     trades_df = load_trades()
     performance_df = load_performance()
-    price_cache = {}
-
-    benchmark_state = update_benchmarks(price_cache)
-    spy_ret = benchmark_return(benchmark_state, "SPY")
-    qqq_ret = benchmark_return(benchmark_state, "QQQ")
-
-    print(f"SPY siden start: {(spy_ret or 0)*100:.2f}%  |  QQQ: {(qqq_ret or 0)*100:.2f}%")
 
     # Macro filter (FRED 10Y/2Y yield spread, no API key)
     macro = get_macro_status()
@@ -751,9 +744,9 @@ def run_execute():
         print(f"Mulige splits oppdaget: {[s['ticker'] for s in split_detected]}")
         apply_split_adjustments(split_detected)
 
-    # --- Pre-market filter ---
-    # Collect held tickers + top candidates from signal as prev_prices reference
-    prev_prices = {}
+    # --- MOO execution model: collect all tickers + yesterday's closes ---
+    # fallback_prices = yesterday's close from signal (open price fallback + premarket reference)
+    fallback_prices = {}
     pm_tickers = set()
 
     for strat_name in STRATEGIES:
@@ -765,14 +758,26 @@ def run_execute():
             t = c.get("ticker")
             if t:
                 pm_tickers.add(t)
-                if t not in prev_prices and c.get("price"):
-                    prev_prices[t] = c["price"]
-        # For held positions, use last_price as prev_close if not in candidates
+                if t not in fallback_prices and c.get("price"):
+                    fallback_prices[t] = c["price"]
         for t, pos in held.items():
-            if t not in prev_prices:
-                prev_prices[t] = pos.get("last_price") or pos.get("avg_price")
+            if t not in fallback_prices:
+                fallback_prices[t] = pos.get("last_price") or pos.get("avg_price")
 
-    all_pm_moves = compute_premarket_moves(list(pm_tickers), prev_prices)
+    all_tickers = pm_tickers | {"SPY", "QQQ"}
+
+    # Pre-populate price_cache with today's opening prices (MOO fill model)
+    price_cache = prefetch_open_prices(list(all_tickers), fallback_prices)
+
+    benchmark_state = update_benchmarks(price_cache)
+    spy_ret = benchmark_return(benchmark_state, "SPY")
+    qqq_ret = benchmark_return(benchmark_state, "QQQ")
+
+    print(f"SPY siden start: {(spy_ret or 0)*100:.2f}%  |  QQQ: {(qqq_ret or 0)*100:.2f}%")
+
+    # --- Pre-market filter ---
+    # Compare yesterday's close (fallback_prices) vs pre-market price to detect gaps
+    all_pm_moves = compute_premarket_moves(list(pm_tickers), fallback_prices)
     premarket_flags = {t: m for t, m in all_pm_moves.items() if abs(m) > 0.04}
 
     market_open = is_market_open()
