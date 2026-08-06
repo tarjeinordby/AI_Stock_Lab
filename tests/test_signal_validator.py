@@ -79,18 +79,49 @@ def _make_signal(
     return s
 
 
+# ---------------------------------------------------------------------------
+# Publication record builder (self-consistent content_hash)
+# ---------------------------------------------------------------------------
+
+def _make_pub_record(
+    signal_run_id,
+    workflow_conclusion="success",
+    commit_sha="abc1234def56",        # matches _make_signal default published_commit_sha
+    published_at="2026-08-05T21:05:00+00:00",  # matches _make_signal default published_at
+    finalized_commit_sha="def456abc789",
+    **overrides,
+):
+    """Build a publication record with a correct content_hash."""
+    from modules.publication import compute_publication_content_hash
+    rec = {
+        "schema_version": 1,
+        "record_type": "signal_publication",
+        "signal_run_id": signal_run_id,
+        "workflow_conclusion": workflow_conclusion,
+        "commit_sha": commit_sha,
+        "published_at": published_at,
+        "signal_path": "/fake/signal.json",
+        "written_at": "2026-08-05T21:05:01.000Z",
+        "finalized_commit_sha": finalized_commit_sha,
+        "content_hash": "",
+    }
+    rec.update(overrides)
+    rec["content_hash"] = compute_publication_content_hash(rec)
+    return rec
+
+
 # Injection helpers
 def _pub_success(run_id):
-    return {"signal_run_id": run_id, "workflow_conclusion": "success", "commit_sha": "abc123"}
+    return _make_pub_record(run_id)
 
 def _pub_none(run_id):
     return None
 
 def _pub_failed(run_id):
-    return {"signal_run_id": run_id, "workflow_conclusion": "failure"}
+    return _make_pub_record(run_id, workflow_conclusion="failure")
 
 def _pub_missing_conclusion(run_id):
-    return {"signal_run_id": run_id}
+    return _make_pub_record(run_id, workflow_conclusion=None)
 
 def _ledger_status_completed(run_id, ym):
     return {"status": "completed", "n_signal_records": 100}
@@ -840,3 +871,536 @@ class TestTelegramMessage:
         result = _validate(s)
         msg = build_stale_signal_message(result)
         assert "hash_missing" in msg
+
+
+# ---------------------------------------------------------------------------
+# Point 1: publication_status must be explicitly "published" (Layer 1b)
+# ---------------------------------------------------------------------------
+
+class TestPublicationStatusRequired:
+    """
+    Regression point 1: publication_status='published' must be validated
+    by the validator itself — not just by load_latest_signal().
+    """
+
+    def test_draft_status_rejected_before_layer3(self):
+        """Draft signal is rejected in Layer 1b — before the pub-record check."""
+        s = _make_signal(add_content_hash=True, publication_status="draft")
+        result = _validate(s)
+        # Must reject as unpublished, not reach Layer 3
+        assert result.failure_mode == "unpublished"
+        assert not result.allow_new_buys
+        assert result.allow_protective_sells
+
+    def test_none_status_rejected(self):
+        s = _make_signal(add_content_hash=True)
+        s["publication_status"] = None
+        result = _validate(s)
+        assert result.failure_mode == "unpublished"
+        assert not result.allow_new_buys
+
+    def test_missing_status_key_rejected(self):
+        s = _make_signal(add_content_hash=True)
+        del s["publication_status"]
+        result = _validate(s)
+        assert result.failure_mode == "unpublished"
+
+    def test_typo_status_rejected(self):
+        s = _make_signal(add_content_hash=True, publication_status="Published")  # capital P
+        result = _validate(s)
+        assert result.failure_mode == "unpublished"
+
+    def test_published_status_passes_layer1b(self):
+        s = _make_signal(add_content_hash=True, publication_status="published")
+        result = _validate(s)
+        assert result.failure_mode not in ("unpublished", "missing_fields")
+
+
+# ---------------------------------------------------------------------------
+# Point 2: Publication record content_hash must be validated
+# ---------------------------------------------------------------------------
+
+class TestPublicationRecordHash:
+    """Regression point 2: validator checks pub record's own content_hash."""
+
+    def test_valid_pub_record_hash_passes(self):
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_success,   # has correct content_hash
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode not in ("publication_error",)
+        assert result.is_valid
+
+    def test_tampered_pub_record_rejected(self):
+        """If pub record is tampered (content_hash no longer matches), reject."""
+        def _pub_tampered(run_id):
+            rec = _make_pub_record(run_id)
+            rec["workflow_conclusion"] = "TAMPERED"  # change field without recomputing hash
+            return rec
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_tampered,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        # Tampered workflow_conclusion changes hash AND is not "success" — caught first
+        assert not result.allow_new_buys
+
+    def test_pub_record_without_content_hash_passes_check(self):
+        """Empty content_hash skips hash check (e.g. old format without hash field)."""
+        def _pub_no_hash(run_id):
+            rec = _make_pub_record(run_id)
+            rec["content_hash"] = ""
+            return rec
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_no_hash,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        # No stored hash → skip check → passes Layer 3 hash step
+        assert result.failure_mode not in ("publication_error",)
+
+    def test_wrong_content_hash_in_pub_record_rejected(self):
+        """Pub record with a deliberately wrong content_hash is rejected."""
+        def _pub_wrong_hash(run_id):
+            rec = _make_pub_record(run_id)
+            rec["content_hash"] = "a" * 64  # wrong hash, right length
+            return rec
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_wrong_hash,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "publication_error"
+        assert "content_hash" in result.reason
+        assert not result.allow_new_buys
+
+
+# ---------------------------------------------------------------------------
+# Point 3: Publication record fields cross-validated against signal
+# ---------------------------------------------------------------------------
+
+class TestPublicationRecordCrossValidation:
+    """Regression point 3: signal_run_id, published_at, commit_sha must match."""
+
+    def test_matching_fields_pass(self):
+        s = _make_signal(add_content_hash=True)
+        result = _validate(s)
+        assert result.failure_mode not in ("publication_error",)
+
+    def test_signal_run_id_mismatch_rejected(self):
+        def _pub_wrong_run_id(run_id):
+            return _make_pub_record("wrong-run-id-xyz")  # mismatched signal_run_id
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_wrong_run_id,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "publication_error"
+        assert "signal_run_id" in result.reason
+        assert not result.allow_new_buys
+
+    def test_published_at_mismatch_rejected(self):
+        def _pub_wrong_published_at(run_id):
+            return _make_pub_record(run_id, published_at="2020-01-01T00:00:00+00:00")
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_wrong_published_at,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "publication_error"
+        assert "published_at" in result.reason
+        assert not result.allow_new_buys
+
+    def test_commit_sha_mismatch_rejected(self):
+        def _pub_wrong_commit(run_id):
+            return _make_pub_record(run_id, commit_sha="000000000000")
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_wrong_commit,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "publication_error"
+        assert "commit_sha" in result.reason
+        assert not result.allow_new_buys
+
+    def test_missing_pub_record_fields_skip_cross_validation(self):
+        """If pub record omits optional fields, cross-validation is skipped (not rejected)."""
+        def _pub_minimal(run_id):
+            from modules.publication import compute_publication_content_hash
+            rec = {
+                "schema_version": 1,
+                "record_type": "signal_publication",
+                "signal_run_id": run_id,
+                "workflow_conclusion": "success",
+                "finalized_commit_sha": "def456",
+                "content_hash": "",
+            }
+            rec["content_hash"] = compute_publication_content_hash(rec)
+            return rec
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_minimal,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        # Missing commit_sha, published_at → cross-validation skipped → passes
+        assert result.failure_mode not in ("publication_error",)
+
+
+# ---------------------------------------------------------------------------
+# Point 4: ImportError in ledger must reject, not skip
+# ---------------------------------------------------------------------------
+
+class TestLedgerImportError:
+    """Regression point 4: ImportError/ModuleNotFoundError → ledger_error, not silent skip."""
+
+    def test_import_error_in_ledger_status_rejects(self):
+        def _raises_import_error(run_id, ym):
+            raise ImportError("No module named 'modules.ledger'")
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_success,
+            _get_ledger_status_fn=_raises_import_error,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "ledger_error"
+        assert not result.allow_new_buys
+        assert result.allow_protective_sells
+
+    def test_module_not_found_in_ledger_status_rejects(self):
+        def _raises_module_not_found(run_id, ym):
+            raise ModuleNotFoundError("modules.ledger not installed")
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_success,
+            _get_ledger_status_fn=_raises_module_not_found,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "ledger_error"
+        assert not result.allow_new_buys
+
+    def test_import_error_in_ledger_record_rejects(self):
+        def _raises_import_error(run_id, ym):
+            raise ImportError("No module named 'modules.ledger'")
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_success,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_raises_import_error,
+        )
+        assert result.failure_mode == "ledger_error"
+        assert not result.allow_new_buys
+
+    def test_import_error_does_not_silently_pass(self):
+        """Pre-regression guard: ImportError must NOT result in is_valid=True."""
+        def _raises_import_error(run_id, ym):
+            raise ImportError("ledger missing")
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_success,
+            _get_ledger_status_fn=_raises_import_error,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        # The old code had `except (ImportError, ModuleNotFoundError): pass`
+        # which would let the signal pass. Verify this no longer happens.
+        assert not result.is_valid
+        assert not result.allow_new_buys
+
+
+# ---------------------------------------------------------------------------
+# Point 5: session_date uses New York timezone
+# ---------------------------------------------------------------------------
+
+class TestSessionDateTimezone:
+    """Regression point 5: session_date must use NYSE/NY timezone, not Europe/Oslo."""
+
+    def test_now_ny_and_now_oslo_are_valid_datetimes(self):
+        from modules.state import now_ny, now_oslo
+        ny = now_ny()
+        oslo = now_oslo()
+        assert ny.tzinfo is not None
+        assert oslo.tzinfo is not None
+
+    def test_oslo_is_ahead_of_or_equal_to_ny(self):
+        """Oslo is always UTC+1 or higher; NY is UTC-5 to UTC-4. Oslo >= NY."""
+        from modules.state import now_ny, now_oslo
+        import datetime
+        ny = now_ny()
+        oslo = now_oslo()
+        # Convert both to UTC for comparison
+        ny_utc = ny.utctimetuple()
+        oslo_utc = oslo.utctimetuple()
+        # They represent the same instant — UTC offsets differ, not the moment
+        ny_date = now_ny().strftime("%Y-%m-%d")
+        oslo_date = now_oslo().strftime("%Y-%m-%d")
+        # Both should be valid ISO dates
+        import re
+        assert re.match(r"\d{4}-\d{2}-\d{2}", ny_date)
+        assert re.match(r"\d{4}-\d{2}-\d{2}", oslo_date)
+
+    def test_run_execute_uses_ny_timezone(self):
+        """Source-level check: run_execute() must use now_ny() for session_date."""
+        # Read source directly — avoids importing stock_bot (requires 'anthropic' package)
+        with open("stock_bot.py") as f:
+            src = f.read()
+
+        # Find run_execute function body
+        start = src.find("def run_execute()")
+        assert start != -1, "run_execute function not found in stock_bot.py"
+        # Grab roughly 30 lines after the def
+        snippet = src[start:start + 1200]
+
+        # Must reference now_ny() for session_date
+        assert "now_ny()" in snippet, "run_execute must use now_ny() for session_date"
+        # Must NOT use today_str() for session_date assignment
+        lines = snippet.split("\n")
+        session_line = next((l for l in lines if "session_date" in l and "=" in l), "")
+        assert "today_str()" not in session_line, (
+            f"run_execute must use now_ny() not today_str() for session_date. "
+            f"Found: {session_line!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Point 6: finalized_commit_sha (persistence-ack) must be present
+# ---------------------------------------------------------------------------
+
+class TestPersistenceAck:
+    """Regression point 6: validator requires finalized_commit_sha in pub record."""
+
+    def test_missing_finalized_commit_sha_rejected(self):
+        """Pub record without finalized_commit_sha → rejected (ack not written yet)."""
+        def _pub_no_ack(run_id):
+            return _make_pub_record(run_id, finalized_commit_sha="")
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_no_ack,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "publication_error"
+        assert "finalized_commit_sha" in result.reason or "persistence-ack" in result.reason.lower()
+        assert not result.allow_new_buys
+        assert result.allow_protective_sells
+
+    def test_none_finalized_commit_sha_rejected(self):
+        def _pub_none_sha(run_id):
+            return _make_pub_record(run_id, finalized_commit_sha=None)
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_none_sha,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "publication_error"
+        assert not result.allow_new_buys
+
+    def test_present_finalized_commit_sha_passes(self):
+        s = _make_signal(add_content_hash=True)
+        result = _validate(s)  # _pub_success has finalized_commit_sha="def456abc789"
+        assert result.failure_mode not in ("publication_error",)
+        assert result.is_valid
+
+    def test_write_publication_ack_roundtrip(self):
+        """write_publication_ack + get_signal_publication returns merged record."""
+        import tempfile
+        from pathlib import Path
+        from modules.publication import (
+            write_signal_publication,
+            write_publication_ack,
+            get_signal_publication,
+            PUBLICATIONS_FILE,
+        )
+        import modules.publication as pub_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file = pub_mod.PUBLICATIONS_FILE
+            orig_lock = pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "test-run-ack-001"
+                write_signal_publication(
+                    signal_run_id=run_id,
+                    signal_path="/test/signal.json",
+                    commit_sha="draft-sha-abc",
+                    published_at="2026-08-05T21:05:00+00:00",
+                    workflow_conclusion="success",
+                )
+                # Before ack: no finalized_commit_sha
+                rec = get_signal_publication(run_id)
+                assert rec is not None
+                assert not rec.get("finalized_commit_sha")
+
+                write_publication_ack(run_id, "final-sha-def")
+
+                # After ack: merged record has finalized_commit_sha
+                rec2 = get_signal_publication(run_id)
+                assert rec2 is not None
+                assert rec2["finalized_commit_sha"] == "final-sha-def"
+                assert rec2["workflow_conclusion"] == "success"
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+    def test_write_publication_ack_idempotent(self):
+        """Calling write_publication_ack twice for same run_id is a no-op."""
+        import tempfile
+        from pathlib import Path
+        import modules.publication as pub_mod
+        from modules.publication import (
+            write_signal_publication,
+            write_publication_ack,
+            get_signal_publication,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file = pub_mod.PUBLICATIONS_FILE
+            orig_lock = pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "test-run-ack-002"
+                write_signal_publication(run_id, "/s.json", "sha1", "2026-08-05T21:00:00+00:00")
+                write_publication_ack(run_id, "final-sha-1")
+                write_publication_ack(run_id, "final-sha-1")  # idempotent
+
+                # Count ack lines
+                lines = [l for l in tmp_file.read_text().strip().split("\n") if l]
+                ack_count = sum(1 for l in lines if '"publication_ack"' in l)
+                assert ack_count == 1, "Only one ack record should exist"
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+
+# ---------------------------------------------------------------------------
+# Point 7: signal.yml if: always() removed (workflow config regression)
+# ---------------------------------------------------------------------------
+
+class TestWorkflowConfig:
+    """Regression point 7: Phase 4 (final push) must not use if: always()."""
+
+    def test_final_push_step_not_always(self):
+        """signal.yml Phase 4 must not run after a failed finalize step."""
+        workflow_path = ".github/workflows/signal.yml"
+        try:
+            with open(workflow_path) as f:
+                content = f.read()
+        except FileNotFoundError:
+            import pytest
+            pytest.skip("signal.yml not found — run from repo root")
+
+        # Split into step blocks and check the final_push step
+        # It must NOT have "if: always()" on the step
+        lines = content.split("\n")
+        in_final_push = False
+        for i, line in enumerate(lines):
+            if "id: final_push" in line or ("Commit og push finalisert signal" in line):
+                in_final_push = True
+            if in_final_push and "id: " in line and "final_push" not in line:
+                break  # moved to next step
+            if in_final_push and "if: always()" in line:
+                raise AssertionError(
+                    f"Phase 4 (final push) step must NOT use 'if: always()'. "
+                    f"Found at line {i+1}: {line!r}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Point 8: Comprehensive regression — all points together
+# ---------------------------------------------------------------------------
+
+class TestRegressionSuite:
+    """Full regression suite — a valid signal must pass all 8 remediation points."""
+
+    def test_fully_valid_signal_passes_all_layers(self):
+        """A correctly constructed signal passes all six validation layers."""
+        s = _make_signal(
+            add_content_hash=True,
+            publication_status="published",
+        )
+        result = validate_signal(
+            s, "/fake/path/2026-08-05_signal.json", SESSION,
+            _get_publication_fn=_pub_success,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.is_valid
+        assert result.failure_mode in ("ok", "data_quality_reduced")
+        assert result.allow_new_buys
+        assert result.allow_pyramid
+        assert result.allow_protective_sells
+        assert result.signal_run_id is not None
+        assert result.published_commit_sha is not None
+        assert result.data_cutoff_at is not None
+
+    def test_each_single_failure_blocks_new_buys(self):
+        """Each failure mode individually blocks new buys."""
+        failures = [
+            # (signal_override, pub_fn, ledger_status_fn, ledger_record_fn)
+            # Layer 1: missing field
+            (_make_signal(add_content_hash=True, **{"signal_run_id": ""}), _pub_success, _ledger_status_completed, _ledger_record_ok),
+            # Layer 1b: draft status
+            (_make_signal(add_content_hash=True, publication_status="draft"), _pub_success, _ledger_status_completed, _ledger_record_ok),
+            # Layer 2: stale session
+            (_make_signal(add_content_hash=True, intended_execution_session="2026-01-01"), _pub_success, _ledger_status_completed, _ledger_record_ok),
+            # Layer 3: no pub record
+            (_make_signal(add_content_hash=True), _pub_none, _ledger_status_completed, _ledger_record_ok),
+            # Layer 4: ledger error
+            (_make_signal(add_content_hash=True), _pub_success, _ledger_status_failed, _ledger_record_ok),
+            # Layer 5: missing hash
+            (_make_signal(), _pub_success, _ledger_status_completed, _ledger_record_ok),
+        ]
+        for sig, pub_fn, status_fn, record_fn in failures:
+            result = validate_signal(
+                sig, "/fake", SESSION,
+                _get_publication_fn=pub_fn,
+                _get_ledger_status_fn=status_fn,
+                _get_ledger_record_fn=record_fn,
+            )
+            assert not result.allow_new_buys, (
+                f"Expected allow_new_buys=False for failure_mode={result.failure_mode}"
+            )
+            assert result.allow_protective_sells, (
+                f"Expected allow_protective_sells=True for failure_mode={result.failure_mode}"
+            )

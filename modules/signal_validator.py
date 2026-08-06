@@ -1,15 +1,20 @@
 """
 Signal validation for the next_session_daily_open_v1 execution model.
 
-Five validation layers (all must pass for full execution):
+Six validation layers (all must pass for full execution):
   1. Required fields  — signal_run_id, created_at_utc, date, data_cutoff_at,
                         intended_execution_session, published_at,
                         published_commit_sha, model_version
+  1b. Publication status — publication_status must be exactly "published"
   2. Session match    — intended_execution_session == today's NYSE session
   3. Publication      — publication record exists in signal_publications.jsonl
-                        with workflow_conclusion == "success"
+                        with workflow_conclusion == "success"; pub record
+                        content_hash validated; key fields cross-validated
+                        against signal; finalized_commit_sha must be present
+                        (persistence-ack after Phase 4 push)
   4. Ledger integrity — signal_run status == "completed" (sidecar) AND
-                        model_version + data_cutoff_at match the JSONL record
+                        model_version + data_cutoff_at match the JSONL record;
+                        ImportError → rejected (fail-closed, not skipped)
   5. Content hash     — signal_content_hash present and matches recomputed hash
                         (missing or empty hash → rejected, no backward compat)
 
@@ -212,6 +217,17 @@ def validate_signal(
         )
 
     # ------------------------------------------------------------------
+    # Layer 1b: publication_status must be exactly "published"
+    # ------------------------------------------------------------------
+    pub_status = signal.get("publication_status")
+    if pub_status != "published":
+        return _reject(
+            "unpublished",
+            f"publication_status er '{pub_status}', forventet 'published'. "
+            "Kjør BOT_MODE=finalize_signal etter vellykket git push.",
+        )
+
+    # ------------------------------------------------------------------
     # Layer 2: Session match
     # intended_execution_session must equal today's session (required by Layer 1)
     # ------------------------------------------------------------------
@@ -252,6 +268,58 @@ def validate_signal(
                     "Signalet ble ikke publisert etter vellykket push."
                 ),
             )
+
+        # Point 2: Validate publication record's own content_hash
+        pub_stored_hash = pub_record.get("content_hash", "")
+        if pub_stored_hash:
+            try:
+                from modules.publication import compute_publication_content_hash  # noqa: PLC0415
+                pub_expected = compute_publication_content_hash(pub_record)
+                if pub_expected != pub_stored_hash:
+                    return _reject(
+                        "publication_error",
+                        "Publikasjonsrecord content_hash er ugyldig — "
+                        "recorden kan ha blitt modifisert etter skriving.",
+                    )
+            except Exception as exc:
+                return _reject(
+                    "publication_error",
+                    f"Kunne ikke verifisere publikasjonsrecord hash: {exc}",
+                )
+
+        # Point 3: Cross-validate key fields between pub record and signal
+        rec_run_id = pub_record.get("signal_run_id")
+        if rec_run_id and rec_run_id != signal_run_id:
+            return _reject(
+                "publication_error",
+                f"Publikasjonsrecord signal_run_id mismatch: "
+                f"record={rec_run_id!r}, signal={signal_run_id!r}",
+            )
+
+        rec_published_at = pub_record.get("published_at")
+        if rec_published_at and published_at and rec_published_at != published_at:
+            return _reject(
+                "publication_error",
+                f"published_at mismatch: record={rec_published_at!r}, "
+                f"signal={published_at!r}",
+            )
+
+        rec_commit_sha = pub_record.get("commit_sha")
+        if rec_commit_sha and published_sha and rec_commit_sha != published_sha:
+            return _reject(
+                "publication_error",
+                f"commit_sha mismatch: record={rec_commit_sha!r}, "
+                f"signal published_commit_sha={published_sha!r}",
+            )
+
+        # Point 6: Persistence-ack — finalized_commit_sha must be present
+        if not pub_record.get("finalized_commit_sha"):
+            return _reject(
+                "publication_error",
+                "Persistence-ack mangler: finalized_commit_sha ikke satt. "
+                "Kjør BOT_MODE=ack_publication etter siste push (Phase 4).",
+            )
+
     except Exception as exc:
         return _reject("publication_error", f"Publikasjonssjekk feilet: {exc}")
 
@@ -279,8 +347,6 @@ def validate_signal(
                 f"Ledger-status for {signal_run_id} er "
                 f"'{run_status.get('status')}', forventet 'completed'",
             )
-    except (ImportError, ModuleNotFoundError):
-        pass
     except Exception as exc:
         return _reject("ledger_error", f"Ledger-statussjekk feilet: {exc}")
 
@@ -319,8 +385,6 @@ def validate_signal(
                     f"ledger='{ledger_cutoff}'"
                 ),
             )
-    except (ImportError, ModuleNotFoundError):
-        pass
     except Exception as exc:
         return _reject("ledger_error", f"Ledger JSONL-kryssvalidering feilet: {exc}")
 

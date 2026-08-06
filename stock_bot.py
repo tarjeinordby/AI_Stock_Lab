@@ -586,7 +586,49 @@ def run_finalize_signal():
         published_at=published_at,
         workflow_conclusion="success",
     )
-    print(f"Publikasjonsrecord skrevet for {signal_run_id}")
+    print(f"Publikasjonsrecord (signal_publication) skrevet for {signal_run_id}")
+    print(f"  Venter på Phase 4 push → BOT_MODE=ack_publication for persistence-ack")
+
+
+def run_ack_publication():
+    """
+    Called as BOT_MODE=ack_publication after the final git push (Phase 4).
+
+    Appends a publication_ack record with finalized_commit_sha — the SHA of
+    the commit that actually contains the finalized signal file. This is the
+    verifiable persistence acknowledgment required by signal_validator.py Layer 3.
+
+    FINAL_COMMIT_SHA env var must be set to the SHA of the Phase 4 push.
+    """
+    print("=" * 60)
+    print("ACK PUBLICATION MODE")
+    print("=" * 60)
+
+    final_sha = os.environ.get("FINAL_COMMIT_SHA", "").strip()
+    if not final_sha:
+        raise RuntimeError(
+            "FINAL_COMMIT_SHA ikke satt. "
+            "Kjøres kun fra signal.yml etter Phase 4 (final) push."
+        )
+
+    global_state = load_json(GLOBAL_STATE_FILE, {})
+    signal_path = global_state.get("last_signal_file")
+    if not signal_path or not os.path.exists(signal_path):
+        raise FileNotFoundError(
+            f"Ingen signalfil registrert for ack: {signal_path!r}"
+        )
+
+    with open(signal_path, "r") as f:
+        payload = json.load(f)
+
+    signal_run_id = payload.get("signal_run_id")
+    if not signal_run_id:
+        raise ValueError("signal_run_id mangler i signalfilen — kan ikke skrive ack")
+
+    from modules.publication import write_publication_ack  # noqa: PLC0415
+    write_publication_ack(signal_run_id=signal_run_id, finalized_commit_sha=final_sha)
+    print(f"Persistence-ack skrevet for {signal_run_id}")
+    print(f"  finalized_commit_sha: {final_sha}")
 
 
 # ============================================================
@@ -999,7 +1041,8 @@ def run_execute():
     print("=" * 60)
 
     signal, signal_path = load_latest_signal()
-    session_date = today_str()
+    # Use NYSE/NY timezone — not Europe/Oslo — to determine current trading session
+    session_date = now_ny().strftime("%Y-%m-%d")
     print(f"Bruker signal: {signal_path}")
 
     from modules.signal_validator import validate_signal  # noqa: PLC0415
@@ -1188,6 +1231,8 @@ def main():
         run_signal()
     elif mode == "finalize_signal":
         run_finalize_signal()
+    elif mode == "ack_publication":
+        run_ack_publication()
     elif mode == "execute":
         run_execute()
     elif mode == "premarket":

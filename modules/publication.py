@@ -2,23 +2,18 @@
 Signal publication finalization records.
 
 A signal_publication record is written AFTER a successful git push,
-by the `finalize_signal` step in signal.yml. This is the authoritative
-proof that:
-  - The signal was committed and pushed to git.
-  - The workflow concluded successfully.
-  - The commit SHA is known and recorded.
+by the `finalize_signal` step in signal.yml. A subsequent publication_ack
+record is written after the final push (Phase 4) to confirm the finalized
+signal file itself is committed, recording the finalized_commit_sha.
 
-The signal file itself is updated during finalization to set:
-  publication_status = "published"
-  published_at        = <timestamp>
-  published_commit_sha = <commit SHA>
-  signal_content_hash  = <SHA-256 of final payload>
+signal_validator.py checks both records: signal_publication must have
+workflow_conclusion=="success" and publication_ack must be present with
+a non-empty finalized_commit_sha. The signal file alone is not sufficient
+— anyone can set publication_status="published" locally.
 
-signal_validator.py checks both the signal file's content hash AND the
-presence of a publication record here. The signal file alone is not
-sufficient — anyone can set publication_status="published" locally.
-
-Records are append-only, one per signal_run_id.
+Records are append-only. Two record types per signal_run_id:
+  signal_publication  — written after Phase 2 push (draft SHA)
+  publication_ack     — written after Phase 4 push (finalized SHA)
 """
 
 from __future__ import annotations
@@ -32,6 +27,9 @@ from pathlib import Path
 PUBLICATIONS_FILE = Path("data_v4/ledger/signal_publications.jsonl")
 _LOCK_FILE = Path("data_v4/ledger/signal_publications.lock")
 
+# Fields excluded from content_hash so ack merging doesn't invalidate initial record
+_HASH_EXCLUDE = frozenset({"content_hash", "finalized_commit_sha"})
+
 
 class PublicationWriteError(Exception):
     pass
@@ -41,45 +39,17 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def _content_hash(record: dict) -> str:
-    r = {k: v for k, v in record.items() if k != "content_hash"}
+def compute_publication_content_hash(record: dict) -> str:
+    """SHA-256 of record with content_hash and finalized_commit_sha excluded."""
+    r = {k: v for k, v in record.items() if k not in _HASH_EXCLUDE}
     return hashlib.sha256(
         json.dumps(r, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
 
 
-def write_signal_publication(
-    signal_run_id: str,
-    signal_path: str,
-    commit_sha: str,
-    published_at: str,
-    workflow_conclusion: str = "success",
-) -> None:
-    """
-    Append a publication record after a successful git push.
-    Idempotent: if signal_run_id is already in the file, no-op.
-
-    Raises PublicationWriteError on I/O failure.
-    """
-    if get_signal_publication(signal_run_id) is not None:
-        return
-
-    record = {
-        "schema_version": 1,
-        "record_type": "signal_publication",
-        "signal_run_id": signal_run_id,
-        "signal_path": str(signal_path),
-        "published_at": published_at,
-        "commit_sha": commit_sha,
-        "workflow_conclusion": workflow_conclusion,
-        "written_at": _utc_now(),
-        "content_hash": "",
-    }
-    record["content_hash"] = _content_hash(record)
-
+def _append_record(record: dict) -> None:
     PUBLICATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     _LOCK_FILE.touch(exist_ok=True)
-
     try:
         with open(_LOCK_FILE, "rb") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
@@ -93,13 +63,55 @@ def write_signal_publication(
         raise PublicationWriteError(f"Kunne ikke skrive publikasjonsrecord: {exc}") from exc
 
 
-def get_signal_publication(signal_run_id: str) -> dict | None:
+def write_signal_publication(
+    signal_run_id: str,
+    signal_path: str,
+    commit_sha: str,
+    published_at: str,
+    workflow_conclusion: str = "success",
+) -> None:
     """
-    Return the publication record for signal_run_id, or None if not found.
-    Scans the publications JSONL file (typically <50 records per month).
+    Append a signal_publication record after the draft push (Phase 2).
+    Idempotent: if a signal_publication already exists for this signal_run_id, no-op.
+
+    Raises PublicationWriteError on I/O failure.
     """
+    existing = get_signal_publication(signal_run_id)
+    if existing is not None and existing.get("record_type") == "signal_publication":
+        return
+
+    record = {
+        "schema_version": 1,
+        "record_type": "signal_publication",
+        "signal_run_id": signal_run_id,
+        "signal_path": str(signal_path),
+        "published_at": published_at,
+        "commit_sha": commit_sha,
+        "workflow_conclusion": workflow_conclusion,
+        "written_at": _utc_now(),
+        "content_hash": "",
+    }
+    record["content_hash"] = compute_publication_content_hash(record)
+    _append_record(record)
+
+
+def write_publication_ack(signal_run_id: str, finalized_commit_sha: str) -> None:
+    """
+    Append a publication_ack record after the final push (Phase 4).
+    Records the SHA of the commit that contains the finalized signal file.
+    Idempotent: if a publication_ack already exists for this signal_run_id, no-op.
+
+    Raises PublicationWriteError on I/O failure.
+    """
+    if not finalized_commit_sha:
+        raise PublicationWriteError("finalized_commit_sha er tom — ack kan ikke skrives")
+
     if not PUBLICATIONS_FILE.exists():
-        return None
+        raise PublicationWriteError(
+            f"Finner ikke {PUBLICATIONS_FILE} — kjør finalize_signal før ack"
+        )
+
+    # Idempotency: check for existing ack
     try:
         with open(PUBLICATIONS_FILE, encoding="utf-8") as f:
             for line in f:
@@ -108,10 +120,64 @@ def get_signal_publication(signal_run_id: str) -> dict | None:
                     continue
                 try:
                     rec = json.loads(line)
-                    if rec.get("signal_run_id") == signal_run_id:
-                        return rec
+                    if (
+                        rec.get("signal_run_id") == signal_run_id
+                        and rec.get("record_type") == "publication_ack"
+                    ):
+                        return  # already acked
+                except json.JSONDecodeError:
+                    pass
+    except OSError as exc:
+        raise PublicationWriteError(f"Kunne ikke lese publikasjonsfil: {exc}") from exc
+
+    record = {
+        "schema_version": 1,
+        "record_type": "publication_ack",
+        "signal_run_id": signal_run_id,
+        "finalized_commit_sha": finalized_commit_sha,
+        "written_at": _utc_now(),
+        "content_hash": "",
+    }
+    record["content_hash"] = compute_publication_content_hash(record)
+    _append_record(record)
+
+
+def get_signal_publication(signal_run_id: str) -> dict | None:
+    """
+    Return the merged publication record for signal_run_id, or None if not found.
+
+    Scans both signal_publication and publication_ack records for the given
+    signal_run_id and returns a merged dict with finalized_commit_sha included
+    if the ack record exists.
+    """
+    if not PUBLICATIONS_FILE.exists():
+        return None
+    initial = None
+    ack = None
+    try:
+        with open(PUBLICATIONS_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("signal_run_id") != signal_run_id:
+                        continue
+                    rtype = rec.get("record_type")
+                    if rtype == "signal_publication":
+                        initial = rec
+                    elif rtype == "publication_ack":
+                        ack = rec
                 except json.JSONDecodeError:
                     pass
     except OSError:
         return None
-    return None
+
+    if initial is None:
+        return None
+
+    result = dict(initial)
+    if ack:
+        result["finalized_commit_sha"] = ack.get("finalized_commit_sha", "")
+    return result
