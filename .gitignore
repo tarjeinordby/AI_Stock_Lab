@@ -12,3 +12,6 @@ __pycache__/
 venv/
 .venv/
 env/
+
+# Order ledger lock file (runtime artifact, must not be committed)
+data_v4/state/orders.jsonl.lock

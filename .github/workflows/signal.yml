@@ -89,6 +89,8 @@ jobs:
 
       # Phase 3.5: Always commit ledger records — persistence guarantee even on failure
       # Runs with if: always() so partial ledger state is committed even if Phase 3 failed.
+      # Also pushes any commits that are ahead of origin/main — this handles the case where
+      # Phase 2 created a local commit but the push failed (no staged diff, but commits exist).
       # Phase 4 is guarded (no if: always()), so the signal file is only committed on success.
       - name: Commit og push ledger-records (alltid — sikrer persistens)
         if: always()
@@ -98,16 +100,20 @@ jobs:
 
           git add data_v4/ledger/ || true
 
-          if git diff --cached --quiet; then
-            echo "Ingen ledger-endringer å committe."
+          if ! git diff --cached --quiet; then
+            git commit -m "Signal ledger-state: $(date -u +%Y-%m-%d)"
+          fi
+
+          # Push any commits ahead of origin/main — includes Phase 2 draft if its push failed
+          AHEAD=$(git log origin/main..HEAD --oneline 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$AHEAD" -eq "0" ]; then
+            echo "Ingen commits å pushe."
             exit 0
           fi
 
-          git commit -m "Signal ledger-state: $(date -u +%Y-%m-%d)"
-
           for attempt in 1 2 3; do
             if git push origin main; then
-              echo "Ledger-records pushet ✅"
+              echo "Ledger-records pushet ✅ ($AHEAD commits)"
               exit 0
             fi
             echo "Push feilet (forsøk $attempt/3)..."

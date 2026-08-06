@@ -1800,8 +1800,8 @@ class TestPoint1ProtectiveSellsWithoutSignal:
         assert "allow_protective_sells=True" in snippet, (
             "run_execute must set allow_protective_sells=True in fallback validation"
         )
-        assert '"no-signal"' in snippet, (
-            "run_execute must build a minimal signal with signal_run_id='no-signal'"
+        assert '"portfolio_safety"' in snippet, (
+            "run_execute must set action_origin='portfolio_safety' for safety-action mode"
         )
 
     def test_run_execute_runs_calendar_check_before_signal_check(self):
@@ -1854,21 +1854,26 @@ class TestPoint2PyramidFillsInLedger:
         assert buy_id != pyr_id
 
     def test_run_strategy_execution_source_has_pyramid_order_ledger(self):
-        """Source-level: execute_pyramid_fill is wrapped with get_or_create_order."""
+        """Pyramid idempotency: get_or_create_order must appear BEFORE execute_pyramid_fill."""
         with open("stock_bot.py") as f:
             src = f.read()
-        # Find run_strategy_execution function body (past the imports section)
         fn_start = src.find("def run_strategy_execution(")
         assert fn_start != -1
         fn_body = src[fn_start:]
-        # Within the function body, find execute_pyramid_fill call
-        pyr_start = fn_body.find("execute_pyramid_fill")
-        assert pyr_start != -1
-        pyr_region = fn_body[pyr_start:pyr_start + 1500]
-        assert "get_or_create_order" in pyr_region, (
-            "pyramid fills must call get_or_create_order for ledger tracking"
+        pyr_fill_pos = fn_body.find("execute_pyramid_fill(")
+        assert pyr_fill_pos != -1
+        # get_or_create_order must appear before execute_pyramid_fill (idempotency before mutation)
+        before_fill = fn_body[:pyr_fill_pos]
+        assert "get_or_create_order" in before_fill, (
+            "pyramid idempotency requires get_or_create_order BEFORE execute_pyramid_fill"
         )
-        assert "PYRAMID_FILL" in pyr_region
+        assert "PYRAMID_FILL" in before_fill, (
+            "PYRAMID_FILL action string must appear in order creation, before the fill"
+        )
+        # And verify that TERMINAL/SETTLING guard exists before the fill call
+        assert "SETTLING" in before_fill or "TERMINAL" in before_fill, (
+            "terminal/settling guard must appear before execute_pyramid_fill"
+        )
 
 
 # ---------------------------------------------------------------------------

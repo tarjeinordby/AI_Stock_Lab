@@ -58,15 +58,21 @@ def make_order_id(signal_run_id: str, ticker: str, strategy: str,
     return "ord-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
-def make_trade_id(order_id: str, timestamp_iso: str) -> str:
-    """Tie a trade fill back to its order. Not deterministic — unique per fill."""
-    raw = f"{order_id}|{timestamp_iso}"
+def make_trade_id(order_id: str, timestamp_iso: str = "") -> str:
+    """Tie a trade fill back to its order.
+    Omit timestamp_iso for a deterministic ID (one fill per order) — enables crash recovery.
+    """
+    raw = order_id if not timestamp_iso else f"{order_id}|{timestamp_iso}"
     return "trd-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
 # Order construction
 # ---------------------------------------------------------------------------
+
+# Sentinel: distinguishes "caller did not pass signal_id" from "caller passed None"
+_SIGNAL_ID_UNSET = object()
+
 
 def build_order(
     signal_run_id: str,
@@ -81,11 +87,19 @@ def build_order(
     pyramid_remaining: float = 0.0,
     portfolio_id: str = "",
     portfolio_version: str = "",
+    signal_id=_SIGNAL_ID_UNSET,
 ) -> dict:
-    """Build a new order dict (not yet persisted)."""
+    """Build a new order dict (not yet persisted).
+
+    signal_id: stable content-addressed signal identifier (e.g. signal_content_hash).
+    Omit to default to signal_run_id (backward compat).
+    Pass None explicitly for safety-action orders that have no associated signal.
+    """
+    if signal_id is _SIGNAL_ID_UNSET:
+        signal_id = signal_run_id  # backward compat: signal_id = signal_run_id
     return {
         "order_id": make_order_id(signal_run_id, ticker, strategy, session_date, action),
-        "signal_id": signal_run_id,
+        "signal_id": signal_id,
         "signal_run_id": signal_run_id,
         "portfolio_id": portfolio_id,
         "portfolio_version": portfolio_version,
@@ -134,20 +148,46 @@ def load_orders() -> dict:
     Return {order_id: order} with the latest state per order.
     Since each update appends a full snapshot, the last record for a given
     order_id overrides earlier ones.
+
+    Acquires a shared lock on read to prevent reading a partially-written record.
+    Mid-history corruption (non-last line) is fail-closed — raises RuntimeError.
+    A corrupt last line is skipped gracefully (crash during write is expected).
     """
     orders: dict = {}
     if not os.path.exists(ORDERS_FILE):
         return orders
-    with open(ORDERS_FILE) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-                orders[rec["order_id"]] = rec
-            except Exception:
-                pass
+    lock_dir = os.path.dirname(_ORDERS_LOCK_FILE)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+    open(_ORDERS_LOCK_FILE, "a").close()
+    with open(_ORDERS_LOCK_FILE, "rb") as lf:
+        fcntl.flock(lf, fcntl.LOCK_SH)
+        try:
+            with open(ORDERS_FILE, encoding="utf-8") as f:
+                raw_lines = f.readlines()
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+    for i, raw_line in enumerate(raw_lines):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            orders[rec["order_id"]] = rec
+        except json.JSONDecodeError:
+            # Decide: is this the last non-empty write, or mid-history corruption?
+            has_more = any(l.strip() for l in raw_lines[i + 1:])
+            if has_more:
+                # Corruption mid-history — terminal statuses for preceding orders are intact;
+                # refusing to continue prevents silently losing those statuses.
+                raise RuntimeError(
+                    f"Ordre-ledger er korrupt (linje {i + 1}/{len(raw_lines)}): "
+                    f"{ORDERS_FILE}. "
+                    "Korrupt JSON midt i filen — kan ikke repareres automatisk."
+                ) from None
+            # Last line only — likely a truncated append from a crash; skip gracefully.
+
     return orders
 
 
@@ -193,6 +233,7 @@ def get_or_create_order(
     pyramid_remaining: float = 0.0,
     portfolio_id: str = "",
     portfolio_version: str = "",
+    signal_id=_SIGNAL_ID_UNSET,
 ) -> tuple[dict, bool]:
     """
     Return (order, is_new). If an order with the same deterministic ID already
@@ -208,8 +249,54 @@ def get_or_create_order(
         pyramid_remaining=pyramid_remaining,
         portfolio_id=portfolio_id,
         portfolio_version=portfolio_version,
+        signal_id=signal_id,
     )
     return order, True
+
+
+def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> list:
+    """Reconcile SETTLING orders by comparing portfolio state to expected fill outcome.
+
+    Called after loading strategy state so we can tell whether the portfolio was saved
+    before a crash. Avoids blindly marking fills as FAILED_PRICE when the portfolio
+    already reflects the fill (crash happened after save_strategy_state, before EXECUTED).
+
+    Returns the list of reconciled orders.
+    """
+    reconciled = []
+    positions = state.get("positions", {})
+
+    for order in list(orders.values()):
+        if order.get("status") != SETTLING:
+            continue
+        if order.get("strategy") != strategy_name:
+            continue
+
+        ticker = order.get("ticker")
+        action = order.get("action")
+
+        if action == "BUY":
+            portfolio_has_fill = ticker in positions
+        elif action == "SELL":
+            portfolio_has_fill = ticker not in positions
+        elif action == "PYRAMID_FILL":
+            pos = positions.get(ticker, {})
+            # Fill succeeded → is_partial=False and pyramid_remaining_value ≈ 0
+            portfolio_has_fill = bool(pos) and not pos.get("is_partial", True)
+        else:
+            portfolio_has_fill = False
+
+        if portfolio_has_fill:
+            updated = save_order(order, status=EXECUTED)
+        else:
+            updated = save_order(
+                order, status=FAILED_PRICE,
+                failure_reason="crash-recovery: portfolio does not reflect fill",
+            )
+        orders[order["order_id"]] = updated
+        reconciled.append(updated)
+
+    return reconciled
 
 
 def recover_settling_orders(orders: dict) -> list:

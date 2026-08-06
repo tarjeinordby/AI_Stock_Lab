@@ -16,9 +16,11 @@ from modules.orders import (
     get_pending_for_session,
     load_orders,
     make_trade_id,
+    reconcile_settling_orders,
     recover_settling_orders,
     save_order,
 )
+from modules.versioning import PORTFOLIO_VERSION
 from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, prefetch_execution_prices, prefetch_open_prices, run_data_quality_checks
 from modules.macro import get_macro_status
 from modules.portfolio import (
@@ -636,15 +638,17 @@ def run_ack_publication():
 # EXECUTE MODE — per strategy
 # ============================================================
 
+
 def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
     """Add traceability fields to a trade dict and persist the order as SETTLING.
 
     SETTLING is an intermediate status: trade filled, portfolio not yet persisted.
     The caller must call save_order(order, status=EXECUTED) after save_strategy_state()
     to maintain crash-consistent ordering: EXECUTED only after portfolio is on disk.
+
+    trade_id is deterministic (no timestamp) — enables idempotent crash reconciliation.
     """
-    ts = now_utc().isoformat()
-    trade_id = make_trade_id(order_id, ts)
+    trade_id = make_trade_id(order_id)
     trade["order_id"] = order_id
     trade["trade_id"] = trade_id
     # Full traceability chain: signal_run_id → order_id → trade_id
@@ -662,6 +666,7 @@ def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
 def run_strategy_execution(
     strategy_name, signal, trades_df, valuation_price_cache, execution_price_cache,
     orders, signal_run_id, session_date, execution_version,
+    signal_id=None,
     premarket_flags=None, macro_mult=1.0, corr_pairs=None,
     market_open=True,
     allow_new_buys: bool = True,
@@ -675,6 +680,13 @@ def run_strategy_execution(
     config = STRATEGIES[strategy_name]
     state = load_strategy_state(strategy_name)
     state = reset_week_if_needed(state)
+
+    # Reconcile any SETTLING orders: portfolio-state check determines EXECUTED vs FAILED_PRICE
+    reconciled = reconcile_settling_orders(orders, strategy_name, state)
+    if reconciled:
+        ex = sum(1 for r in reconciled if r["status"] == EXECUTED)
+        fp = sum(1 for r in reconciled if r["status"] == FAILED_PRICE)
+        print(f"  [{strategy_name}] Crash-recovery: {ex} EXECUTED, {fp} FAILED_PRICE")
 
     strategy_payload = signal["strategies"].get(strategy_name, {})
     candidates = strategy_payload.get("candidates", [])
@@ -705,7 +717,9 @@ def run_strategy_execution(
     # Tracks orders annotated as SETTLING in this run — finalized after portfolio save
     settling_order_ids = []
     portfolio_id = state.get("portfolio_id", strategy_name)
-    portfolio_version = state.get("created_at", "")
+    portfolio_version = PORTFOLIO_VERSION  # schema version from versioning.py, not created_at
+    # Stable signal content identifier (may be None for safety-action orders)
+    _signal_id = signal_id
 
     # --- Retry pending orders from today's session (same-day retry) ---
     for order in get_pending_for_session(orders, session_date, strategy_name):
@@ -765,6 +779,7 @@ def run_strategy_execution(
             target_value=0.0, reason=reason, signal_price=signal_price,
             execution_version=execution_version,
             portfolio_id=portfolio_id, portfolio_version=portfolio_version,
+            signal_id=_signal_id,
         )
         if order["status"] in TERMINAL:
             return None   # already handled
@@ -863,29 +878,51 @@ def run_strategy_execution(
     pyramid_fills = []
     if allow_pyramid:
         for ticker in list(state["positions"].keys()):
+            pos = state["positions"].get(ticker, {})
+            if not pos.get("is_partial"):
+                continue  # not a partial position — no pyramid pending
+
+            pyr_remaining_val = float(pos.get("pyramid_remaining_value", 0.0))
+
+            # Idempotency check FIRST — before any portfolio mutation
+            pyr_order, pyr_is_new = get_or_create_order(
+                orders, signal_run_id, ticker, strategy_name, session_date,
+                "PYRAMID_FILL",
+                target_value=pyr_remaining_val,
+                reason=f"Pyramid fill: {ticker}",
+                signal_price=pos.get("last_price"),
+                execution_version=execution_version,
+                portfolio_id=portfolio_id, portfolio_version=portfolio_version,
+                signal_id=_signal_id,
+            )
+            # Terminal or in-flight orders must never trigger another fill
+            if pyr_order["status"] in TERMINAL or pyr_order["status"] == SETTLING:
+                continue
+
+            if pyr_is_new:
+                saved = save_order(pyr_order)
+                orders[pyr_order["order_id"]] = saved
+                orders_created += 1
+
+            # NOW execute portfolio mutation — order ledger already committed
             state, trades_df, fill = execute_pyramid_fill(
                 state, trades_df, strategy_name, ticker, execution_price_cache
             )
             if fill:
-                pyr_order, pyr_is_new = get_or_create_order(
-                    orders, signal_run_id, ticker, strategy_name, session_date,
-                    "PYRAMID_FILL",
-                    target_value=fill.get("value", 0.0),
-                    reason=fill.get("reason", "Pyramid fill"),
-                    signal_price=fill.get("price"),
-                    execution_version=execution_version,
-                    portfolio_id=portfolio_id, portfolio_version=portfolio_version,
-                )
-                if pyr_order["status"] not in TERMINAL:
-                    if pyr_is_new:
-                        saved = save_order(pyr_order)
-                        orders[pyr_order["order_id"]] = saved
-                        orders_created += 1
-                    _annotate_trade(fill, pyr_order["order_id"], orders, signal_run_id, execution_version)
-                    settling_order_ids.append(pyr_order["order_id"])
-                    orders_executed += 1
+                _annotate_trade(fill, pyr_order["order_id"], orders, signal_run_id, execution_version)
+                settling_order_ids.append(pyr_order["order_id"])
                 pyramid_fills.append(fill)
+                orders_executed += 1
                 print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
+            else:
+                # Execution price unavailable or fill conditions not met — keep as PENDING_PRICE
+                updated = save_order(
+                    orders[pyr_order["order_id"]],
+                    status=PENDING_PRICE,
+                    failure_reason="pyramid fill conditions not met or no execution price",
+                )
+                orders[pyr_order["order_id"]] = updated
+                orders_pending_price += 1
     elif list(state["positions"].values()):
         print(f"  [{strategy_name}] PYRAMID blokkert: signal ugyldig")
 
@@ -970,6 +1007,7 @@ def run_strategy_execution(
                 target_value=initial_value, reason=reason, signal_price=signal_price,
                 execution_version=execution_version, pyramid_remaining=pyramid_remaining,
                 portfolio_id=portfolio_id, portfolio_version=portfolio_version,
+                signal_id=_signal_id,
             )
             if order["status"] in TERMINAL:
                 continue   # already executed or expired in a previous run
@@ -1147,7 +1185,9 @@ def run_execute():
             "active_weights": None,
             "sentiment_scores": {},
             "quality_report": {},
-            "signal_run_id": "no-signal",
+            "signal_run_id": f"safety-{session_date}",
+            "signal_id": None,       # no real signal — nullable for safety-action orders
+            "action_origin": "portfolio_safety",
             "earnings_analysis": {},
         }
         signal_path = "no-signal"
@@ -1218,11 +1258,13 @@ def run_execute():
 
     # --- Order state: load, crash-recovery, expire stale, share across all strategies ---
     signal_run_id = signal.get("signal_run_id", "unknown")
+    # signal_id: stable content-addressed identifier (content hash for real signals, None for safety)
+    signal_id = signal.get("signal_id")
+    if signal_id is None:
+        signal_id = signal.get("signal_content_hash")  # real signal has this field
     orders = load_orders()
-    # Crash recovery: any SETTLING orders were not finalized before crash — mark FAILED_PRICE
-    settling_recovered = recover_settling_orders(orders)
-    if settling_recovered:
-        print(f"Crash-recovery: {len(settling_recovered)} SETTLING ordre markert FAILED_PRICE")
+    # SETTLING orders are reconciled per-strategy inside run_strategy_execution, which checks
+    # portfolio state to distinguish crash-before-save (FAILED_PRICE) from crash-after-save (EXECUTED).
     expired = expire_stale_orders(orders, session_date)
     if expired:
         print(f"Utløpte ordre fra tidligere sesjoner: {len(expired)}")
@@ -1236,6 +1278,7 @@ def run_execute():
             strategy_name, signal, trades_df, valuation_price_cache, execution_price_cache,
             orders=orders,
             signal_run_id=signal_run_id,
+            signal_id=signal_id,
             session_date=session_date,
             execution_version=EXECUTION_VERSION,
             premarket_flags=premarket_flags,
