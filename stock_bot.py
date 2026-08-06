@@ -80,6 +80,9 @@ from modules.ledger import (
     LedgerWriteError,
     build_all_ledger_records,
     build_signal_run_record,
+    check_ledger_file_sizes,
+    compute_input_manifest,
+    compute_universe_hash,
     get_signal_run_status,
     make_signal_run_id,
     update_signal_run_status,
@@ -381,7 +384,22 @@ def run_signal():
     # Failure → status=failed, Telegram alert, no signal file.
     # ----------------------------------------------------------------
     model_cfg_hash = get_model_config_hash()
-    signal_run_id = make_signal_run_id(date, MODEL_VERSION, model_cfg_hash)
+    universe_hash = compute_universe_hash(universe)  # full requested universe (pre-quality-filter)
+    input_manifest = compute_input_manifest(market_data, quality_report, date)
+    signal_run_id = make_signal_run_id(
+        date,
+        MODEL_VERSION,
+        model_cfg_hash,
+        universe_hash,
+        input_manifest["canonical_data_cutoff"],
+        input_manifest["input_manifest_hash"],
+    )
+
+    # File size drift warning — non-blocking
+    large_files = check_ledger_file_sizes(year_month)
+    for fname, size_mb in large_files.items():
+        send_telegram(f"⚠️ LEDGER-STØRRELSE: {fname} er {size_mb:.1f} MB (grense: 50 MB)")
+        print(f"⚠️ Ledger file size warning: {fname} = {size_mb:.1f} MB")
 
     existing = get_signal_run_status(signal_run_id, year_month)
     if existing and existing.get("status") == "completed":
@@ -392,8 +410,16 @@ def run_signal():
             intended_session=date,
             model_version=MODEL_VERSION,
             model_config_hash=model_cfg_hash,
+            universe_hash=universe_hash,
+            canonical_data_cutoff=input_manifest["canonical_data_cutoff"],
+            input_manifest_hash=input_manifest["input_manifest_hash"],
             universe_count=len(universe),
             analyzed_count=len(analyzed),
+            observed_min_data_timestamp=input_manifest.get("observed_min_data_timestamp"),
+            observed_max_data_timestamp=input_manifest.get("observed_max_data_timestamp"),
+            valid_ticker_count=input_manifest.get("valid_ticker_count", 0),
+            stale_ticker_count=input_manifest.get("stale_ticker_count", 0),
+            excluded_ticker_count=input_manifest.get("excluded_ticker_count", 0),
         )
         write_signal_run(run_record, year_month)
         update_signal_run_status(signal_run_id, "pending", year_month)

@@ -7,10 +7,12 @@ Record types (monthly JSONL files):
   signal_record    — one per strategy×ticker per run
 
 ID scheme:
-  signal_run_id       = "run-{date}-{sha256(date|model|hash8)[:12]}"
+  signal_run_id       = "run-{date}-{sha256(date|model|hash8|cutoff|universe8|run_type)[:12]}"
   feature_snapshot_id = "fs-{sha256(run_id|ticker|input_hash)[:12]}"
   signal_id           = "sig-{sha256(run_id|model|strategy|ticker|snapshot_id)[:12]}"
 
+signal_run_id includes data_cutoff and universe_hash so that a genuinely new
+analysis (new data or new universe) always gets a new ID, even on the same date.
 portfolio_version and execution_version are NOT part of signal_id — the same
 signal record can be consumed by multiple portfolios or execution models.
 
@@ -28,7 +30,9 @@ Idempotency: sidecar index (*.idx.json) for O(1) duplicate checks
 Partial write: _heal_partial_last_line truncates at last complete '\\n' on each open
 Crash recovery: _needs_index_rebuild detects when index is older than JSONL data
 
-Not committed to git — data_v4/ledger/ is in .gitignore.
+Persistence: data_v4/ledger/ is committed to git via the signal workflow's
+  "git add data_v4/" step. Files survive across GitHub Actions runner sessions
+  because they are part of the repo, not ephemeral runner state.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -64,17 +69,183 @@ class LedgerWriteError(Exception):
 # Deterministic ID computation
 # ---------------------------------------------------------------------------
 
+def compute_universe_hash(tickers: list[str]) -> str:
+    """SHA-256[:16] of sorted canonical ticker list — stable for any ordering of input."""
+    canonical = json.dumps(sorted(tickers), separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def _get_last_close(df: Any) -> float | None:
+    """Return last closing price from a market DataFrame. Tries common column names."""
+    if df is None or df.empty:
+        return None
+    for col in ("Close", "Adj Close", "close", "adjclose"):
+        if col in df.columns:
+            try:
+                val = float(df[col].iloc[-1])
+                if not (math.isnan(val) or math.isinf(val)):
+                    return round(val, 4)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def compute_input_manifest(
+    market_data: dict,
+    quality_report: dict | None,
+    intended_session: str,
+) -> dict:
+    """
+    Build a deterministic manifest of the actual data inputs used in analysis.
+
+    input_manifest_hash = SHA-256[:16] of sorted per-ticker data signatures.
+    A price revision, staleness change, or ticker exclusion changes the hash
+    even if observed timestamps are identical.
+
+    Per-ticker manifest entry:
+        ticker, last_date, last_close, row_count, data_status
+
+    data_status values:
+        "valid"          — recent data, no anomalies
+        "stale"          — last_date is >5 calendar days before intended_session
+        "price_adjusted" — suspicious move detected, close replaced with prev
+        "split_detected" — large single-day drop flagged as possible split
+        "excluded"       — removed by volume quality check
+
+    Returns:
+        input_manifest_hash         — SHA-256[:16] of all ticker signatures
+        canonical_data_cutoff       — intended_session (planned, not observed)
+        observed_min_data_timestamp — min last_date across tickers in market_data
+        observed_max_data_timestamp — max last_date across tickers in market_data
+        ticker_count                — total entries (including excluded)
+        valid_ticker_count
+        stale_ticker_count
+        price_adjusted_ticker_count
+        excluded_ticker_count       — volume_excluded + empty DataFrames
+    """
+    qr = quality_report or {}
+    price_adjusted_set = {f["ticker"] for f in qr.get("price_flags", [])}
+    split_detected_set = {f["ticker"] for f in qr.get("split_detected", [])}
+    excluded_set = {f["ticker"] for f in qr.get("volume_excluded", [])}
+
+    try:
+        session_date = datetime.fromisoformat(intended_session).date()
+    except ValueError:
+        session_date = None
+
+    ticker_entries: list[dict] = []
+    last_dates: list[str] = []
+
+    for ticker in sorted(market_data.keys()):
+        df = market_data[ticker]
+        if df is None or df.empty:
+            ticker_entries.append({
+                "ticker": ticker,
+                "last_date": None,
+                "last_close": None,
+                "row_count": 0,
+                "data_status": "excluded",
+            })
+            continue
+
+        try:
+            last_ts = df.index.max()
+            last_date_obj = last_ts.date() if hasattr(last_ts, "date") else last_ts
+            last_date_str = last_date_obj.strftime("%Y-%m-%d")
+        except Exception:
+            last_date_str = None
+            last_date_obj = None
+
+        if ticker in price_adjusted_set:
+            status = "price_adjusted"
+        elif ticker in split_detected_set:
+            status = "split_detected"
+        elif session_date and last_date_obj and (session_date - last_date_obj).days > 5:
+            status = "stale"
+        else:
+            status = "valid"
+
+        last_close = _get_last_close(df)
+        entry = {
+            "ticker": ticker,
+            "last_date": last_date_str,
+            "last_close": last_close,
+            "row_count": len(df),
+            "data_status": status,
+        }
+        ticker_entries.append(entry)
+        if last_date_str:
+            last_dates.append(last_date_str)
+
+    for exc_ticker in sorted(excluded_set - set(market_data.keys())):
+        ticker_entries.append({
+            "ticker": exc_ticker,
+            "last_date": None,
+            "last_close": None,
+            "row_count": 0,
+            "data_status": "excluded",
+        })
+
+    ticker_entries.sort(key=lambda x: x["ticker"])
+
+    canonical = json.dumps(
+        ticker_entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    manifest_hash = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+    status_counts: dict[str, int] = {}
+    for e in ticker_entries:
+        s = e["data_status"]
+        status_counts[s] = status_counts.get(s, 0) + 1
+
+    return {
+        "input_manifest_hash": manifest_hash,
+        "canonical_data_cutoff": intended_session,
+        "observed_min_data_timestamp": min(last_dates) if last_dates else None,
+        "observed_max_data_timestamp": max(last_dates) if last_dates else None,
+        "ticker_count": len(ticker_entries),
+        "valid_ticker_count": status_counts.get("valid", 0),
+        "stale_ticker_count": status_counts.get("stale", 0),
+        "price_adjusted_ticker_count": status_counts.get("price_adjusted", 0),
+        "excluded_ticker_count": status_counts.get("excluded", 0),
+    }
+
+
 def make_signal_run_id(
     intended_session: str,
     model_version: str,
     model_config_hash: str,
+    universe_hash: str,
+    canonical_data_cutoff: str,
+    input_manifest_hash: str,
     run_type: str = "scheduled",
 ) -> str:
     """
-    Retry-stable run ID: same session + model + hash → same ID.
-    Changed model or new day → new ID.
+    Retry-stable run ID. Same logical inputs → same ID (safe to retry).
+    Changed data or universe → new ID (genuine new analysis).
+
+    Components included in hash:
+      intended_session    — planned trading session (YYYY-MM-DD)
+      model_version       — frozen model identifier
+      model_config_hash   — first 8 chars, detects config change
+      universe_hash       — first 8 chars of requested ticker universe hash
+      canonical_data_cutoff — planned data date (YYYY-MM-DD)
+      input_manifest_hash — first 8 chars; any data change produces a new hash
+      run_type            — "scheduled" | "manual" | "backfill"
+
+    NOT included (does not affect ID):
+      attempt_number    — retries of the same logical run
+      first_attempt_at  — timestamp of first attempt
     """
-    key = f"{intended_session}|{model_version}|{model_config_hash[:8]}|{run_type}"
+    key = "|".join([
+        intended_session,
+        model_version,
+        model_config_hash[:8],
+        universe_hash[:8],
+        canonical_data_cutoff,
+        input_manifest_hash[:8],
+        run_type,
+    ])
     h = hashlib.sha256(key.encode()).hexdigest()[:12]
     return f"run-{intended_session}-{h}"
 
@@ -125,7 +296,6 @@ def _safe(val: Any) -> Any:
     if isinstance(val, bool):
         return bool(val)
     try:
-        import math
         f = float(val)
         if math.isnan(f) or math.isinf(f):
             return None
@@ -201,11 +371,28 @@ def _save_index_atomic(index_path: Path, index: dict) -> None:
     tmp.rename(index_path)
 
 
+def _empty_index(record_type: str, year_month: str) -> dict:
+    return {
+        "schema_version": 1,
+        "record_type": record_type,
+        "year_month": year_month,
+        "ids": {},
+        "tampered_ids": [],
+        "count": 0,
+        "last_updated": _utc_now(),
+    }
+
+
 def _rebuild_index_from_jsonl(
     jsonl_path: Path, record_type: str, year_month: str, id_field: str
 ) -> dict:
-    """Full JSONL scan to rebuild a missing or stale sidecar index."""
-    index = _load_index(Path("/dev/null"), record_type, year_month)
+    """
+    Full JSONL scan to rebuild a missing or stale sidecar index.
+    Validates content_hash on every record during rebuild.
+    Records that fail content_hash validation are tracked in 'tampered_ids'
+    and still included in 'ids' (so they aren't re-appended on retry).
+    """
+    index = _empty_index(record_type, year_month)
     if not jsonl_path.exists():
         return index
     with open(jsonl_path, encoding="utf-8") as f:
@@ -216,8 +403,14 @@ def _rebuild_index_from_jsonl(
             try:
                 rec = json.loads(line)
                 rid = rec.get(id_field)
-                if rid:
-                    index["ids"][rid] = True
+                if not rid:
+                    continue
+                stored_hash = rec.get("content_hash", "")
+                if stored_hash:
+                    computed = _make_content_hash(rec)
+                    if stored_hash != computed:
+                        index["tampered_ids"].append(rid)
+                index["ids"][rid] = True
             except json.JSONDecodeError:
                 pass
     index["count"] = len(index["ids"])
@@ -452,26 +645,69 @@ def record_id_exists(
 
 def check_ledger_integrity(
     record_type: str, year_month: str
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """
-    Scan JSONL and count (valid_records, corrupt_lines).
-    Corrupt = line that cannot be parsed as JSON.
+    Scan JSONL and count (valid_records, corrupt_json_lines, tampered_records).
+    corrupt_json  = line that cannot be parsed as JSON
+    tampered      = parseable record whose content_hash does not match its data
     """
     jpath = _jsonl_path(record_type, year_month)
     if not jpath.exists():
-        return 0, 0
-    ok, bad = 0, 0
+        return 0, 0, 0
+    ok, bad_json, tampered = 0, 0, 0
     with open(jpath, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                json.loads(line)
+                rec = json.loads(line)
+                stored_hash = rec.get("content_hash", "")
+                if stored_hash:
+                    computed = _make_content_hash(rec)
+                    if stored_hash != computed:
+                        tampered += 1
+                        continue
                 ok += 1
             except json.JSONDecodeError:
-                bad += 1
-    return ok, bad
+                bad_json += 1
+    return ok, bad_json, tampered
+
+
+# ---------------------------------------------------------------------------
+# Drift protection — file size monitoring
+# ---------------------------------------------------------------------------
+#
+# Expected growth (compact JSONL, ~150 tickers, 6 strategies):
+#   feature_snapshot : ~500 B × 150 tickers = 75 KB/day  → ~1.5 MB/month
+#   signal_record    : ~450 B × 900 entries  = 0.4 MB/day → ~8 MB/month
+#   signal_run       : ~400 B × 1 run        = ~8 KB/month
+#   Total per month  : ~10 MB; per year: ~120 MB
+#
+# Ledger files are committed to git. Keep retention in git history forever
+# (no force-push, no rebase, no history rewriting).
+# Migration path: if monthly files exceed 200 MB, route writes to object
+# storage (S3/GCS) and store only a manifest pointer in git.
+
+LEDGER_WARN_FILE_MB = 50.0
+
+
+def check_ledger_file_sizes(
+    year_month: str,
+    warn_threshold_mb: float = LEDGER_WARN_FILE_MB,
+) -> dict[str, float]:
+    """
+    Return {filename: size_mb} for any monthly JSONL files that exceed
+    warn_threshold_mb. An empty dict means all files are below threshold.
+    """
+    warnings: dict[str, float] = {}
+    for record_type in _RECORD_TYPES:
+        jpath = _jsonl_path(record_type, year_month)
+        if jpath.exists():
+            size_mb = jpath.stat().st_size / (1024 * 1024)
+            if size_mb >= warn_threshold_mb:
+                warnings[jpath.name] = round(size_mb, 2)
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -483,8 +719,16 @@ def build_signal_run_record(
     intended_session: str,
     model_version: str,
     model_config_hash: str,
+    universe_hash: str,
+    canonical_data_cutoff: str,
+    input_manifest_hash: str,
     universe_count: int,
     analyzed_count: int,
+    observed_min_data_timestamp: str | None = None,
+    observed_max_data_timestamp: str | None = None,
+    valid_ticker_count: int = 0,
+    stale_ticker_count: int = 0,
+    excluded_ticker_count: int = 0,
     attempt_number: int = 1,
     run_type: str = "scheduled",
     first_attempt_at: str | None = None,
@@ -499,6 +743,14 @@ def build_signal_run_record(
         "intended_signal_session": intended_session,
         "model_version": model_version,
         "model_config_hash": model_config_hash,
+        "universe_hash": universe_hash,
+        "canonical_data_cutoff": canonical_data_cutoff,
+        "input_manifest_hash": input_manifest_hash,
+        "observed_min_data_timestamp": observed_min_data_timestamp,
+        "observed_max_data_timestamp": observed_max_data_timestamp,
+        "valid_ticker_count": valid_ticker_count,
+        "stale_ticker_count": stale_ticker_count,
+        "excluded_ticker_count": excluded_ticker_count,
         "run_type": run_type,
         "first_attempt_at": first_attempt_at or now,
         "latest_attempt_at": now,
