@@ -213,24 +213,44 @@ def trading_days_between(date_str):
         return 999
 
 
+class SignalNotPublishedError(Exception):
+    """Raised when the signal file exists but is not yet finalized/published."""
+
+
 def load_latest_signal():
+    """
+    Load the most recently registered signal file.
+
+    Fail-closed: no directory scan fallback. The signal must have been
+    explicitly registered in _global.json by run_finalize_signal() with
+    publication_status="published". If the file is missing or unpublished,
+    raise rather than silently falling back to an older or unvalidated signal.
+    """
     global_state = load_json(GLOBAL_STATE_FILE, {})
     signal_path = global_state.get("last_signal_file")
 
-    if signal_path and os.path.exists(signal_path):
-        try:
-            with open(signal_path, "r") as f:
-                return json.load(f), signal_path
-        except Exception:
-            pass
+    if not signal_path:
+        raise FileNotFoundError(
+            "Ingen signalfil registrert i _global.json. "
+            "Kjør BOT_MODE=signal etterfulgt av BOT_MODE=finalize_signal."
+        )
+    if not os.path.exists(signal_path):
+        raise FileNotFoundError(
+            f"Signalfil ikke funnet på disk: {signal_path}. "
+            "Sjekk at data_v4/signals/ er korrekt committed og pushet."
+        )
 
-    files = sorted([f for f in os.listdir(SIGNALS_DIR) if f.endswith("_signal.json")])
-    if not files:
-        raise FileNotFoundError("Fant ingen signalfil. Kjør signal-modus først.")
-
-    signal_path = f"{SIGNALS_DIR}/{files[-1]}"
     with open(signal_path, "r") as f:
-        return json.load(f), signal_path
+        signal = json.load(f)
+
+    if signal.get("publication_status") != "published":
+        raise SignalNotPublishedError(
+            f"Signal {signal_path!r} er ikke publisert "
+            f"(status={signal.get('publication_status')!r}). "
+            "Kjør BOT_MODE=finalize_signal etter vellykket git push."
+        )
+
+    return signal, signal_path
 
 
 def load_benchmark_state():

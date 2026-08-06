@@ -1,3 +1,4 @@
+import json
 import os
 import warnings
 
@@ -62,6 +63,7 @@ from modules.state import (
     STATE_DIR,
     START_CAPITAL,
     TRADES_FILE,
+    SignalNotPublishedError,
     ensure_dirs,
     load_benchmark_state,
     load_json,
@@ -470,35 +472,27 @@ def run_signal():
         _next_session = None
         print("ADVARSEL: Kan ikke beregne intended_execution_session — børskalender utilgjengelig")
 
-    # Fetch the current git commit for publication audit trail
-    import subprocess as _subprocess
-    def _git_commit_sha():
-        try:
-            r = _subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, timeout=5, check=False,
-            )
-            return r.stdout.strip() or "unknown"
-        except Exception:
-            return "unknown"
-
     payload = {
         "created_at_utc": now_utc().isoformat(),
         "created_at_oslo": now_oslo().isoformat(),
         "created_at_ny": now_ny().isoformat(),
         "date": date,
         "signal_run_id": signal_run_id,
-        # --- Publication metadata (required by signal_validator) ---
+        # --- Session metadata (required by signal_validator) ---
         "intended_execution_session": _next_session,
         "model_version": MODEL_VERSION,
-        "publication_status": "published",
-        "published_at": now_utc().isoformat(),
-        "published_commit_sha": _git_commit_sha(),
-        # --- Data quality counts (required for coverage-rate validation) ---
+        # --- Data cutoff (required by signal_validator, cross-validated with ledger) ---
+        "data_cutoff_at": input_manifest["canonical_data_cutoff"],
+        # --- Data quality counts ---
         "valid_ticker_count": input_manifest.get("valid_ticker_count", 0),
         "stale_ticker_count": input_manifest.get("stale_ticker_count", 0),
         "excluded_ticker_count": input_manifest.get("excluded_ticker_count", 0),
-        "missing_ticker_count": 0,  # placeholder; future: count 0-row tickers
+        "missing_ticker_count": 0,
+        # --- Publication fields: set to draft; populated by run_finalize_signal() ---
+        "publication_status": "draft",
+        "published_at": None,
+        "published_commit_sha": None,
+        "signal_content_hash": "",
         # --- Signal content ---
         "universe_count": len(universe),
         "analyzed_count": len(analyzed),
@@ -516,12 +510,7 @@ def run_signal():
         "quality_report": quality_report,
         "signal_ai_cost_usd": round(signal_ai_cost, 6),
         "quality_filtered_count": filtered_count,
-        # Tamper-detection hash — computed last (excludes itself)
-        "signal_content_hash": "",
     }
-
-    from modules.signal_validator import compute_signal_content_hash  # noqa: PLC0415
-    payload["signal_content_hash"] = compute_signal_content_hash(payload)
 
     signal_path = f"{SIGNALS_DIR}/{date}_signal.json"
     save_json(payload, signal_path)
@@ -530,8 +519,74 @@ def run_signal():
         GLOBAL_STATE_FILE,
     )
 
-    print(f"Signal lagret: {signal_path}")
-    print("Signal-modus stille — ingen Telegram-melding.")
+    print(f"Signal (draft) lagret: {signal_path}")
+    print("Venter på finalisering etter vellykket git push (BOT_MODE=finalize_signal).")
+
+
+# ============================================================
+# FINALIZE SIGNAL — run after successful git push in signal.yml
+# ============================================================
+
+def run_finalize_signal():
+    """
+    Called as BOT_MODE=finalize_signal after a successful git push.
+
+    Reads the draft signal written by run_signal(), updates publication fields,
+    recomputes signal_content_hash, saves the finalized signal in place,
+    and appends a publication record to signal_publications.jsonl.
+
+    SIGNAL_COMMIT_SHA env var must be set to the SHA of the push that
+    committed the draft signal.
+    """
+    print("=" * 60)
+    print("FINALIZE SIGNAL MODE")
+    print("=" * 60)
+
+    commit_sha = os.environ.get("SIGNAL_COMMIT_SHA", "").strip()
+    if not commit_sha:
+        raise RuntimeError(
+            "SIGNAL_COMMIT_SHA ikke satt. "
+            "Kjøres kun fra signal.yml etter vellykket git push."
+        )
+
+    global_state = load_json(GLOBAL_STATE_FILE, {})
+    signal_path = global_state.get("last_signal_file")
+    if not signal_path or not os.path.exists(signal_path):
+        raise FileNotFoundError(
+            f"Ingen signalfil å finalisere: {signal_path!r}"
+        )
+
+    with open(signal_path, "r") as f:
+        payload = json.load(f)
+
+    if payload.get("publication_status") == "published":
+        print(f"Signal allerede publisert: {signal_path} — ingen handling.")
+        return
+
+    published_at = now_utc().isoformat()
+    payload["publication_status"] = "published"
+    payload["published_at"] = published_at
+    payload["published_commit_sha"] = commit_sha
+
+    from modules.signal_validator import compute_signal_content_hash  # noqa: PLC0415
+    payload["signal_content_hash"] = compute_signal_content_hash(payload)
+
+    save_json(payload, signal_path)
+    print(f"Signal finalisert: {signal_path}")
+    print(f"  published_commit_sha: {commit_sha}")
+    print(f"  published_at:         {published_at}")
+    print(f"  signal_content_hash:  {payload['signal_content_hash'][:16]}...")
+
+    from modules.publication import write_signal_publication  # noqa: PLC0415
+    signal_run_id = payload.get("signal_run_id", "unknown")
+    write_signal_publication(
+        signal_run_id=signal_run_id,
+        signal_path=signal_path,
+        commit_sha=commit_sha,
+        published_at=published_at,
+        workflow_conclusion="success",
+    )
+    print(f"Publikasjonsrecord skrevet for {signal_run_id}")
 
 
 # ============================================================
@@ -709,6 +764,12 @@ def run_strategy_execution(
     _PROTECTIVE = ("Stop-loss", "Trailing stop")
     for ticker, pos in list(state["positions"].items()):
         candidate = candidates_by_ticker.get(ticker)
+        # Inject current session price so stop-loss uses today's open, not stale signal price.
+        # execution_price_cache is the authoritative fill price; valuation_price_cache as fallback.
+        current_price = execution_price_cache.get(ticker) or valuation_price_cache.get(ticker)
+        if current_price is not None:
+            candidate = dict(candidate) if candidate else {"ticker": ticker}
+            candidate["price"] = current_price
         sell, reason = should_sell_position(ticker, pos, candidate, config)
         if not sell:
             continue
@@ -1125,6 +1186,8 @@ def main():
 
     if mode == "signal":
         run_signal()
+    elif mode == "finalize_signal":
+        run_finalize_signal()
     elif mode == "execute":
         run_execute()
     elif mode == "premarket":

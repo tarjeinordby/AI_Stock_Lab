@@ -628,6 +628,33 @@ def write_signal_records(records: list[dict], year_month: str) -> int:
 # Public read functions
 # ---------------------------------------------------------------------------
 
+def get_signal_run_record(signal_run_id: str, year_month: str) -> dict | None:
+    """
+    Scan the signal_run JSONL and return the record for signal_run_id.
+    Returns None if not found or file does not exist.
+    Used by signal_validator to cross-validate signal file fields against
+    what was actually written to the ledger at analysis time.
+    """
+    jpath = _jsonl_path("signal_run", year_month)
+    if not jpath.exists():
+        return None
+    try:
+        with open(jpath, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("signal_run_id") == signal_run_id:
+                        return rec
+                except json.JSONDecodeError:
+                    pass
+    except OSError:
+        return None
+    return None
+
+
 def record_id_exists(
     record_id: str, record_type: str, year_month: str
 ) -> bool:

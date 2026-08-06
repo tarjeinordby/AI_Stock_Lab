@@ -16,6 +16,8 @@ appends a full order snapshot; the current state is the last record
 per order_id when the file is read.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os
