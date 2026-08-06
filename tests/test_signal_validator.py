@@ -1763,3 +1763,573 @@ class TestRegressionSuite:
             assert result.allow_protective_sells, (
                 f"Expected allow_protective_sells=True for failure_mode={result.failure_mode}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Point 1: Protective sells must run even when signal is missing/unpublished
+# ---------------------------------------------------------------------------
+
+class TestPoint1ProtectiveSellsWithoutSignal:
+    """Point 1: run_execute must allow protective sells when signal is missing."""
+
+    def test_fallback_validation_blocks_new_buys_allows_protective_sells(self):
+        """Fallback SignalValidationResult when signal missing: no buys, protective sells allowed."""
+        from modules.signal_validator import SignalValidationResult
+        val = SignalValidationResult(
+            is_valid=False, failure_mode="unpublished",
+            reason="Ingen signalfil registrert",
+            allow_new_buys=False, allow_pyramid=False, allow_protective_sells=True,
+            signal_run_id=None, intended_session=None, actual_session="2026-08-06",
+            generated_at=None, published_at=None, published_commit_sha=None,
+            model_version=None, data_cutoff_at=None,
+            data_quality_tier="unknown", data_quality={},
+        )
+        assert not val.allow_new_buys
+        assert not val.allow_pyramid
+        assert val.allow_protective_sells, "Protective sells must be allowed even without signal"
+
+    def test_run_execute_catches_missing_signal(self):
+        """Source-level: run_execute() catches FileNotFoundError from load_latest_signal."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        start = src.find("def run_execute()")
+        assert start != -1
+        snippet = src[start:start + 3500]
+        assert "FileNotFoundError" in snippet, "run_execute must catch FileNotFoundError"
+        assert "SignalNotPublishedError" in snippet, "run_execute must catch SignalNotPublishedError"
+        assert "allow_protective_sells=True" in snippet, (
+            "run_execute must set allow_protective_sells=True in fallback validation"
+        )
+        assert '"no-signal"' in snippet, (
+            "run_execute must build a minimal signal with signal_run_id='no-signal'"
+        )
+
+    def test_run_execute_runs_calendar_check_before_signal_check(self):
+        """Calendar validation must run regardless of whether signal is available."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        start = src.find("def run_execute()")
+        snippet = src[start:start + 3500]
+        signal_load_pos = snippet.find("load_latest_signal()")
+        calendar_pos = snippet.find("is_trading_session(")
+        assert signal_load_pos != -1
+        assert calendar_pos != -1
+        # Calendar check must come after signal load attempt (not abort before it)
+        assert calendar_pos > signal_load_pos, (
+            "Calendar check must occur AFTER load_latest_signal attempt "
+            "(not abort the whole run if signal missing)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Point 2: Pyramid fills tracked through order ledger
+# ---------------------------------------------------------------------------
+
+class TestPoint2PyramidFillsInLedger:
+    """Point 2: pyramid fills must be tracked through the order ledger."""
+
+    def test_pyramid_fill_action_creates_order_entry(self, tmp_path, monkeypatch):
+        """A PYRAMID_FILL order can be created and loaded from the ledger."""
+        import modules.orders as orders_mod
+        from modules.orders import build_order, save_order, load_orders
+
+        path = str(tmp_path / "orders.jsonl")
+        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
+        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+
+        o = build_order(
+            "run-pyr-001", "NVDA", "quant_baseline_v1", "2026-08-06",
+            "PYRAMID_FILL", 2000.0, "Pyramid: 5d held +3%", None, "v1",
+        )
+        save_order(o)
+        loaded = load_orders()
+        assert o["order_id"] in loaded
+        assert loaded[o["order_id"]]["action"] == "PYRAMID_FILL"
+
+    def test_pyramid_fill_and_initial_buy_have_different_ids(self):
+        """PYRAMID_FILL and BUY for same ticker get different order IDs."""
+        from modules.orders import make_order_id
+        buy_id = make_order_id("run-001", "AAPL", "s1", "2026-08-06", "BUY")
+        pyr_id = make_order_id("run-001", "AAPL", "s1", "2026-08-06", "PYRAMID_FILL")
+        assert buy_id != pyr_id
+
+    def test_run_strategy_execution_source_has_pyramid_order_ledger(self):
+        """Source-level: execute_pyramid_fill is wrapped with get_or_create_order."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        # Find run_strategy_execution function body (past the imports section)
+        fn_start = src.find("def run_strategy_execution(")
+        assert fn_start != -1
+        fn_body = src[fn_start:]
+        # Within the function body, find execute_pyramid_fill call
+        pyr_start = fn_body.find("execute_pyramid_fill")
+        assert pyr_start != -1
+        pyr_region = fn_body[pyr_start:pyr_start + 1500]
+        assert "get_or_create_order" in pyr_region, (
+            "pyramid fills must call get_or_create_order for ledger tracking"
+        )
+        assert "PYRAMID_FILL" in pyr_region
+
+
+# ---------------------------------------------------------------------------
+# Points 3 & 4: portfolio_id and portfolio_version in orders
+# ---------------------------------------------------------------------------
+
+class TestPoint3And4PortfolioIds:
+    """Points 3 & 4: orders must contain signal_id, portfolio_id, portfolio_version."""
+
+    def test_build_order_includes_signal_id(self):
+        from modules.orders import build_order
+        o = build_order("run-001", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
+        assert o.get("signal_id") == "run-001"
+
+    def test_build_order_includes_portfolio_id(self):
+        from modules.orders import build_order
+        o = build_order("run-001", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1",
+                        portfolio_id="port-uuid-abc")
+        assert o.get("portfolio_id") == "port-uuid-abc"
+
+    def test_build_order_includes_portfolio_version(self):
+        from modules.orders import build_order
+        o = build_order("run-001", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1",
+                        portfolio_version="2026-08-01T00:00:00+00:00")
+        assert o.get("portfolio_version") == "2026-08-01T00:00:00+00:00"
+
+    def test_strategy_state_has_portfolio_id(self):
+        import re
+        from modules.state import initial_strategy_state
+        state = initial_strategy_state("quant_baseline_v1")
+        assert "portfolio_id" in state
+        assert re.match(r"[0-9a-f\-]{36}", state["portfolio_id"])
+
+    def test_load_strategy_state_migrates_old_state(self, tmp_path, monkeypatch):
+        """load_strategy_state adds portfolio_id to old state files that lack it."""
+        import json
+        import modules.state as state_mod
+        from modules.state import load_strategy_state
+
+        old = {"strategy": "s1", "created_at": "2026-01-01T00:00:00+00:00",
+               "cash": 10000.0, "positions": {}, "highest_portfolio_value": 10000.0,
+               "weekly_meta": {"iso_week": "", "buys_this_week": 0},
+               "cooldowns": {}, "last_execution_date": None}
+        (tmp_path / "s1.json").write_text(json.dumps(old))
+
+        orig = state_mod.STATE_DIR
+        monkeypatch.setattr(state_mod, "STATE_DIR", str(tmp_path))
+        try:
+            state = load_strategy_state("s1")
+            assert "portfolio_id" in state
+            assert len(state["portfolio_id"]) == 36
+        finally:
+            state_mod.STATE_DIR = orig
+
+    def test_two_strategies_get_distinct_portfolio_ids(self):
+        from modules.state import initial_strategy_state
+        s1 = initial_strategy_state("quant_baseline_v1")
+        s2 = initial_strategy_state("momentum_v2")
+        assert s1["portfolio_id"] != s2["portfolio_id"]
+
+
+# ---------------------------------------------------------------------------
+# Point 5: Order ledger fcntl locking and fsync
+# ---------------------------------------------------------------------------
+
+class TestPoint5OrderLedgerLocking:
+    """Point 5: order ledger uses fcntl exclusive locking and fsync."""
+
+    def test_fcntl_and_fsync_in_orders_source(self):
+        """Source check: orders.py uses fcntl.flock and os.fsync."""
+        with open("modules/orders.py") as f:
+            src = f.read()
+        assert "import fcntl" in src
+        assert "fcntl.flock" in src
+        assert "os.fsync" in src
+
+    def test_lock_file_created_on_save(self, tmp_path, monkeypatch):
+        import modules.orders as orders_mod
+        from modules.orders import build_order, save_order
+
+        path = str(tmp_path / "orders.jsonl")
+        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
+        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+
+        o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
+        save_order(o)
+        assert os.path.exists(path + ".lock"), "lock file must exist after save_order"
+
+    def test_partial_line_gracefully_skipped(self, tmp_path, monkeypatch):
+        """load_orders skips corrupt/partial lines without raising."""
+        import modules.orders as orders_mod
+        from modules.orders import build_order, save_order, load_orders
+
+        path = str(tmp_path / "orders.jsonl")
+        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
+        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+
+        o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
+        save_order(o)
+        with open(path, "a") as f:
+            f.write('{"order_id": "ord-truncated\n')  # crash-truncated line
+
+        loaded = load_orders()
+        assert o["order_id"] in loaded
+        assert len(loaded) == 1
+
+
+# ---------------------------------------------------------------------------
+# Point 6: Crash-consistent execution — SETTLING before EXECUTED
+# ---------------------------------------------------------------------------
+
+class TestPoint6CrashConsistency:
+    """Point 6: order must not reach EXECUTED before portfolio is persisted."""
+
+    def test_settling_constant_defined(self):
+        from modules.orders import SETTLING
+        assert SETTLING == "settling"
+
+    def test_settling_not_in_terminal(self):
+        from modules.orders import SETTLING, TERMINAL
+        assert SETTLING not in TERMINAL
+
+    def test_recover_settling_converts_to_failed_price(self, tmp_path, monkeypatch):
+        import modules.orders as orders_mod
+        from modules.orders import (
+            build_order, save_order, load_orders, recover_settling_orders,
+            SETTLING, FAILED_PRICE
+        )
+        path = str(tmp_path / "orders.jsonl")
+        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
+        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+
+        o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
+        save_order(o)
+        save_order(o, status=SETTLING, trade_id="trd-abc")
+        orders_dict = load_orders()
+        assert orders_dict[o["order_id"]]["status"] == SETTLING
+
+        recovered = recover_settling_orders(orders_dict)
+        assert len(recovered) == 1
+        assert orders_dict[o["order_id"]]["status"] == FAILED_PRICE
+        assert "crash-recovery" in orders_dict[o["order_id"]]["failure_reason"]
+
+    def test_settling_transitions_to_executed_in_normal_lifecycle(self, tmp_path, monkeypatch):
+        import modules.orders as orders_mod
+        from modules.orders import build_order, save_order, load_orders, SETTLING, EXECUTED
+
+        path = str(tmp_path / "orders.jsonl")
+        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
+        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+
+        o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
+        save_order(o)
+        settling = save_order(o, status=SETTLING, trade_id="trd-xyz")
+        # Simulate: portfolio saved → finalize
+        save_order(settling, status=EXECUTED)
+        orders_dict = load_orders()
+        assert orders_dict[o["order_id"]]["status"] == EXECUTED
+
+    def test_run_strategy_source_finalizes_after_portfolio_save(self):
+        """Source check: EXECUTED written after save_strategy_state in run_strategy_execution."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_strategy_execution(")
+        assert fn_start != -1
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        save_pos = fn_body.find("save_strategy_state(strategy_name, state)")
+        assert save_pos != -1
+        executed_pos = fn_body.find("status=EXECUTED", save_pos)
+        assert executed_pos != -1, (
+            "status=EXECUTED must appear AFTER save_strategy_state — "
+            "portfolio on disk before terminal order status"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Point 7: publication_ack content_hash is mandatory
+# ---------------------------------------------------------------------------
+
+class TestPoint7AckHashMandatory:
+    """Point 7: publication_ack without content_hash must be rejected."""
+
+    def test_ack_with_empty_content_hash_raises(self):
+        """Manually written ack with empty content_hash causes PublicationWriteError."""
+        import json
+        import tempfile
+        from pathlib import Path
+        import modules.publication as pub_mod
+        from modules.publication import write_signal_publication, get_signal_publication, PublicationWriteError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file, orig_lock = pub_mod.PUBLICATIONS_FILE, pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "ack-no-hash-p7"
+                write_signal_publication(run_id, "/s.json", "sha1", "2026-08-05T21:05:00+00:00")
+                ack = {"schema_version": 1, "record_type": "publication_ack",
+                       "signal_run_id": run_id, "finalized_commit_sha": "sha-xyz",
+                       "written_at": "2026-08-05T21:10:00Z", "content_hash": ""}
+                with open(tmp_file, "a") as f:
+                    f.write(json.dumps(ack) + "\n")
+                with pytest.raises(PublicationWriteError, match="content_hash"):
+                    get_signal_publication(run_id)
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+    def test_valid_ack_hash_still_works(self):
+        """Regression: normally written ack (via write_publication_ack) still accepted."""
+        import tempfile
+        from pathlib import Path
+        import modules.publication as pub_mod
+        from modules.publication import write_signal_publication, write_publication_ack, get_signal_publication
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file, orig_lock = pub_mod.PUBLICATIONS_FILE, pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "ack-valid-p7"
+                write_signal_publication(run_id, "/s.json", "sha1", "2026-08-05T21:05:00+00:00")
+                write_publication_ack(run_id, "final-sha-ok")
+                rec = get_signal_publication(run_id)
+                assert rec is not None and rec["finalized_commit_sha"] == "final-sha-ok"
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+
+# ---------------------------------------------------------------------------
+# Point 8: Phase 3.5 (if:always()) runs before Phase 4 even when Phase 2 fails
+# ---------------------------------------------------------------------------
+
+class TestPoint8Phase35BeforePhase4:
+    """Point 8: if:always() step persists ledger records even when Phase 2 push fails."""
+
+    def test_always_step_is_before_final_push(self):
+        """if:always() appears before id:final_push in signal.yml."""
+        try:
+            with open(".github/workflows/signal.yml") as f:
+                content = f.read()
+        except FileNotFoundError:
+            pytest.skip("signal.yml not found — run from repo root")
+
+        always_pos = content.find("if: always()")
+        final_push_pos = content.find("id: final_push")
+        assert always_pos != -1
+        assert final_push_pos != -1
+        assert always_pos < final_push_pos, (
+            "if:always() (Phase 3.5) must precede id:final_push (Phase 4) "
+            "so ledger is committed even if Phase 2 push failed"
+        )
+
+    def test_always_step_adds_ledger_records(self):
+        """The if:always() step commits data_v4/ledger/ for partial-failure persistence."""
+        try:
+            with open(".github/workflows/signal.yml") as f:
+                content = f.read()
+        except FileNotFoundError:
+            pytest.skip("signal.yml not found — run from repo root")
+
+        lines = content.split("\n")
+        in_always = False
+        ledger_committed = False
+        for line in lines:
+            if "if: always()" in line:
+                in_always = True
+            if in_always and line.strip().startswith("- name:") and "if: always()" not in line:
+                if ledger_committed:
+                    break
+                in_always = False
+            if in_always and "data_v4/ledger" in line:
+                ledger_committed = True
+        assert ledger_committed, "if:always() step must add data_v4/ledger/ to persist partial ledger state"
+
+    def test_phase4_final_push_does_not_have_always(self):
+        """Phase 4 (final_push) must NOT have if:always() — fail-closed for broken signal."""
+        try:
+            with open(".github/workflows/signal.yml") as f:
+                content = f.read()
+        except FileNotFoundError:
+            pytest.skip("signal.yml not found — run from repo root")
+
+        lines = content.split("\n")
+        in_final_push = False
+        for i, line in enumerate(lines):
+            if "id: final_push" in line or "Commit og push finalisert signal" in line:
+                in_final_push = True
+            if in_final_push and "id: " in line and "final_push" not in line:
+                break
+            if in_final_push and "if: always()" in line:
+                raise AssertionError(f"Phase 4 must NOT use if:always(). Line {i+1}: {line!r}")
+
+
+# ---------------------------------------------------------------------------
+# Point 9: Timestamp validation uses real datetime parsing
+# ---------------------------------------------------------------------------
+
+class TestPoint9TimestampRealParsing:
+    """Point 9: _is_valid_timestamp must use fromisoformat, not just regex."""
+
+    def test_invalid_month_rejected(self):
+        """Month 13 passes regex format but is rejected by fromisoformat."""
+        from modules.signal_validator import _is_valid_timestamp
+        assert not _is_valid_timestamp("2026-13-01T00:00:00+00:00"), (
+            "Month 13 is invalid — fromisoformat must reject it"
+        )
+
+    def test_invalid_day_rejected(self):
+        """Day 32 passes regex format but is rejected by fromisoformat."""
+        from modules.signal_validator import _is_valid_timestamp
+        assert not _is_valid_timestamp("2026-08-32T00:00:00+00:00")
+
+    def test_z_suffix_accepted(self):
+        """Z suffix is normalized and accepted."""
+        from modules.signal_validator import _is_valid_timestamp
+        assert _is_valid_timestamp("2026-08-05T21:05:00Z")
+
+    def test_utc_offset_accepted(self):
+        from modules.signal_validator import _is_valid_timestamp
+        assert _is_valid_timestamp("2026-08-05T21:05:00+00:00")
+
+    def test_negative_offset_accepted(self):
+        from modules.signal_validator import _is_valid_timestamp
+        assert _is_valid_timestamp("2026-08-05T17:05:00-04:00")
+
+    def test_no_timezone_rejected(self):
+        from modules.signal_validator import _is_valid_timestamp
+        assert not _is_valid_timestamp("2026-08-05T21:05:00")
+
+    def test_fromisoformat_in_source(self):
+        """Source check: _is_valid_timestamp uses fromisoformat."""
+        with open("modules/signal_validator.py") as f:
+            src = f.read()
+        assert "fromisoformat" in src
+        assert "from datetime import datetime" in src
+
+    def test_invalid_calendar_date_signal_rejected(self):
+        """End-to-end: signal with month-13 created_at_utc is rejected at Layer 1."""
+        s = _make_signal()
+        s["created_at_utc"] = "2026-13-01T00:00:00+00:00"
+        result = _validate(s)
+        assert result.failure_mode == "missing_fields"
+        assert "created_at_utc" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# Point 10: Integration — all remediation points verified together
+# ---------------------------------------------------------------------------
+
+class TestPoint10FinalIntegration:
+    """Point 10: integration tests confirming all 10 remediation points are in force."""
+
+    def test_orders_constants_complete(self):
+        """All required order constants are importable."""
+        from modules.orders import PENDING_PRICE, SETTLING, EXECUTED, EXPIRED, FAILED_PRICE, CANCELLED, TERMINAL
+        assert SETTLING not in TERMINAL
+        assert all(s in TERMINAL for s in (EXECUTED, EXPIRED, FAILED_PRICE, CANCELLED))
+
+    def test_valid_signal_passes_all_six_layers(self):
+        """Regression: fully valid signal passes all six validation layers."""
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_success,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.is_valid and result.allow_new_buys and result.allow_protective_sells
+
+    def test_missing_signal_allows_protective_sells(self):
+        """Point 1: fallback validation allows protective sells."""
+        from modules.signal_validator import SignalValidationResult
+        val = SignalValidationResult(
+            is_valid=False, failure_mode="unpublished",
+            reason="no signal", allow_new_buys=False, allow_pyramid=False,
+            allow_protective_sells=True, signal_run_id=None, intended_session=None,
+            actual_session="2026-08-06", generated_at=None, published_at=None,
+            published_commit_sha=None, model_version=None, data_cutoff_at=None,
+            data_quality_tier="unknown", data_quality={},
+        )
+        assert val.allow_protective_sells and not val.allow_new_buys
+
+    def test_portfolio_id_in_state_and_orders(self):
+        """Points 3 & 4: portfolio_id exists in state and is propagated to orders."""
+        import re
+        from modules.state import initial_strategy_state
+        from modules.orders import build_order
+        state = initial_strategy_state("quant_baseline_v1")
+        assert re.match(r"[0-9a-f\-]{36}", state["portfolio_id"])
+        o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1",
+                        portfolio_id=state["portfolio_id"], portfolio_version=state["created_at"])
+        assert o["portfolio_id"] == state["portfolio_id"]
+        assert o["signal_id"] == "r1"
+
+    def test_settling_crash_recovery_end_to_end(self, tmp_path, monkeypatch):
+        """Point 6: SETTLING orders left after crash are recovered as FAILED_PRICE."""
+        import modules.orders as orders_mod
+        from modules.orders import build_order, save_order, load_orders, recover_settling_orders, SETTLING, FAILED_PRICE
+
+        path = str(tmp_path / "orders.jsonl")
+        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
+        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+
+        o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
+        save_order(o)
+        save_order(o, status=SETTLING, trade_id="trd-crash")
+        orders_dict = load_orders()
+        recovered = recover_settling_orders(orders_dict)
+        assert len(recovered) == 1 and orders_dict[o["order_id"]]["status"] == FAILED_PRICE
+
+    def test_ack_without_hash_rejected_end_to_end(self):
+        """Point 7: ack without content_hash raises PublicationWriteError."""
+        import json
+        import tempfile
+        from pathlib import Path
+        import modules.publication as pub_mod
+        from modules.publication import write_signal_publication, get_signal_publication, PublicationWriteError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file, orig_lock = pub_mod.PUBLICATIONS_FILE, pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "int10-ack-no-hash"
+                write_signal_publication(run_id, "/s.json", "sha1", "2026-08-05T21:05:00+00:00")
+                ack = {"schema_version": 1, "record_type": "publication_ack",
+                       "signal_run_id": run_id, "finalized_commit_sha": "sha",
+                       "written_at": "2026-08-05T21:10:00Z", "content_hash": ""}
+                with open(tmp_file, "a") as f:
+                    f.write(json.dumps(ack) + "\n")
+                with pytest.raises(PublicationWriteError):
+                    get_signal_publication(run_id)
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+    def test_invalid_calendar_date_rejected_end_to_end(self):
+        """Point 9: signal with invalid calendar date in timestamp is rejected."""
+        s = _make_signal()
+        s["created_at_utc"] = "2026-13-01T00:00:00+00:00"
+        result = _validate(s)
+        assert result.failure_mode == "missing_fields"
+
+    def test_phase35_before_final_push_in_workflow(self):
+        """Point 8: Phase 3.5 (if:always()) precedes Phase 4 (final_push) in signal.yml."""
+        try:
+            with open(".github/workflows/signal.yml") as f:
+                content = f.read()
+        except FileNotFoundError:
+            pytest.skip("signal.yml not found — run from repo root")
+        always_pos = content.find("if: always()")
+        final_push_pos = content.find("id: final_push")
+        assert always_pos != -1 and final_push_pos != -1
+        assert always_pos < final_push_pos

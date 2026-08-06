@@ -10,12 +10,13 @@ from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
 from modules.exchange_calendar import CalendarUnavailableError, intended_execution_session
 from modules.orders import (
-    EXECUTED, EXPIRED, FAILED_PRICE, PENDING_PRICE, TERMINAL,
+    EXECUTED, EXPIRED, FAILED_PRICE, PENDING_PRICE, SETTLING, TERMINAL,
     expire_stale_orders,
     get_or_create_order,
     get_pending_for_session,
     load_orders,
     make_trade_id,
+    recover_settling_orders,
     save_order,
 )
 from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, prefetch_execution_prices, prefetch_open_prices, run_data_quality_checks
@@ -636,7 +637,12 @@ def run_ack_publication():
 # ============================================================
 
 def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
-    """Add traceability fields to a trade dict and persist the order as EXECUTED."""
+    """Add traceability fields to a trade dict and persist the order as SETTLING.
+
+    SETTLING is an intermediate status: trade filled, portfolio not yet persisted.
+    The caller must call save_order(order, status=EXECUTED) after save_strategy_state()
+    to maintain crash-consistent ordering: EXECUTED only after portfolio is on disk.
+    """
     ts = now_utc().isoformat()
     trade_id = make_trade_id(order_id, ts)
     trade["order_id"] = order_id
@@ -648,7 +654,7 @@ def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
     trade["gross_execution_price"] = trade["price"]
     trade["commission_amount"] = trade["cost"]
     order = orders.get(order_id, {})
-    updated = save_order(order, status=EXECUTED, trade_id=trade_id)
+    updated = save_order(order, status=SETTLING, trade_id=trade_id)
     orders[order_id] = updated
     return trade_id
 
@@ -696,6 +702,10 @@ def run_strategy_execution(
     buy_orders_executed = 0
     sell_orders_created = 0
     sell_orders_executed = 0
+    # Tracks orders annotated as SETTLING in this run — finalized after portfolio save
+    settling_order_ids = []
+    portfolio_id = state.get("portfolio_id", strategy_name)
+    portfolio_version = state.get("created_at", "")
 
     # --- Retry pending orders from today's session (same-day retry) ---
     for order in get_pending_for_session(orders, session_date, strategy_name):
@@ -707,6 +717,7 @@ def run_strategy_execution(
             )
             if trade:
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                settling_order_ids.append(order["order_id"])
                 sells.append(trade)
                 orders_executed += 1
                 sell_orders_executed += 1
@@ -731,6 +742,7 @@ def run_strategy_execution(
                 )
                 if trade:
                     _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                    settling_order_ids.append(order["order_id"])
                     buys.append(trade)
                     orders_executed += 1
                     buy_orders_executed += 1
@@ -752,6 +764,7 @@ def run_strategy_execution(
             orders, signal_run_id, ticker, strategy_name, session_date, "SELL",
             target_value=0.0, reason=reason, signal_price=signal_price,
             execution_version=execution_version,
+            portfolio_id=portfolio_id, portfolio_version=portfolio_version,
         )
         if order["status"] in TERMINAL:
             return None   # already handled
@@ -767,6 +780,7 @@ def run_strategy_execution(
         )
         if trade:
             _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+            settling_order_ids.append(order["order_id"])
             orders_executed += 1
             sell_orders_executed += 1
         else:
@@ -853,6 +867,23 @@ def run_strategy_execution(
                 state, trades_df, strategy_name, ticker, execution_price_cache
             )
             if fill:
+                pyr_order, pyr_is_new = get_or_create_order(
+                    orders, signal_run_id, ticker, strategy_name, session_date,
+                    "PYRAMID_FILL",
+                    target_value=fill.get("value", 0.0),
+                    reason=fill.get("reason", "Pyramid fill"),
+                    signal_price=fill.get("price"),
+                    execution_version=execution_version,
+                    portfolio_id=portfolio_id, portfolio_version=portfolio_version,
+                )
+                if pyr_order["status"] not in TERMINAL:
+                    if pyr_is_new:
+                        saved = save_order(pyr_order)
+                        orders[pyr_order["order_id"]] = saved
+                        orders_created += 1
+                    _annotate_trade(fill, pyr_order["order_id"], orders, signal_run_id, execution_version)
+                    settling_order_ids.append(pyr_order["order_id"])
+                    orders_executed += 1
                 pyramid_fills.append(fill)
                 print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
     elif list(state["positions"].values()):
@@ -938,6 +969,7 @@ def run_strategy_execution(
                 orders, signal_run_id, ticker, strategy_name, session_date, "BUY",
                 target_value=initial_value, reason=reason, signal_price=signal_price,
                 execution_version=execution_version, pyramid_remaining=pyramid_remaining,
+                portfolio_id=portfolio_id, portfolio_version=portfolio_version,
             )
             if order["status"] in TERMINAL:
                 continue   # already executed or expired in a previous run
@@ -959,6 +991,7 @@ def run_strategy_execution(
 
             if trade:
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                settling_order_ids.append(order["order_id"])
                 buys.append(trade)
                 orders_executed += 1
                 buy_orders_executed += 1
@@ -988,6 +1021,12 @@ def run_strategy_execution(
     )
     state["last_execution_date"] = today_str()
     save_strategy_state(strategy_name, state)
+
+    # Crash-consistent persistence: portfolio is now on disk — finalize SETTLING → EXECUTED
+    for oid in settling_order_ids:
+        if oid in orders and orders[oid].get("status") == SETTLING:
+            updated = save_order(orders[oid], status=EXECUTED)
+            orders[oid] = updated
 
     return_pct = (total_after / START_CAPITAL) - 1
 
@@ -1040,7 +1079,15 @@ def run_execute():
     print("EXECUTE MODE")
     print("=" * 60)
 
-    signal, signal_path = load_latest_signal()
+    # Try to load signal — failure allows protective sells but blocks new buys/pyramids
+    signal = None
+    signal_path = None
+    signal_load_error = None
+    try:
+        signal, signal_path = load_latest_signal()
+    except (FileNotFoundError, SignalNotPublishedError) as exc:
+        signal_load_error = str(exc)
+        print(f"Signal ikke tilgjengelig: {exc}")
 
     # Determine session_date via NYSE calendar (fail-closed on CalendarUnavailableError)
     from modules.exchange_calendar import CalendarUnavailableError, is_trading_session  # noqa: PLC0415
@@ -1059,17 +1106,51 @@ def run_execute():
         )
         raise
 
-    print(f"Bruker signal: {signal_path}")
-
-    from modules.signal_validator import validate_signal  # noqa: PLC0415
-    signal_validation = validate_signal(signal, signal_path, session_date)
-    print(f"Signal-validering: {signal_validation.failure_mode} — {signal_validation.reason}")
-
-    if not signal_validation.is_valid or not signal_validation.allow_new_buys:
+    if signal is not None:
+        print(f"Bruker signal: {signal_path}")
+        from modules.signal_validator import validate_signal  # noqa: PLC0415
+        signal_validation = validate_signal(signal, signal_path, session_date)
+        print(f"Signal-validering: {signal_validation.failure_mode} — {signal_validation.reason}")
+        if not signal_validation.is_valid or not signal_validation.allow_new_buys:
+            from modules.reporting import build_stale_signal_message  # noqa: PLC0415
+            send_telegram(build_stale_signal_message(signal_validation))
+            if signal_validation.failure_mode == "calendar_unavailable":
+                print("⚠️ KRITISK: Exchange calendar utilgjengelig — execution fail-closed, ingen nye kjøp")
+    else:
+        # No signal available — run protective sells only
+        from modules.signal_validator import SignalValidationResult  # noqa: PLC0415
+        signal_validation = SignalValidationResult(
+            is_valid=False,
+            failure_mode="unpublished",
+            reason=signal_load_error or "Signal ikke tilgjengelig",
+            allow_new_buys=False,
+            allow_pyramid=False,
+            allow_protective_sells=True,
+            signal_run_id=None,
+            intended_session=None,
+            actual_session=session_date,
+            generated_at=None,
+            published_at=None,
+            published_commit_sha=None,
+            model_version=None,
+            data_cutoff_at=None,
+            data_quality_tier="unknown",
+            data_quality={},
+        )
         from modules.reporting import build_stale_signal_message  # noqa: PLC0415
         send_telegram(build_stale_signal_message(signal_validation))
-        if signal_validation.failure_mode == "calendar_unavailable":
-            print("⚠️ KRITISK: Exchange calendar utilgjengelig — execution fail-closed, ingen nye kjøp")
+        print("⚠️ Ingen signal — kun beskyttende stop-loss/trailing-stop kjøres")
+        signal = {
+            "strategies": {name: {"candidates": []} for name in STRATEGIES},
+            "regime": {},
+            "corr_pairs": [],
+            "active_weights": None,
+            "sentiment_scores": {},
+            "quality_report": {},
+            "signal_run_id": "no-signal",
+            "earnings_analysis": {},
+        }
+        signal_path = "no-signal"
 
     trades_df = load_trades()
     performance_df = load_performance()
@@ -1135,9 +1216,13 @@ def run_execute():
     if not market_open:
         print("Markedet er stengt — stop-loss kan fortsatt utføres, kjøp hoppes over")
 
-    # --- Order state: load, expire stale, share across all strategies ---
+    # --- Order state: load, crash-recovery, expire stale, share across all strategies ---
     signal_run_id = signal.get("signal_run_id", "unknown")
     orders = load_orders()
+    # Crash recovery: any SETTLING orders were not finalized before crash — mark FAILED_PRICE
+    settling_recovered = recover_settling_orders(orders)
+    if settling_recovered:
+        print(f"Crash-recovery: {len(settling_recovered)} SETTLING ordre markert FAILED_PRICE")
     expired = expire_stale_orders(orders, session_date)
     if expired:
         print(f"Utløpte ordre fra tidligere sesjoner: {len(expired)}")

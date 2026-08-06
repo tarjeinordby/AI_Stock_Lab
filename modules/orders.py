@@ -18,6 +18,7 @@ per order_id when the file is read.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -25,9 +26,11 @@ import os
 from modules.state import STATE_DIR, now_utc
 
 ORDERS_FILE = f"{STATE_DIR}/orders.jsonl"
+_ORDERS_LOCK_FILE = f"{STATE_DIR}/orders.jsonl.lock"
 
 # Statuses
 PENDING_PRICE = "pending_price"
+SETTLING = "settling"       # in-flight: trade filled, portfolio not yet persisted
 EXECUTED = "executed"
 EXPIRED = "expired"
 FAILED_PRICE = "failed_price"
@@ -44,8 +47,12 @@ def make_order_id(signal_run_id: str, ticker: str, strategy: str,
                   session_date: str, action: str) -> str:
     """
     Deterministic order ID — identical inputs always produce the same 16-char hex string.
-    This serves as both the primary key and the idempotency guard: if the bot runs
-    execute twice for the same session, get_or_create returns the existing order.
+    This is both the primary key and the idempotency guard: running execute twice for the
+    same session returns the existing order, not a duplicate.
+
+    portfolio_id is stored as order metadata for multi-portfolio traceability but is NOT
+    included in the key to preserve idempotency across runs (portfolio_id is stable per
+    portfolio instance but must not invalidate orders written before this field existed).
     """
     raw = f"{signal_run_id}|{ticker}|{strategy}|{session_date}|{action}"
     return "ord-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
@@ -72,11 +79,16 @@ def build_order(
     signal_price: float | None,
     execution_version: str,
     pyramid_remaining: float = 0.0,
+    portfolio_id: str = "",
+    portfolio_version: str = "",
 ) -> dict:
     """Build a new order dict (not yet persisted)."""
     return {
         "order_id": make_order_id(signal_run_id, ticker, strategy, session_date, action),
+        "signal_id": signal_run_id,
         "signal_run_id": signal_run_id,
+        "portfolio_id": portfolio_id,
+        "portfolio_version": portfolio_version,
         "ticker": ticker,
         "strategy": strategy,
         "intended_execution_session": session_date,
@@ -101,8 +113,20 @@ def build_order(
 
 def _append(record: dict) -> None:
     os.makedirs(os.path.dirname(ORDERS_FILE), exist_ok=True)
-    with open(ORDERS_FILE, "a") as f:
-        f.write(json.dumps(record) + "\n")
+    # Touch lock file before opening content file to guarantee lock exists
+    open(_ORDERS_LOCK_FILE, "a").close()
+    try:
+        with open(_ORDERS_LOCK_FILE, "rb") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                with open(ORDERS_FILE, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, sort_keys=True, ensure_ascii=True) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    except OSError as exc:
+        raise RuntimeError(f"Kunne ikke skrive ordre til {ORDERS_FILE}: {exc}") from exc
 
 
 def load_orders() -> dict:
@@ -167,6 +191,8 @@ def get_or_create_order(
     signal_price: float | None,
     execution_version: str,
     pyramid_remaining: float = 0.0,
+    portfolio_id: str = "",
+    portfolio_version: str = "",
 ) -> tuple[dict, bool]:
     """
     Return (order, is_new). If an order with the same deterministic ID already
@@ -180,8 +206,34 @@ def get_or_create_order(
         signal_run_id, ticker, strategy, session_date, action,
         target_value, reason, signal_price, execution_version,
         pyramid_remaining=pyramid_remaining,
+        portfolio_id=portfolio_id,
+        portfolio_version=portfolio_version,
     )
     return order, True
+
+
+def recover_settling_orders(orders: dict) -> list:
+    """
+    Crash recovery: convert any SETTLING orders to FAILED_PRICE.
+
+    SETTLING orders represent fills that were annotated but whose portfolio state
+    was never persisted (crash between fill and save_strategy_state). On the next
+    run they are unknown — conservative recovery marks them FAILED_PRICE so the
+    position is not double-credited.
+
+    Returns the list of recovered orders.
+    """
+    recovered = []
+    for order_id, order in list(orders.items()):
+        if order.get("status") == SETTLING:
+            updated = save_order(
+                order,
+                status=FAILED_PRICE,
+                failure_reason="crash-recovery: settling order not finalized",
+            )
+            orders[order_id] = updated
+            recovered.append(updated)
+    return recovered
 
 
 def get_pending_for_session(orders: dict, session_date: str, strategy: str | None = None) -> list:

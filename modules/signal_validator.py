@@ -38,6 +38,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, Optional
 
 # ISO 8601 with explicit timezone — e.g. "2026-08-05T21:05:00+00:00" or "...Z"
@@ -47,8 +48,18 @@ _ISO_TIMESTAMP_RE = re.compile(
 
 
 def _is_valid_timestamp(ts: str) -> bool:
-    """Return True if ts is an ISO 8601 datetime with explicit timezone."""
-    return bool(_ISO_TIMESTAMP_RE.match(ts)) if ts else False
+    """Return True if ts is a parseable ISO 8601 datetime with explicit timezone."""
+    if not ts:
+        return False
+    if not _ISO_TIMESTAMP_RE.match(ts):
+        return False
+    # Normalize Z suffix for Python 3.9 fromisoformat compatibility (Z supported from 3.11)
+    normalized = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+    try:
+        dt = datetime.fromisoformat(normalized)
+        return dt.tzinfo is not None
+    except (ValueError, TypeError):
+        return False
 
 
 # ---------------------------------------------------------------------------

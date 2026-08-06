@@ -193,13 +193,17 @@ def get_signal_publication(signal_run_id: str) -> dict | None:
     result = dict(initial)
     if ack:
         ack_stored_hash = ack.get("content_hash", "")
-        if ack_stored_hash:
-            # Use compute_ack_content_hash — protects finalized_commit_sha
-            ack_expected = compute_ack_content_hash(ack)
-            if ack_expected != ack_stored_hash:
-                raise PublicationWriteError(
-                    f"publication_ack content_hash er ugyldig for "
-                    f"{signal_run_id} — ack-recorden kan ha blitt modifisert"
-                )
+        if not ack_stored_hash:
+            raise PublicationWriteError(
+                f"publication_ack mangler content_hash for {signal_run_id} — "
+                "integritet kan ikke verifiseres"
+            )
+        # Use compute_ack_content_hash — protects finalized_commit_sha
+        ack_expected = compute_ack_content_hash(ack)
+        if ack_expected != ack_stored_hash:
+            raise PublicationWriteError(
+                f"publication_ack content_hash er ugyldig for "
+                f"{signal_run_id} — ack-recorden kan ha blitt modifisert"
+            )
         result["finalized_commit_sha"] = ack.get("finalized_commit_sha", "")
     return result
