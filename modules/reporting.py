@@ -575,6 +575,55 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 
 
 # ============================================================
+# STALE / INVALID SIGNAL REPORT
+# ============================================================
+
+def build_stale_signal_message(validation) -> str:
+    """
+    Build a Telegram alert for a stale or invalid signal.
+    validation is a SignalValidationResult (imported lazily to avoid circular import).
+    """
+    blocked_buys = sum(
+        len(r.get("buys", [])) == 0 and not r.get("orders_created", 0)
+        for r in getattr(validation, "_results", [])
+    )
+    tier = getattr(validation, "data_quality_tier", "unknown")
+    dq = getattr(validation, "data_quality", {})
+    coverage = dq.get("signal_coverage_rate")
+    stale_pct = dq.get("stale_pct")
+
+    mode = getattr(validation, "failure_mode", "unknown")
+    is_fully_invalid = not getattr(validation, "is_valid", True)
+    header = "⛔ SIGNAL AVVIST" if is_fully_invalid else "⚠️ BEGRENSET KJØRING"
+
+    lines = [
+        header,
+        f"Signal-run ID:     {getattr(validation, 'signal_run_id', 'ukjent') or 'ukjent'}",
+        f"Intendert sesjon:  {getattr(validation, 'intended_session', 'ukjent') or 'ukjent'}",
+        f"Dagens sesjon:     {getattr(validation, 'actual_session', today_str())}",
+        f"Generert (UTC):    {getattr(validation, 'generated_at', 'ukjent') or 'ukjent'}",
+        f"Publisert (UTC):   {getattr(validation, 'published_at', 'ukjent') or 'ukjent'}",
+        f"Feilmodus:         {mode}",
+        f"Årsak:             {getattr(validation, 'reason', '')}",
+    ]
+
+    if coverage is not None or stale_pct is not None:
+        lines.append(
+            f"Data-kvalitet:     tier={tier}, "
+            f"coverage={coverage}, stale_pct={stale_pct}"
+        )
+
+    lines += [
+        "",
+        "✅ Tillatte handlinger: stop-loss, trailing stop, drawdown-beskyttelse",
+        "❌ Blokkerte handlinger: nye kjøp, pyramidering"
+        + (", signal-baserte salg" if is_fully_invalid else ""),
+    ]
+
+    return "\n".join(lines)
+
+
+# ============================================================
 # FULL MESSAGE ASSEMBLY
 # ============================================================
 
@@ -582,8 +631,17 @@ def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
                        drawdown_warnings, fundamentals_cache=None, macro=None,
                        earnings_analysis=None, active_weights=None, corr_pairs=None,
                        sentiment_scores=None, quality_report=None,
-                       weekly_analyses=None, ai_cost_usd=0.0):
-    msg = build_daily_report(
+                       weekly_analyses=None, ai_cost_usd=0.0,
+                       signal_validation=None):
+    # Prefix restricted-execution banner when signal is invalid/stale
+    prefix = ""
+    if signal_validation is not None and (
+        not signal_validation.is_valid or not signal_validation.allow_new_buys
+    ):
+        mode = signal_validation.failure_mode
+        prefix = f"⚠️ BEGRENSET KJØRING ({mode}) — kun risikohåndtering\n\n"
+
+    msg = prefix + build_daily_report(
         results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
         macro=macro, earnings_analysis=earnings_analysis, active_weights=active_weights,
         sentiment_scores=sentiment_scores, quality_report=quality_report,

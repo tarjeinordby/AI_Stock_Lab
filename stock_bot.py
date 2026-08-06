@@ -463,12 +463,43 @@ def run_signal():
             send_telegram(f"⚠️ LEDGER-FEIL — signal ikke lagret: {exc}")
             raise
 
+    # Compute intended_execution_session for this signal (next NYSE session after today)
+    try:
+        _next_session = intended_execution_session(date)
+    except CalendarUnavailableError:
+        _next_session = None
+        print("ADVARSEL: Kan ikke beregne intended_execution_session — børskalender utilgjengelig")
+
+    # Fetch the current git commit for publication audit trail
+    import subprocess as _subprocess
+    def _git_commit_sha():
+        try:
+            r = _subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            return r.stdout.strip() or "unknown"
+        except Exception:
+            return "unknown"
+
     payload = {
         "created_at_utc": now_utc().isoformat(),
         "created_at_oslo": now_oslo().isoformat(),
         "created_at_ny": now_ny().isoformat(),
         "date": date,
         "signal_run_id": signal_run_id,
+        # --- Publication metadata (required by signal_validator) ---
+        "intended_execution_session": _next_session,
+        "model_version": MODEL_VERSION,
+        "publication_status": "published",
+        "published_at": now_utc().isoformat(),
+        "published_commit_sha": _git_commit_sha(),
+        # --- Data quality counts (required for coverage-rate validation) ---
+        "valid_ticker_count": input_manifest.get("valid_ticker_count", 0),
+        "stale_ticker_count": input_manifest.get("stale_ticker_count", 0),
+        "excluded_ticker_count": input_manifest.get("excluded_ticker_count", 0),
+        "missing_ticker_count": 0,  # placeholder; future: count 0-row tickers
+        # --- Signal content ---
         "universe_count": len(universe),
         "analyzed_count": len(analyzed),
         "regime": regime,
@@ -485,7 +516,12 @@ def run_signal():
         "quality_report": quality_report,
         "signal_ai_cost_usd": round(signal_ai_cost, 6),
         "quality_filtered_count": filtered_count,
+        # Tamper-detection hash — computed last (excludes itself)
+        "signal_content_hash": "",
     }
+
+    from modules.signal_validator import compute_signal_content_hash  # noqa: PLC0415
+    payload["signal_content_hash"] = compute_signal_content_hash(payload)
 
     signal_path = f"{SIGNALS_DIR}/{date}_signal.json"
     save_json(payload, signal_path)
@@ -525,6 +561,9 @@ def run_strategy_execution(
     orders, signal_run_id, session_date, execution_version,
     premarket_flags=None, macro_mult=1.0, corr_pairs=None,
     market_open=True,
+    allow_new_buys: bool = True,
+    allow_pyramid: bool = True,
+    allow_signal_sells: bool = True,
 ):
     if premarket_flags is None:
         premarket_flags = {}
@@ -643,29 +682,30 @@ def run_strategy_execution(
             orders_pending_price += 1
         return trade, state2, trades2
 
-    # Correlation-based sells: if two held positions are >85% correlated, sell the lower-scored
-    corr_sell_candidates = filter_correlated_sells(
-        state["positions"], candidates_by_ticker, corr_pairs
-    )
-    for cs in corr_sell_candidates:
-        ticker = cs["sell_ticker"]
-        if ticker not in state["positions"]:
-            continue
-        pos = state["positions"][ticker]
-        result = _sell_with_order(ticker, cs["reason"], signal_price=pos.get("last_price"))
-        if result is None:
-            continue
-        trade, state, trades_df = result
-        if trade:
-            sells.append(trade)
-            log_msg = (
-                f"❌ {cs['sell_ticker']} solgt — "
-                f"{cs['correlation']:.0%} korrelert med {cs['keep_ticker']}"
-            )
-            correlation_log.append(log_msg)
-            print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
+    # Correlation-based sells: require valid signal (corr_pairs come from signal)
+    if allow_signal_sells:
+        corr_sell_candidates = filter_correlated_sells(
+            state["positions"], candidates_by_ticker, corr_pairs
+        )
+        for cs in corr_sell_candidates:
+            ticker = cs["sell_ticker"]
+            if ticker not in state["positions"]:
+                continue
+            pos = state["positions"][ticker]
+            result = _sell_with_order(ticker, cs["reason"], signal_price=pos.get("last_price"))
+            if result is None:
+                continue
+            trade, state, trades_df = result
+            if trade:
+                sells.append(trade)
+                log_msg = (
+                    f"❌ {cs['sell_ticker']} solgt — "
+                    f"{cs['correlation']:.0%} korrelert med {cs['keep_ticker']}"
+                )
+                correlation_log.append(log_msg)
+                print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
 
-    # Evaluate normal sells
+    # Evaluate normal sells — protective stops always run; signal-based exits require valid signal
     _PROTECTIVE = ("Stop-loss", "Trailing stop")
     for ticker, pos in list(state["positions"].items()):
         candidate = candidates_by_ticker.get(ticker)
@@ -675,6 +715,9 @@ def run_strategy_execution(
         is_protective = any(reason.startswith(p) for p in _PROTECTIVE)
         if not market_open and not is_protective:
             print(f"  [{strategy_name}] SKIP SELG {ticker}: markedet stengt ({reason})")
+            continue
+        if not allow_signal_sells and not is_protective:
+            print(f"  [{strategy_name}] SKIP SELG {ticker}: signal ugyldig, kun stop-loss tillatt ({reason})")
             continue
         result = _sell_with_order(ticker, reason, signal_price=pos.get("last_price"))
         if result is None:
@@ -699,15 +742,18 @@ def run_strategy_execution(
     )
     target_tickers = list(target_weights.keys())
 
-    # Pyramid fills for existing partial positions
+    # Pyramid fills — blocked when signal is invalid (require fresh ranking to confirm thesis)
     pyramid_fills = []
-    for ticker in list(state["positions"].keys()):
-        state, trades_df, fill = execute_pyramid_fill(
-            state, trades_df, strategy_name, ticker, execution_price_cache
-        )
-        if fill:
-            pyramid_fills.append(fill)
-            print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
+    if allow_pyramid:
+        for ticker in list(state["positions"].keys()):
+            state, trades_df, fill = execute_pyramid_fill(
+                state, trades_df, strategy_name, ticker, execution_price_cache
+            )
+            if fill:
+                pyramid_fills.append(fill)
+                print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
+    elif list(state["positions"].values()):
+        print(f"  [{strategy_name}] PYRAMID blokkert: signal ugyldig")
 
     # Count sector positions for correlation filter
     def _sector_counts():
@@ -720,8 +766,10 @@ def run_strategy_execution(
     # Evaluate new buys
     if not market_open:
         print(f"  [{strategy_name}] Markedet er stengt, ingen kjøp utføres")
+    if not allow_new_buys:
+        print(f"  [{strategy_name}] Kjøp blokkert: signal ugyldig eller data-kvalitet for lav")
 
-    if can_buy and market_open:
+    if allow_new_buys and can_buy and market_open:
         for ticker in target_tickers:
             if ticker in state["positions"]:
                 continue
@@ -890,7 +938,18 @@ def run_execute():
     print("=" * 60)
 
     signal, signal_path = load_latest_signal()
+    session_date = today_str()
     print(f"Bruker signal: {signal_path}")
+
+    from modules.signal_validator import validate_signal  # noqa: PLC0415
+    signal_validation = validate_signal(signal, signal_path, session_date)
+    print(f"Signal-validering: {signal_validation.failure_mode} — {signal_validation.reason}")
+
+    if not signal_validation.is_valid or not signal_validation.allow_new_buys:
+        from modules.reporting import build_stale_signal_message  # noqa: PLC0415
+        send_telegram(build_stale_signal_message(signal_validation))
+        if signal_validation.failure_mode == "calendar_unavailable":
+            print("⚠️ KRITISK: Exchange calendar utilgjengelig — execution fail-closed, ingen nye kjøp")
 
     trades_df = load_trades()
     performance_df = load_performance()
@@ -933,19 +992,7 @@ def run_execute():
 
     all_tickers = pm_tickers | {"SPY", "QQQ"}
 
-    # --- Determine intended execution session for this signal ---
-    session_date = today_str()
-    signal_date = signal.get("date")
-    if signal_date:
-        try:
-            expected = intended_execution_session(signal_date)
-            if expected != session_date:
-                print(
-                    f"ADVARSEL: signaldato {signal_date} → intended session {expected}, "
-                    f"men kjører på {session_date}"
-                )
-        except CalendarUnavailableError:
-            pass
+    # session_date and signal_validation set above (before price prefetch)
 
     # Execution cache: session-validated open prices — no fallback, no fill if missing
     execution_price_cache = prefetch_execution_prices(list(pm_tickers), session_date)
@@ -990,6 +1037,9 @@ def run_execute():
             macro_mult=macro_mult,
             corr_pairs=corr_pairs,
             market_open=market_open,
+            allow_new_buys=signal_validation.allow_new_buys,
+            allow_pyramid=signal_validation.allow_pyramid,
+            allow_signal_sells=signal_validation.is_valid,
         )
         results.append(result)
 
@@ -1054,6 +1104,7 @@ def run_execute():
         quality_report=quality_report,
         weekly_analyses=weekly_analyses,
         ai_cost_usd=total_ai_cost,
+        signal_validation=signal_validation,
     )
 
     send_telegram(message)
