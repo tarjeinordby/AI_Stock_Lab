@@ -36,8 +36,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+# ISO 8601 with explicit timezone — e.g. "2026-08-05T21:05:00+00:00" or "...Z"
+_ISO_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def _is_valid_timestamp(ts: str) -> bool:
+    """Return True if ts is an ISO 8601 datetime with explicit timezone."""
+    return bool(_ISO_TIMESTAMP_RE.match(ts)) if ts else False
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +97,9 @@ def compute_signal_content_hash(payload: dict) -> str:
 
 def _data_quality_tier(signal: dict) -> tuple[str, dict]:
     """
-    Compute data quality tier for reporting. Does not block execution.
-    Thresholds will be proposed and approved before enforcement.
+    Compute data quality metrics for reporting only. Does not classify or block.
+    Thresholds (e.g. 0.90 coverage) must be proposed and approved before use.
+    All signals with a non-zero universe return "normal" tier until thresholds are set.
     """
     universe_count = signal.get("universe_count") or 0
     valid_count    = signal.get("valid_ticker_count") or 0
@@ -113,9 +125,8 @@ def _data_quality_tier(signal: dict) -> tuple[str, dict]:
     quality["signal_coverage_rate"] = round(coverage, 4)
     quality["stale_pct"]            = round(stale_pct, 4)
 
-    if coverage >= 0.90:
-        return "normal", quality
-    return "reduced", quality
+    # No threshold applied — all signals with valid universe_count return "normal"
+    return "normal", quality
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +227,19 @@ def validate_signal(
             f"Obligatoriske felt mangler eller er tomme: {', '.join(missing)}",
         )
 
+    # Timestamp format: created_at_utc and published_at must be ISO 8601 with timezone
+    for ts_field, ts_value in [
+        ("created_at_utc", generated_at),
+        ("published_at", published_at),
+    ]:
+        if not _is_valid_timestamp(ts_value):
+            return _reject(
+                "missing_fields",
+                f"{ts_field} er ikke et gyldig ISO 8601-timestamp med eksplisitt "
+                f"timezone: {ts_value!r}. Forventet format: "
+                "'YYYY-MM-DDTHH:MM:SS+00:00' eller '...Z'",
+            )
+
     # ------------------------------------------------------------------
     # Layer 1b: publication_status must be exactly "published"
     # ------------------------------------------------------------------
@@ -269,27 +293,37 @@ def validate_signal(
                 ),
             )
 
-        # Point 2: Validate publication record's own content_hash
+        # Point 2: Validate publication record's own content_hash (mandatory)
         pub_stored_hash = pub_record.get("content_hash", "")
-        if pub_stored_hash:
-            try:
-                from modules.publication import compute_publication_content_hash  # noqa: PLC0415
-                pub_expected = compute_publication_content_hash(pub_record)
-                if pub_expected != pub_stored_hash:
-                    return _reject(
-                        "publication_error",
-                        "Publikasjonsrecord content_hash er ugyldig — "
-                        "recorden kan ha blitt modifisert etter skriving.",
-                    )
-            except Exception as exc:
+        if not pub_stored_hash:
+            return _reject(
+                "publication_error",
+                "Publikasjonsrecord mangler content_hash — "
+                "integritet kan ikke verifiseres.",
+            )
+        try:
+            from modules.publication import compute_publication_content_hash  # noqa: PLC0415
+            pub_expected = compute_publication_content_hash(pub_record)
+            if pub_expected != pub_stored_hash:
                 return _reject(
                     "publication_error",
-                    f"Kunne ikke verifisere publikasjonsrecord hash: {exc}",
+                    "Publikasjonsrecord content_hash er ugyldig — "
+                    "recorden kan ha blitt modifisert etter skriving.",
                 )
+        except Exception as exc:
+            return _reject(
+                "publication_error",
+                f"Kunne ikke verifisere publikasjonsrecord hash: {exc}",
+            )
 
-        # Point 3: Cross-validate key fields between pub record and signal
+        # Point 3: Cross-validate key fields between pub record and signal (mandatory)
         rec_run_id = pub_record.get("signal_run_id")
-        if rec_run_id and rec_run_id != signal_run_id:
+        if not rec_run_id:
+            return _reject(
+                "publication_error",
+                "Publikasjonsrecord mangler signal_run_id — kan ikke kryssvalidere",
+            )
+        if rec_run_id != signal_run_id:
             return _reject(
                 "publication_error",
                 f"Publikasjonsrecord signal_run_id mismatch: "
@@ -297,7 +331,12 @@ def validate_signal(
             )
 
         rec_published_at = pub_record.get("published_at")
-        if rec_published_at and published_at and rec_published_at != published_at:
+        if not rec_published_at:
+            return _reject(
+                "publication_error",
+                "Publikasjonsrecord mangler published_at — kan ikke kryssvalidere",
+            )
+        if rec_published_at != published_at:
             return _reject(
                 "publication_error",
                 f"published_at mismatch: record={rec_published_at!r}, "
@@ -305,7 +344,12 @@ def validate_signal(
             )
 
         rec_commit_sha = pub_record.get("commit_sha")
-        if rec_commit_sha and published_sha and rec_commit_sha != published_sha:
+        if not rec_commit_sha:
+            return _reject(
+                "publication_error",
+                "Publikasjonsrecord mangler commit_sha — kan ikke kryssvalidere",
+            )
+        if rec_commit_sha != published_sha:
             return _reject(
                 "publication_error",
                 f"commit_sha mismatch: record={rec_commit_sha!r}, "
@@ -414,15 +458,6 @@ def validate_signal(
         return _reject("hash_error", f"Content hash beregning feilet: {exc}")
 
     # ------------------------------------------------------------------
-    # All layers passed — data quality is informational only
+    # All layers passed — data quality metrics are informational only
     # ------------------------------------------------------------------
-    if data_tier == "reduced":
-        return _ok(
-            failure_mode="data_quality_reduced",
-            reason=(
-                f"Signal validert — data-kvalitet redusert "
-                f"(coverage={data_quality.get('signal_coverage_rate')}). "
-                "Terskler for blokkering er ikke ennå godkjent."
-            ),
-        )
     return _ok()

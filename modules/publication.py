@@ -27,10 +27,6 @@ from pathlib import Path
 PUBLICATIONS_FILE = Path("data_v4/ledger/signal_publications.jsonl")
 _LOCK_FILE = Path("data_v4/ledger/signal_publications.lock")
 
-# Fields excluded from content_hash so ack merging doesn't invalidate initial record
-_HASH_EXCLUDE = frozenset({"content_hash", "finalized_commit_sha"})
-
-
 class PublicationWriteError(Exception):
     pass
 
@@ -39,12 +35,29 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def compute_publication_content_hash(record: dict) -> str:
-    """SHA-256 of record with content_hash and finalized_commit_sha excluded."""
-    r = {k: v for k, v in record.items() if k not in _HASH_EXCLUDE}
+def _sha256_json(d: dict) -> str:
     return hashlib.sha256(
-        json.dumps(r, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+        json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
+
+
+def compute_publication_content_hash(record: dict) -> str:
+    """
+    SHA-256 of a signal_publication record.
+    Excludes content_hash AND finalized_commit_sha so that merging the ack's
+    finalized_commit_sha into the merged dict does not invalidate this hash.
+    """
+    r = {k: v for k, v in record.items() if k not in ("content_hash", "finalized_commit_sha")}
+    return _sha256_json(r)
+
+
+def compute_ack_content_hash(record: dict) -> str:
+    """
+    SHA-256 of a publication_ack record.
+    Excludes only content_hash — finalized_commit_sha IS covered (it's the key protected field).
+    """
+    r = {k: v for k, v in record.items() if k != "content_hash"}
+    return _sha256_json(r)
 
 
 def _append_record(record: dict) -> None:
@@ -138,7 +151,7 @@ def write_publication_ack(signal_run_id: str, finalized_commit_sha: str) -> None
         "written_at": _utc_now(),
         "content_hash": "",
     }
-    record["content_hash"] = compute_publication_content_hash(record)
+    record["content_hash"] = compute_ack_content_hash(record)
     _append_record(record)
 
 
@@ -179,5 +192,14 @@ def get_signal_publication(signal_run_id: str) -> dict | None:
 
     result = dict(initial)
     if ack:
+        ack_stored_hash = ack.get("content_hash", "")
+        if ack_stored_hash:
+            # Use compute_ack_content_hash — protects finalized_commit_sha
+            ack_expected = compute_ack_content_hash(ack)
+            if ack_expected != ack_stored_hash:
+                raise PublicationWriteError(
+                    f"publication_ack content_hash er ugyldig for "
+                    f"{signal_run_id} — ack-recorden kan ha blitt modifisert"
+                )
         result["finalized_commit_sha"] = ack.get("finalized_commit_sha", "")
     return result

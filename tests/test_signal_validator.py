@@ -587,13 +587,14 @@ class TestDataQuality:
         assert result.is_valid
         assert result.allow_new_buys  # Never blocked by data quality
 
-    def test_low_coverage_reported_as_reduced_but_does_not_block(self):
-        """Regression point 8: <90% coverage → 'reduced' tier but buys NOT blocked."""
+    def test_low_coverage_reported_as_normal_no_threshold(self):
+        """Regression point 8: no hardcoded threshold — all signals return 'normal' tier."""
         result = self._validate_quality(universe=200, valid=140, stale=5)
-        assert result.data_quality_tier == "reduced"
-        assert result.is_valid  # Signal itself is valid
-        assert result.allow_new_buys  # NOT blocked — thresholds not yet approved
-        assert result.failure_mode == "data_quality_reduced"
+        # Threshold 0.90 removed — coverage=70% still returns "normal" (no approved threshold)
+        assert result.data_quality_tier == "normal"
+        assert result.is_valid
+        assert result.allow_new_buys
+        assert result.failure_mode == "ok"
 
     def test_high_stale_pct_reported_but_does_not_block(self):
         """
@@ -951,8 +952,8 @@ class TestPublicationRecordHash:
         # Tampered workflow_conclusion changes hash AND is not "success" — caught first
         assert not result.allow_new_buys
 
-    def test_pub_record_without_content_hash_passes_check(self):
-        """Empty content_hash skips hash check (e.g. old format without hash field)."""
+    def test_pub_record_without_content_hash_rejected(self):
+        """Regression point 4: empty content_hash is mandatory — missing → rejected."""
         def _pub_no_hash(run_id):
             rec = _make_pub_record(run_id)
             rec["content_hash"] = ""
@@ -965,8 +966,10 @@ class TestPublicationRecordHash:
             _get_ledger_status_fn=_ledger_status_completed,
             _get_ledger_record_fn=_ledger_record_ok,
         )
-        # No stored hash → skip check → passes Layer 3 hash step
-        assert result.failure_mode not in ("publication_error",)
+        # Missing content_hash is now mandatory → rejected
+        assert result.failure_mode == "publication_error"
+        assert "content_hash" in result.reason
+        assert not result.allow_new_buys
 
     def test_wrong_content_hash_in_pub_record_rejected(self):
         """Pub record with a deliberately wrong content_hash is rejected."""
@@ -1044,16 +1047,18 @@ class TestPublicationRecordCrossValidation:
         assert "commit_sha" in result.reason
         assert not result.allow_new_buys
 
-    def test_missing_pub_record_fields_skip_cross_validation(self):
-        """If pub record omits optional fields, cross-validation is skipped (not rejected)."""
-        def _pub_minimal(run_id):
+    def test_missing_commit_sha_in_pub_record_rejected(self):
+        """Regression point 5: missing commit_sha in pub record is mandatory → rejected."""
+        def _pub_no_commit_sha(run_id):
             from modules.publication import compute_publication_content_hash
             rec = {
                 "schema_version": 1,
                 "record_type": "signal_publication",
                 "signal_run_id": run_id,
                 "workflow_conclusion": "success",
+                "published_at": "2026-08-05T21:05:00+00:00",
                 "finalized_commit_sha": "def456",
+                # commit_sha intentionally missing
                 "content_hash": "",
             }
             rec["content_hash"] = compute_publication_content_hash(rec)
@@ -1062,12 +1067,41 @@ class TestPublicationRecordCrossValidation:
         s = _make_signal(add_content_hash=True)
         result = validate_signal(
             s, "/fake", SESSION,
-            _get_publication_fn=_pub_minimal,
+            _get_publication_fn=_pub_no_commit_sha,
             _get_ledger_status_fn=_ledger_status_completed,
             _get_ledger_record_fn=_ledger_record_ok,
         )
-        # Missing commit_sha, published_at → cross-validation skipped → passes
-        assert result.failure_mode not in ("publication_error",)
+        assert result.failure_mode == "publication_error"
+        assert "commit_sha" in result.reason
+        assert not result.allow_new_buys
+
+    def test_missing_published_at_in_pub_record_rejected(self):
+        """Regression point 5: missing published_at in pub record is mandatory → rejected."""
+        def _pub_no_published_at(run_id):
+            from modules.publication import compute_publication_content_hash
+            rec = {
+                "schema_version": 1,
+                "record_type": "signal_publication",
+                "signal_run_id": run_id,
+                "workflow_conclusion": "success",
+                "commit_sha": "abc1234def56",
+                "finalized_commit_sha": "def456",
+                # published_at intentionally missing
+                "content_hash": "",
+            }
+            rec["content_hash"] = compute_publication_content_hash(rec)
+            return rec
+
+        s = _make_signal(add_content_hash=True)
+        result = validate_signal(
+            s, "/fake", SESSION,
+            _get_publication_fn=_pub_no_published_at,
+            _get_ledger_status_fn=_ledger_status_completed,
+            _get_ledger_record_fn=_ledger_record_ok,
+        )
+        assert result.failure_mode == "publication_error"
+        assert "published_at" in result.reason
+        assert not result.allow_new_buys
 
 
 # ---------------------------------------------------------------------------
@@ -1318,10 +1352,10 @@ class TestPersistenceAck:
 # ---------------------------------------------------------------------------
 
 class TestWorkflowConfig:
-    """Regression point 7: Phase 4 (final push) must not use if: always()."""
+    """Regression points 7 (original) and 1 (ChatGPT): workflow persistence guarantees."""
 
     def test_final_push_step_not_always(self):
-        """signal.yml Phase 4 must not run after a failed finalize step."""
+        """signal.yml Phase 4 (finalized signal) must not use if: always()."""
         workflow_path = ".github/workflows/signal.yml"
         try:
             with open(workflow_path) as f:
@@ -1330,28 +1364,353 @@ class TestWorkflowConfig:
             import pytest
             pytest.skip("signal.yml not found — run from repo root")
 
-        # Split into step blocks and check the final_push step
-        # It must NOT have "if: always()" on the step
         lines = content.split("\n")
         in_final_push = False
         for i, line in enumerate(lines):
-            if "id: final_push" in line or ("Commit og push finalisert signal" in line):
+            if "id: final_push" in line or "Commit og push finalisert signal" in line:
                 in_final_push = True
             if in_final_push and "id: " in line and "final_push" not in line:
-                break  # moved to next step
+                break
             if in_final_push and "if: always()" in line:
                 raise AssertionError(
-                    f"Phase 4 (final push) step must NOT use 'if: always()'. "
-                    f"Found at line {i+1}: {line!r}"
+                    f"Phase 4 must NOT use 'if: always()'. Line {i+1}: {line!r}"
                 )
+
+    def test_failure_state_step_uses_always(self):
+        """Regression point 1: a separate step must use if: always() for ledger persistence."""
+        workflow_path = ".github/workflows/signal.yml"
+        try:
+            with open(workflow_path) as f:
+                content = f.read()
+        except FileNotFoundError:
+            import pytest
+            pytest.skip("signal.yml not found — run from repo root")
+
+        assert "if: always()" in content, (
+            "signal.yml must have a step with 'if: always()' to commit partial "
+            "ledger state even when finalization fails."
+        )
+
+    def test_failure_state_step_commits_ledger(self):
+        """The if: always() step must commit ledger records."""
+        workflow_path = ".github/workflows/signal.yml"
+        try:
+            with open(workflow_path) as f:
+                content = f.read()
+        except FileNotFoundError:
+            import pytest
+            pytest.skip("signal.yml not found — run from repo root")
+
+        # Find the if: always() block and verify it touches ledger
+        lines = content.split("\n")
+        in_always_block = False
+        ledger_committed = False
+        for line in lines:
+            if "if: always()" in line:
+                in_always_block = True
+            if in_always_block and ("data_v4/ledger" in line or "data_v4/" in line):
+                ledger_committed = True
+            if in_always_block and line.strip().startswith("- name:") and "if: always()" not in line:
+                if ledger_committed:
+                    break
+                in_always_block = False
+
+        assert ledger_committed, (
+            "The if: always() step must add data_v4/ledger/ to persist partial state"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Point 8: Comprehensive regression — all points together
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Point 3: session_date validated via NYSE calendar (fail-closed)
+# ---------------------------------------------------------------------------
+
+class TestNYSECalendarValidation:
+    """Regression point 3: session_date must be validated as a real NYSE session."""
+
+    def test_thursday_2026_08_06_is_trading_session(self):
+        from modules.exchange_calendar import is_trading_session
+        assert is_trading_session("2026-08-06")
+
+    def test_saturday_is_not_trading_session(self):
+        from modules.exchange_calendar import is_trading_session
+        assert not is_trading_session("2026-08-08")  # Saturday
+
+    def test_sunday_is_not_trading_session(self):
+        from modules.exchange_calendar import is_trading_session
+        assert not is_trading_session("2026-08-09")  # Sunday
+
+    def test_calendar_unavailable_error_is_defined(self):
+        """CalendarUnavailableError must be importable and catchable."""
+        from modules.exchange_calendar import CalendarUnavailableError
+        try:
+            raise CalendarUnavailableError("test error")
+        except CalendarUnavailableError as exc:
+            assert "test error" in str(exc)
+
+    def test_run_execute_source_uses_is_trading_session(self):
+        """run_execute() source must call is_trading_session for fail-closed validation."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        start = src.find("def run_execute()")
+        assert start != -1
+        snippet = src[start:start + 2000]
+        assert "is_trading_session" in snippet, (
+            "run_execute must call is_trading_session to validate session_date"
+        )
+        assert "CalendarUnavailableError" in snippet, (
+            "run_execute must handle CalendarUnavailableError fail-closed"
+        )
+
+    def test_non_trading_day_signal_rejected_by_validator(self):
+        """If session_date is a non-trading day, session mismatch rejects the signal."""
+        s = _make_signal(add_content_hash=True, intended_execution_session="2026-08-06")
+        # Validator sees session_date=2026-08-08 (Saturday) — mismatch → stale_signal
+        result = _validate(s, session="2026-08-08")
+        assert result.failure_mode == "stale_signal"
+        assert not result.allow_new_buys
+
+
+# ---------------------------------------------------------------------------
+# Point 6: publication_ack content_hash validated (not discarded)
+# ---------------------------------------------------------------------------
+
+class TestAckContentHashValidation:
+    """Regression point 6: get_signal_publication must validate ack record hash."""
+
+    def test_valid_ack_hash_passes(self):
+        """write_publication_ack + get_signal_publication with valid hash passes."""
+        import tempfile
+        from pathlib import Path
+        import modules.publication as pub_mod
+        from modules.publication import (
+            write_signal_publication,
+            write_publication_ack,
+            get_signal_publication,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file, orig_lock = pub_mod.PUBLICATIONS_FILE, pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "ack-hash-valid-001"
+                write_signal_publication(run_id, "/s.json", "sha1", "2026-08-05T21:05:00+00:00")
+                write_publication_ack(run_id, "final-sha-ok")
+                rec = get_signal_publication(run_id)
+                assert rec is not None
+                assert rec["finalized_commit_sha"] == "final-sha-ok"
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+    def test_tampered_ack_hash_raises(self):
+        """Tampered publication_ack content_hash causes get_signal_publication to raise."""
+        import json
+        import tempfile
+        from pathlib import Path
+        import modules.publication as pub_mod
+        from modules.publication import (
+            write_signal_publication,
+            write_publication_ack,
+            get_signal_publication,
+            PublicationWriteError,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file, orig_lock = pub_mod.PUBLICATIONS_FILE, pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "ack-hash-tampered-001"
+                write_signal_publication(run_id, "/s.json", "sha1", "2026-08-05T21:05:00+00:00")
+                write_publication_ack(run_id, "final-sha-tamper")
+
+                # Tamper the ack record's finalized_commit_sha without recomputing hash
+                lines = tmp_file.read_text().strip().split("\n")
+                tampered_lines = []
+                for line in lines:
+                    rec = json.loads(line)
+                    if rec.get("record_type") == "publication_ack":
+                        rec["finalized_commit_sha"] = "TAMPERED-SHA"
+                        # content_hash is now wrong
+                    tampered_lines.append(json.dumps(rec, sort_keys=True))
+                tmp_file.write_text("\n".join(tampered_lines) + "\n")
+
+                with pytest.raises(PublicationWriteError, match="content_hash"):
+                    get_signal_publication(run_id)
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+    def test_validator_rejects_when_ack_hash_invalid(self):
+        """Validator rejects with publication_error when ack hash is invalid."""
+        import json
+        import tempfile
+        from pathlib import Path
+        import modules.publication as pub_mod
+        from modules.publication import (
+            write_signal_publication,
+            write_publication_ack,
+            get_signal_publication,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "signal_publications.jsonl"
+            tmp_lock = Path(tmpdir) / "signal_publications.lock"
+            orig_file, orig_lock = pub_mod.PUBLICATIONS_FILE, pub_mod._LOCK_FILE
+            pub_mod.PUBLICATIONS_FILE = tmp_file
+            pub_mod._LOCK_FILE = tmp_lock
+            try:
+                run_id = "run-2026-08-05-abc123456"  # matches _make_signal default
+                write_signal_publication(
+                    run_id, "/s.json", "abc1234def56", "2026-08-05T21:05:00+00:00"
+                )
+                write_publication_ack(run_id, "def456abc789")
+
+                # Tamper the ack
+                lines = tmp_file.read_text().strip().split("\n")
+                tampered_lines = []
+                for line in lines:
+                    rec = json.loads(line)
+                    if rec.get("record_type") == "publication_ack":
+                        rec["finalized_commit_sha"] = "TAMPERED"
+                    tampered_lines.append(json.dumps(rec, sort_keys=True))
+                tmp_file.write_text("\n".join(tampered_lines) + "\n")
+
+                s = _make_signal(add_content_hash=True)
+                result = validate_signal(
+                    s, "/fake", SESSION,
+                    _get_publication_fn=lambda rid: get_signal_publication(rid),
+                    _get_ledger_status_fn=_ledger_status_completed,
+                    _get_ledger_record_fn=_ledger_record_ok,
+                )
+                assert result.failure_mode == "publication_error"
+                assert not result.allow_new_buys
+            finally:
+                pub_mod.PUBLICATIONS_FILE = orig_file
+                pub_mod._LOCK_FILE = orig_lock
+
+
+# ---------------------------------------------------------------------------
+# Point 7: Timestamp format + explicit timezone validation
+# ---------------------------------------------------------------------------
+
+class TestTimestampValidation:
+    """Regression point 7: generated_at and published_at must be ISO 8601 with timezone."""
+
+    def test_valid_utc_offset_timestamp_passes(self):
+        s = _make_signal(add_content_hash=True)
+        s["created_at_utc"] = "2026-08-05T21:00:00+00:00"
+        result = _validate(s)
+        assert result.failure_mode not in ("missing_fields",)
+
+    def test_valid_z_timestamp_passes(self):
+        s = _make_signal(add_content_hash=True)
+        s["created_at_utc"] = "2026-08-05T21:00:00Z"
+        result = _validate(s)
+        assert result.failure_mode not in ("missing_fields",)
+
+    def test_timestamp_without_timezone_rejected(self):
+        """Timestamp without timezone is rejected as invalid format."""
+        s = _make_signal()  # no hash — will fail at Layer 1
+        s["created_at_utc"] = "2026-08-05T21:00:00"  # no timezone
+        result = _validate(s)
+        assert result.failure_mode == "missing_fields"
+        assert "created_at_utc" in result.reason
+
+    def test_date_only_created_at_rejected(self):
+        s = _make_signal()
+        s["created_at_utc"] = "2026-08-05"  # date only, no time/timezone
+        result = _validate(s)
+        assert result.failure_mode == "missing_fields"
+        assert "created_at_utc" in result.reason
+
+    def test_published_at_without_timezone_rejected(self):
+        s = _make_signal()
+        s["published_at"] = "2026-08-05T21:05:00"  # no timezone
+        result = _validate(s)
+        assert result.failure_mode == "missing_fields"
+        assert "published_at" in result.reason
+
+    def test_published_at_with_negative_offset_passes(self):
+        s = _make_signal(add_content_hash=True, published_at="2026-08-05T17:05:00-04:00")
+        result = _validate(s)
+        assert result.failure_mode not in ("missing_fields",)
+
+    def test_published_at_with_milliseconds_passes(self):
+        """Sub-second precision is allowed."""
+        s = _make_signal(add_content_hash=True, published_at="2026-08-05T21:05:00.123+00:00")
+        result = _validate(s)
+        assert result.failure_mode not in ("missing_fields",)
+
+    def test_garbage_timestamp_rejected(self):
+        s = _make_signal()
+        s["created_at_utc"] = "not-a-timestamp"
+        result = _validate(s)
+        assert result.failure_mode == "missing_fields"
+
+
+# ---------------------------------------------------------------------------
+# Point 8: No hardcoded data-quality thresholds
+# ---------------------------------------------------------------------------
+
+class TestNoHardcodedQualityThreshold:
+    """Regression point 8: 0.90 threshold removed — all valid signals return 'normal' tier."""
+
+    def test_very_low_coverage_still_normal_tier(self):
+        """1% coverage → 'normal' tier (no threshold enforced)."""
+        s = _make_signal(
+            add_content_hash=True,
+            universe_count=200,
+            valid_ticker_count=2,  # 1% coverage
+            stale_ticker_count=0,
+        )
+        result = _validate(s)
+        assert result.data_quality_tier == "normal"
+        assert result.is_valid
+        assert result.allow_new_buys
+
+    def test_failure_mode_never_data_quality_reduced(self):
+        """failure_mode 'data_quality_reduced' can never be triggered."""
+        for valid in [0, 50, 100, 140, 180, 200]:
+            s = _make_signal(
+                add_content_hash=True,
+                universe_count=200,
+                valid_ticker_count=valid,
+            )
+            result = _validate(s)
+            assert result.failure_mode != "data_quality_reduced", (
+                f"data_quality_reduced should never fire (valid={valid}/200)"
+            )
+
+    def test_raw_metrics_still_available(self):
+        """Even without threshold, raw coverage/stale metrics are still reported."""
+        s = _make_signal(
+            add_content_hash=True,
+            universe_count=200,
+            valid_ticker_count=140,
+            stale_ticker_count=30,
+        )
+        result = _validate(s)
+        assert result.data_quality["signal_coverage_rate"] == pytest.approx(0.70, abs=0.01)
+        assert result.data_quality["stale_pct"] == pytest.approx(0.15, abs=0.01)
+        assert result.data_quality["universe_count"] == 200
+
+
+# ---------------------------------------------------------------------------
+# Full regression suite
+# ---------------------------------------------------------------------------
+
 class TestRegressionSuite:
-    """Full regression suite — a valid signal must pass all 8 remediation points."""
+    """Full regression suite — a valid signal must pass all remediation points."""
 
     def test_fully_valid_signal_passes_all_layers(self):
         """A correctly constructed signal passes all six validation layers."""

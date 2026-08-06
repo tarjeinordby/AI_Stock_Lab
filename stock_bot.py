@@ -1041,8 +1041,24 @@ def run_execute():
     print("=" * 60)
 
     signal, signal_path = load_latest_signal()
-    # Use NYSE/NY timezone — not Europe/Oslo — to determine current trading session
-    session_date = now_ny().strftime("%Y-%m-%d")
+
+    # Determine session_date via NYSE calendar (fail-closed on CalendarUnavailableError)
+    from modules.exchange_calendar import CalendarUnavailableError, is_trading_session  # noqa: PLC0415
+    ny_date = now_ny().strftime("%Y-%m-%d")
+    try:
+        if not is_trading_session(ny_date):
+            raise CalendarUnavailableError(
+                f"{ny_date} er ikke en NYSE handelssesjon "
+                "(helg, helligdag eller utenfor handelsperiode)"
+            )
+        session_date = ny_date
+    except CalendarUnavailableError as exc:
+        send_telegram(
+            f"⚠️ KRITISK: NYSE-kalender utilgjengelig eller ikke handelssesjon "
+            f"— execute avbrutt: {exc}"
+        )
+        raise
+
     print(f"Bruker signal: {signal_path}")
 
     from modules.signal_validator import validate_signal  # noqa: PLC0415
