@@ -7,7 +7,8 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
-from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, prefetch_open_prices, run_data_quality_checks
+from modules.exchange_calendar import CalendarUnavailableError, intended_execution_session
+from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, prefetch_execution_prices, prefetch_open_prices, run_data_quality_checks
 from modules.macro import get_macro_status
 from modules.portfolio import (
     build_target_weights,
@@ -493,7 +494,7 @@ def run_signal():
 # ============================================================
 
 def run_strategy_execution(
-    strategy_name, signal, trades_df, price_cache,
+    strategy_name, signal, trades_df, valuation_price_cache, execution_price_cache,
     premarket_flags=None, macro_mult=1.0, corr_pairs=None,
     market_open=True,
 ):
@@ -511,8 +512,8 @@ def run_strategy_execution(
 
     regime_name = signal.get("regime", {}).get("regime", "unknown")
 
-    # Valuation before any trades
-    total_before, _, state = current_portfolio_value(state, candidates_by_ticker, price_cache)
+    # Valuation before any trades (uses valuation cache — fallback to signal price allowed)
+    total_before, _, state = current_portfolio_value(state, candidates_by_ticker, valuation_price_cache)
 
     # Portfolio drawdown from peak
     drawdown = get_portfolio_drawdown(state, total_before)
@@ -533,7 +534,7 @@ def run_strategy_execution(
         if ticker in state["positions"]:
             state, trades_df, trade = execute_sell(
                 state, trades_df, strategy_name, ticker, cs["reason"],
-                candidates_by_ticker, price_cache
+                execution_price_cache
             )
             if trade:
                 sells.append(trade)
@@ -557,14 +558,14 @@ def run_strategy_execution(
             continue
         state, trades_df, trade = execute_sell(
             state, trades_df, strategy_name, ticker, reason,
-            candidates_by_ticker, price_cache
+            execution_price_cache
         )
         if trade:
             sells.append(trade)
             print(f"  [{strategy_name}] SELG {ticker}: {reason}")
 
-    # Re-valuate after sells
-    total_now, _, state = current_portfolio_value(state, candidates_by_ticker, price_cache)
+    # Re-valuate after sells (valuation cache)
+    total_now, _, state = current_portfolio_value(state, candidates_by_ticker, valuation_price_cache)
     drawdown_now = get_portfolio_drawdown(state, total_now)
 
     # Spy recovery check (required to buy when in drawdown protection)
@@ -582,7 +583,7 @@ def run_strategy_execution(
     pyramid_fills = []
     for ticker in list(state["positions"].keys()):
         state, trades_df, fill = execute_pyramid_fill(
-            state, trades_df, strategy_name, ticker, candidates_by_ticker, price_cache
+            state, trades_df, strategy_name, ticker, execution_price_cache
         )
         if fill:
             pyramid_fills.append(fill)
@@ -662,7 +663,7 @@ def run_strategy_execution(
             pm_move = premarket_flags.get(ticker)
             state, trades_df, trade = execute_buy(
                 state, trades_df, strategy_name, ticker, initial_value,
-                reason, candidate, price_cache,
+                reason, candidate, execution_price_cache,
                 premarket_move=pm_move,
                 pyramid_remaining=pyramid_remaining,
             )
@@ -675,9 +676,9 @@ def run_strategy_execution(
     for ticker in state["positions"]:
         sector_map[ticker] = candidates_by_ticker.get(ticker, {}).get("sector", "Unknown")
 
-    # Final valuation
+    # Final valuation (valuation cache)
     total_after, positions_value_after, state = current_portfolio_value(
-        state, candidates_by_ticker, price_cache
+        state, candidates_by_ticker, valuation_price_cache
     )
 
     state["highest_portfolio_value"] = max(
@@ -766,10 +767,27 @@ def run_execute():
 
     all_tickers = pm_tickers | {"SPY", "QQQ"}
 
-    # Pre-populate price_cache with today's opening prices (MOO fill model)
-    price_cache = prefetch_open_prices(list(all_tickers), fallback_prices)
+    # --- Determine intended execution session for this signal ---
+    session_date = today_str()
+    signal_date = signal.get("date")
+    if signal_date:
+        try:
+            expected = intended_execution_session(signal_date)
+            if expected != session_date:
+                print(
+                    f"ADVARSEL: signaldato {signal_date} → intended session {expected}, "
+                    f"men kjører på {session_date}"
+                )
+        except CalendarUnavailableError:
+            pass
 
-    benchmark_state = update_benchmarks(price_cache)
+    # Execution cache: session-validated open prices — no fallback, no fill if missing
+    execution_price_cache = prefetch_execution_prices(list(pm_tickers), session_date)
+
+    # Valuation cache: open prices with signal-price fallback — used for MTM, drawdown, benchmarks
+    valuation_price_cache = prefetch_open_prices(list(all_tickers), fallback_prices)
+
+    benchmark_state = update_benchmarks(valuation_price_cache)
     spy_ret = benchmark_return(benchmark_state, "SPY")
     qqq_ret = benchmark_return(benchmark_state, "QQQ")
 
@@ -790,7 +808,7 @@ def run_execute():
     for strategy_name in STRATEGIES.keys():
         print(f"\nKjører {strategy_name}...")
         result, trades_df = run_strategy_execution(
-            strategy_name, signal, trades_df, price_cache,
+            strategy_name, signal, trades_df, valuation_price_cache, execution_price_cache,
             premarket_flags=premarket_flags,
             macro_mult=macro_mult,
             corr_pairs=corr_pairs,

@@ -1,9 +1,8 @@
 """
-Tests for modules/market_data.py — prefetch_open_prices (MOO execution model).
+Tests for modules/market_data.py:
 
-prefetch_open_prices is the entry point for execute-mode fill prices.
-It batch-fetches today's daily Open bar for all tickers and falls back
-to the signal's yesterday-close prices when a ticker's data is unavailable.
+  prefetch_open_prices  — valuation cache (open prices with signal-price fallback)
+  prefetch_execution_prices — execution cache (strict session-date validation, no fallback)
 
 All yfinance I/O is mocked.
 """
@@ -13,7 +12,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from modules.market_data import prefetch_open_prices
+from modules.market_data import prefetch_execution_prices, prefetch_open_prices
 
 
 # ---------------------------------------------------------------------------
@@ -247,3 +246,186 @@ class TestPrefetchOpenPricesSemantics:
             prefetch_open_prices(["AAPL"])
         _, kwargs = mock_dl.call_args
         assert kwargs.get("period") == "2d"
+
+
+# ===========================================================================
+# prefetch_execution_prices — strict session-date validation, no fallback
+# ===========================================================================
+
+SESSION = "2026-08-06"   # a known trading day (Thursday)
+FRIDAY  = "2026-08-07"   # signal date
+MONDAY  = "2026-08-10"   # next trading session after Friday
+
+
+def _session_df(session_date, open_price, ticker=None):
+    """
+    Single-row DataFrame whose index date matches session_date.
+    If ticker is given, wraps in a MultiIndex (multi-ticker yf response).
+    """
+    idx = pd.DatetimeIndex([pd.Timestamp(session_date)])
+    flat = pd.DataFrame({"Open": [open_price], "Close": [open_price + 1.0]}, index=idx)
+    if ticker is None:
+        return flat
+    mi = pd.MultiIndex.from_tuples([(ticker, "Open"), (ticker, "Close")])
+    return pd.DataFrame([[open_price, open_price + 1.0]], index=idx, columns=mi)
+
+
+def _two_day_df(yesterday, today, open_prices, ticker=None):
+    """
+    Two-row DataFrame: yesterday's row then today's session row.
+    Used to verify that only the session_date row is used.
+    """
+    idx = pd.DatetimeIndex([pd.Timestamp(yesterday), pd.Timestamp(today)])
+    flat = pd.DataFrame({"Open": open_prices, "Close": [p + 1 for p in open_prices]}, index=idx)
+    if ticker is None:
+        return flat
+    mi = pd.MultiIndex.from_tuples([(ticker, "Open"), (ticker, "Close")])
+    data = [[open_prices[0], open_prices[0] + 1], [open_prices[1], open_prices[1] + 1]]
+    return pd.DataFrame(data, index=idx, columns=mi)
+
+
+class TestPrefetchExecutionPricesEmptyInput:
+    def test_empty_tickers_returns_empty_dict_without_network_call(self):
+        with patch("modules.market_data.yf.download") as mock_dl:
+            result = prefetch_execution_prices([], SESSION)
+        assert result == {}
+        mock_dl.assert_not_called()
+
+
+class TestPrefetchExecutionPricesSessionValidation:
+    def test_returns_open_price_when_session_date_matches(self):
+        df = _session_df(SESSION, 105.0)
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL"], SESSION)
+        assert result["AAPL"] == 105.0
+
+    def test_rejects_row_when_date_does_not_match_session(self):
+        """Yesterday's open row must NEVER be used as a fill price."""
+        yesterday = "2026-08-05"
+        df = _session_df(yesterday, 99.0)   # only yesterday's row
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL"], SESSION)
+        assert "AAPL" not in result
+
+    def test_selects_correct_row_when_multiple_rows_present(self):
+        """With 2 days of data, only the row matching session_date is used."""
+        yesterday = "2026-08-05"
+        df = _two_day_df(yesterday, SESSION, [99.0, 107.0])
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL"], SESSION)
+        assert result["AAPL"] == 107.0      # today's open
+        assert result["AAPL"] != 99.0       # not yesterday's open
+
+    def test_yesterday_open_cannot_be_used_as_fill(self):
+        """If today's session row is missing, ticker is excluded — no stale fill."""
+        yesterday = "2026-08-05"
+        df = _session_df(yesterday, 120.0)  # only yesterday's bar
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL"], SESSION)
+        assert "AAPL" not in result
+
+
+class TestPrefetchExecutionPricesNoFallback:
+    def test_no_fallback_applied_when_session_row_missing(self):
+        """Signal price must never become a fill price."""
+        df = _session_df("2026-08-05", 99.0)  # wrong date
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(
+                ["AAPL"],
+                SESSION,
+                # no fallback_prices parameter — the function accepts none
+            )
+        assert "AAPL" not in result
+
+    def test_empty_download_produces_empty_result(self):
+        with patch("modules.market_data.yf.download", return_value=pd.DataFrame()):
+            result = prefetch_execution_prices(["AAPL"], SESSION)
+        assert result == {}
+
+    def test_exception_produces_empty_result(self):
+        with patch("modules.market_data.yf.download", side_effect=Exception("network")):
+            result = prefetch_execution_prices(["AAPL"], SESSION)
+        assert result == {}
+
+
+class TestPrefetchExecutionPricesFridayToMonday:
+    def test_monday_session_uses_monday_open_not_friday_open(self):
+        """
+        Signal generated Friday; intended_execution_session → Monday.
+        prefetch_execution_prices must use Monday's Open, not Friday's.
+        """
+        friday_open = 100.0
+        monday_open = 103.0
+        df = _two_day_df(FRIDAY, MONDAY, [friday_open, monday_open])
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL"], MONDAY)
+        assert result["AAPL"] == monday_open
+        assert result["AAPL"] != friday_open
+
+    def test_friday_open_rejected_when_session_is_monday(self):
+        """Only Friday data available on Monday → no fill."""
+        df = _session_df(FRIDAY, 100.0)
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL"], MONDAY)
+        assert "AAPL" not in result
+
+
+class TestPrefetchExecutionPricesMultiTicker:
+    def test_extracts_correct_open_for_each_ticker(self):
+        idx = pd.DatetimeIndex([pd.Timestamp(SESSION)])
+        mi = pd.MultiIndex.from_tuples([
+            ("AAPL", "Open"), ("AAPL", "Close"),
+            ("MSFT", "Open"), ("MSFT", "Close"),
+        ])
+        df = pd.DataFrame([[105.0, 106.0, 210.0, 211.0]], index=idx, columns=mi)
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL", "MSFT"], SESSION)
+        assert result["AAPL"] == 105.0
+        assert result["MSFT"] == 210.0
+
+    def test_ticker_not_in_multiindex_excluded_without_fallback(self):
+        df = _session_df(SESSION, 105.0, ticker="AAPL")
+        with patch("modules.market_data.yf.download", return_value=df):
+            result = prefetch_execution_prices(["AAPL", "NVDA"], SESSION)
+        assert result["AAPL"] == 105.0
+        assert "NVDA" not in result
+
+
+class TestPrefetchExecutionPricesDownloadParams:
+    def test_uses_five_day_period(self):
+        """period=5d is required to handle Monday execution of Friday signals."""
+        df = _session_df(SESSION, 100.0)
+        with patch("modules.market_data.yf.download", return_value=df) as mock_dl:
+            prefetch_execution_prices(["AAPL"], SESSION)
+        _, kwargs = mock_dl.call_args
+        assert kwargs.get("period") == "5d"
+
+    def test_uses_daily_interval(self):
+        df = _session_df(SESSION, 100.0)
+        with patch("modules.market_data.yf.download", return_value=df) as mock_dl:
+            prefetch_execution_prices(["AAPL"], SESSION)
+        _, kwargs = mock_dl.call_args
+        assert kwargs.get("interval") == "1d"
+
+
+class TestExecutionVsValuationCachesSeparation:
+    def test_execution_cache_has_no_fallback_valuation_cache_does(self):
+        """
+        execution_price_cache: ticker absent when open price unavailable
+        valuation_price_cache: ticker present via signal-price fallback
+        """
+        empty = pd.DataFrame()
+        with patch("modules.market_data.yf.download", return_value=empty):
+            exec_cache = prefetch_execution_prices(["AAPL"], SESSION)
+            val_cache = prefetch_open_prices(["AAPL"], fallback_prices={"AAPL": 150.0})
+        assert "AAPL" not in exec_cache      # no fill without valid session open
+        assert val_cache["AAPL"] == 150.0    # valuation uses signal fallback
+
+    def test_two_caches_are_independent_objects(self):
+        df = _session_df(SESSION, 105.0)
+        with patch("modules.market_data.yf.download", return_value=df):
+            exec_cache = prefetch_execution_prices(["AAPL"], SESSION)
+            val_cache = prefetch_open_prices(["AAPL"], fallback_prices={"AAPL": 99.0})
+        assert exec_cache is not val_cache
+        exec_cache["NEW"] = 1.0
+        assert "NEW" not in val_cache

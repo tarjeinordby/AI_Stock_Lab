@@ -3,6 +3,8 @@ import pandas as pd
 from modules.market_data import get_price_cached
 from modules.state import now_utc, safe_float, safe_round, today_str, trading_days_between
 
+EXECUTION_PRICE_SOURCE = "next_session_daily_open_v1"
+
 
 MIN_POSITION_VALUE = 500
 SECTOR_CAP = 0.25
@@ -91,7 +93,7 @@ def _get_effective_exposure(base_exposure, drawdown):
 
 
 def execute_sell(
-    state, trades_df, strategy_name, ticker, reason, candidates_by_ticker, price_cache
+    state, trades_df, strategy_name, ticker, reason, execution_price_cache
 ):
     import pandas as pd
 
@@ -99,11 +101,10 @@ def execute_sell(
     if not pos:
         return state, trades_df, None
 
-    fallback = pos.get("last_price", pos.get("avg_price"))
-    signal_price = candidates_by_ticker.get(ticker, {}).get("price", fallback)
-    price = get_price_cached(ticker, signal_price, price_cache)
-    if price is None or price <= 0:
+    if ticker not in execution_price_cache:
+        print(f"  {ticker}: ingen gyldig åpningspris for session — SELG utsatt")
         return state, trades_df, None
+    price = execution_price_cache[ticker]
 
     shares = float(pos["shares"])
     value = shares * price
@@ -123,6 +124,9 @@ def execute_sell(
         "value": round(value, 2),
         "cost": round(cost, 2),
         "reason": reason,
+        "execution_session": today_str(),
+        "execution_price_source": EXECUTION_PRICE_SOURCE,
+        "order_status": "filled",
     }
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
@@ -133,16 +137,17 @@ def execute_sell(
 
 
 def execute_buy(
-    state, trades_df, strategy_name, ticker, target_value, reason, candidate, price_cache,
-    premarket_move=None, pyramid_remaining=0.0,
+    state, trades_df, strategy_name, ticker, target_value, reason, candidate,
+    execution_price_cache, premarket_move=None, pyramid_remaining=0.0,
 ):
     import pandas as pd
 
-    signal_price = candidate.get("price")
-    price = get_price_cached(ticker, signal_price, price_cache)
-
-    if price is None or price <= 0:
+    if ticker not in execution_price_cache:
+        print(f"  {ticker}: ingen gyldig åpningspris for session — KJØP utsatt")
         return state, trades_df, None
+    price = execution_price_cache[ticker]
+
+    signal_price = candidate.get("price")
 
     # Pre-market filter: halve size if moved >4% since yesterday's close
     if premarket_move is not None and abs(premarket_move) > 0.04:
@@ -150,11 +155,11 @@ def execute_buy(
         arrow = "↑" if premarket_move > 0 else "↓"
         reason = f"{reason} [PM {premarket_move:+.1%}{arrow} → 50%]"
 
-    # Gap check vs signal price
+    # Gap check: open price vs yesterday's close (overnight gap)
     if signal_price and signal_price > 0:
         gap = (price / signal_price) - 1
         if gap > 0.05:
-            print(f"  {ticker}: pris gapet {gap:.1%} fra signal — hopper over")
+            print(f"  {ticker}: åpnings-gap {gap:.1%} fra signal — hopper over")
             return state, trades_df, None
         if gap > 0.025:
             target_value *= 0.50
@@ -205,18 +210,22 @@ def execute_buy(
         "value": round(target_value, 2),
         "cost": round(cost, 2),
         "reason": reason,
+        "execution_session": today_str(),
+        "execution_price_source": EXECUTION_PRICE_SOURCE,
+        "order_status": "filled",
     }
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
     return state, trades_df, trade
 
 
-def execute_pyramid_fill(state, trades_df, strategy_name, ticker, candidates_by_ticker, price_cache):
+def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_price_cache):
     """
     Complete a partial position: buy the remaining 40% if:
     - Position is marked is_partial=True
     - At least 5 trading days since buy_date
-    - Current price >= pyramid_min_price (entry × 1.02)
+    - Open price >= pyramid_min_price (entry × 1.02)
+    - Valid execution price available for today's session
     """
     pos = state["positions"].get(ticker)
     if not pos or not pos.get("is_partial"):
@@ -232,12 +241,9 @@ def execute_pyramid_fill(state, trades_df, strategy_name, ticker, candidates_by_
         pos["pyramid_remaining_value"] = 0.0
         return state, trades_df, None
 
-    fallback = pos.get("last_price", pos.get("avg_price"))
-    signal_price = candidates_by_ticker.get(ticker, {}).get("price", fallback)
-    price = get_price_cached(ticker, signal_price, price_cache)
-
-    if price is None or price <= 0:
+    if ticker not in execution_price_cache:
         return state, trades_df, None
+    price = execution_price_cache[ticker]
 
     min_price = float(pos.get("pyramid_min_price", 0))
     if price < min_price:
@@ -278,6 +284,9 @@ def execute_pyramid_fill(state, trades_df, strategy_name, ticker, candidates_by_
         "value": round(remaining, 2),
         "cost": round(cost, 2),
         "reason": f"Pyramidering 40% ({entry_pct:+.1f}% fra entry, dag {days_held})",
+        "execution_session": today_str(),
+        "execution_price_source": EXECUTION_PRICE_SOURCE,
+        "order_status": "filled",
     }
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
