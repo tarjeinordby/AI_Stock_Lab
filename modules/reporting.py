@@ -200,6 +200,37 @@ def _build_actions(results):
     if not any_action:
         lines.append("Ingen kjøp/salg i dag.")
 
+    # Execution statistics across all strategies — split by BUY and SELL
+    total_buy_created  = sum(r.get("buy_orders_created", 0) for r in results)
+    total_buy_executed = sum(r.get("buy_orders_executed", 0) for r in results)
+    total_sell_created  = sum(r.get("sell_orders_created", 0) for r in results)
+    total_sell_executed = sum(r.get("sell_orders_executed", 0) for r in results)
+    total_created  = sum(r.get("orders_created", 0) for r in results)
+    total_executed = sum(r.get("orders_executed", 0) for r in results)
+    total_pending  = sum(r.get("orders_pending_price", 0) for r in results)
+    total_failed   = sum(r.get("orders_failed_price", 0) for r in results)
+
+    if total_created > 0:
+        overall_rate = total_executed / total_created
+        buy_note  = ""
+        sell_note = ""
+        if total_buy_created > 0:
+            buy_rate = total_buy_executed / total_buy_created
+            buy_note = f"  KJØP: {total_buy_executed}/{total_buy_created} ({buy_rate:.0%})\n"
+        if total_sell_created > 0:
+            sell_rate = total_sell_executed / total_sell_created
+            sell_note = f"  SELG: {total_sell_executed}/{total_sell_created} ({sell_rate:.0%})\n"
+        status_parts = []
+        if total_pending > 0:
+            status_parts.append(f"{total_pending} venter pris")
+        if total_failed > 0:
+            status_parts.append(f"{total_failed} mislyktes")
+        status_str = " | " + " | ".join(status_parts) if status_parts else ""
+        lines.append(
+            f"\n📋 Ordreutførelse: {total_executed}/{total_created} fylt ({overall_rate:.0%}){status_str}\n"
+            f"{buy_note}{sell_note}".rstrip()
+        )
+
     return "\n".join(lines)
 
 

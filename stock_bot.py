@@ -8,6 +8,15 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
 from modules.exchange_calendar import CalendarUnavailableError, intended_execution_session
+from modules.orders import (
+    EXECUTED, EXPIRED, FAILED_PRICE, PENDING_PRICE, TERMINAL,
+    expire_stale_orders,
+    get_or_create_order,
+    get_pending_for_session,
+    load_orders,
+    make_trade_id,
+    save_order,
+)
 from modules.market_data import compute_premarket_moves, download_daily_data, get_price_cached, get_vix, prefetch_execution_prices, prefetch_open_prices, run_data_quality_checks
 from modules.macro import get_macro_status
 from modules.portfolio import (
@@ -91,7 +100,7 @@ from modules.ledger import (
     write_signal_records,
     write_signal_run,
 )
-from modules.versioning import MODEL_VERSION, get_model_config_hash
+from modules.versioning import EXECUTION_VERSION, MODEL_VERSION, get_model_config_hash
 
 
 # ============================================================
@@ -493,8 +502,27 @@ def run_signal():
 # EXECUTE MODE — per strategy
 # ============================================================
 
+def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
+    """Add traceability fields to a trade dict and persist the order as EXECUTED."""
+    ts = now_utc().isoformat()
+    trade_id = make_trade_id(order_id, ts)
+    trade["order_id"] = order_id
+    trade["trade_id"] = trade_id
+    # Full traceability chain: signal_run_id → order_id → trade_id
+    trade["signal_run_id"] = signal_run_id
+    trade["execution_version"] = execution_version
+    # Explicit execution cost fields (zero in paper model — model assumption, not omission)
+    trade["gross_execution_price"] = trade["price"]
+    trade["commission_amount"] = trade["cost"]
+    order = orders.get(order_id, {})
+    updated = save_order(order, status=EXECUTED, trade_id=trade_id)
+    orders[order_id] = updated
+    return trade_id
+
+
 def run_strategy_execution(
     strategy_name, signal, trades_df, valuation_price_cache, execution_price_cache,
+    orders, signal_run_id, session_date, execution_version,
     premarket_flags=None, macro_mult=1.0, corr_pairs=None,
     market_open=True,
 ):
@@ -524,6 +552,96 @@ def run_strategy_execution(
     sells = []
     buys = []
     correlation_log = []
+    orders_created = 0
+    orders_executed = 0
+    orders_pending_price = 0
+    orders_failed_price = 0
+    buy_orders_created = 0
+    buy_orders_executed = 0
+    sell_orders_created = 0
+    sell_orders_executed = 0
+
+    # --- Retry pending orders from today's session (same-day retry) ---
+    for order in get_pending_for_session(orders, session_date, strategy_name):
+        ticker = order["ticker"]
+        if order["action"] == "SELL" and ticker in state["positions"]:
+            state, trades_df, trade = execute_sell(
+                state, trades_df, strategy_name, ticker, order["reason"],
+                execution_price_cache,
+            )
+            if trade:
+                _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                sells.append(trade)
+                orders_executed += 1
+                sell_orders_executed += 1
+                print(f"  [{strategy_name}] RETRY-SELG {ticker}: {order['reason']}")
+            else:
+                updated = save_order(
+                    orders[order["order_id"]],
+                    status=PENDING_PRICE,
+                    failure_reason="no execution price for session (retry attempt)",
+                )
+                orders[order["order_id"]] = updated
+                orders_pending_price += 1
+        elif order["action"] == "BUY" and ticker not in state["positions"]:
+            candidate = candidates_by_ticker.get(ticker)
+            if candidate:
+                state, trades_df, trade = execute_buy(
+                    state, trades_df, strategy_name, ticker,
+                    order["target_value"], order["reason"], candidate,
+                    execution_price_cache,
+                    premarket_move=premarket_flags.get(ticker),
+                    pyramid_remaining=order.get("pyramid_remaining", 0.0),
+                )
+                if trade:
+                    _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                    buys.append(trade)
+                    orders_executed += 1
+                    buy_orders_executed += 1
+                    print(f"  [{strategy_name}] RETRY-KJØP {ticker}: {order['reason']}")
+                else:
+                    updated = save_order(
+                        orders[order["order_id"]],
+                        status=PENDING_PRICE,
+                        failure_reason="no execution price for session (retry attempt)",
+                    )
+                    orders[order["order_id"]] = updated
+                    orders_pending_price += 1
+
+    # --- Helper: get or create order and mark outcome ---
+    def _sell_with_order(ticker, reason, signal_price=None):
+        nonlocal orders_created, orders_executed, orders_pending_price
+        nonlocal sell_orders_created, sell_orders_executed
+        order, is_new = get_or_create_order(
+            orders, signal_run_id, ticker, strategy_name, session_date, "SELL",
+            target_value=0.0, reason=reason, signal_price=signal_price,
+            execution_version=execution_version,
+        )
+        if order["status"] in TERMINAL:
+            return None   # already handled
+        if is_new:
+            # Persist PENDING_PRICE creation event BEFORE the fill attempt so the
+            # full lifecycle (created → executed/pending) is always in the JSONL.
+            saved = save_order(order)
+            orders[order["order_id"]] = saved
+            orders_created += 1
+            sell_orders_created += 1
+        state2, trades2, trade = execute_sell(
+            state, trades_df, strategy_name, ticker, reason, execution_price_cache
+        )
+        if trade:
+            _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+            orders_executed += 1
+            sell_orders_executed += 1
+        else:
+            updated = save_order(
+                orders[order["order_id"]],
+                status=PENDING_PRICE,
+                failure_reason="no execution price for session",
+            )
+            orders[order["order_id"]] = updated
+            orders_pending_price += 1
+        return trade, state2, trades2
 
     # Correlation-based sells: if two held positions are >85% correlated, sell the lower-scored
     corr_sell_candidates = filter_correlated_sells(
@@ -531,19 +649,21 @@ def run_strategy_execution(
     )
     for cs in corr_sell_candidates:
         ticker = cs["sell_ticker"]
-        if ticker in state["positions"]:
-            state, trades_df, trade = execute_sell(
-                state, trades_df, strategy_name, ticker, cs["reason"],
-                execution_price_cache
+        if ticker not in state["positions"]:
+            continue
+        pos = state["positions"][ticker]
+        result = _sell_with_order(ticker, cs["reason"], signal_price=pos.get("last_price"))
+        if result is None:
+            continue
+        trade, state, trades_df = result
+        if trade:
+            sells.append(trade)
+            log_msg = (
+                f"❌ {cs['sell_ticker']} solgt — "
+                f"{cs['correlation']:.0%} korrelert med {cs['keep_ticker']}"
             )
-            if trade:
-                sells.append(trade)
-                log_msg = (
-                    f"❌ {cs['sell_ticker']} solgt — "
-                    f"{cs['correlation']:.0%} korrelert med {cs['keep_ticker']}"
-                )
-                correlation_log.append(log_msg)
-                print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
+            correlation_log.append(log_msg)
+            print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
 
     # Evaluate normal sells
     _PROTECTIVE = ("Stop-loss", "Trailing stop")
@@ -556,10 +676,10 @@ def run_strategy_execution(
         if not market_open and not is_protective:
             print(f"  [{strategy_name}] SKIP SELG {ticker}: markedet stengt ({reason})")
             continue
-        state, trades_df, trade = execute_sell(
-            state, trades_df, strategy_name, ticker, reason,
-            execution_price_cache
-        )
+        result = _sell_with_order(ticker, reason, signal_price=pos.get("last_price"))
+        if result is None:
+            continue
+        trade, state, trades_df = result
         if trade:
             sells.append(trade)
             print(f"  [{strategy_name}] SELG {ticker}: {reason}")
@@ -661,15 +781,45 @@ def run_strategy_execution(
             reason = f"Rank #{candidate.get('rank')}, score {safe_round(candidate.get('strategy_score'), 1)}"
 
             pm_move = premarket_flags.get(ticker)
+            signal_price = candidate.get("price")
+
+            order, is_new = get_or_create_order(
+                orders, signal_run_id, ticker, strategy_name, session_date, "BUY",
+                target_value=initial_value, reason=reason, signal_price=signal_price,
+                execution_version=execution_version, pyramid_remaining=pyramid_remaining,
+            )
+            if order["status"] in TERMINAL:
+                continue   # already executed or expired in a previous run
+
+            if is_new:
+                # Persist PENDING_PRICE creation event BEFORE the fill attempt so the
+                # full lifecycle (created → executed/pending) is always in the JSONL.
+                saved = save_order(order)
+                orders[order["order_id"]] = saved
+                orders_created += 1
+                buy_orders_created += 1
+
             state, trades_df, trade = execute_buy(
                 state, trades_df, strategy_name, ticker, initial_value,
                 reason, candidate, execution_price_cache,
                 premarket_move=pm_move,
                 pyramid_remaining=pyramid_remaining,
             )
+
             if trade:
+                _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
                 buys.append(trade)
+                orders_executed += 1
+                buy_orders_executed += 1
                 print(f"  [{strategy_name}] KJØP 60% {ticker}: {trade['reason']}")
+            else:
+                updated = save_order(
+                    orders[order["order_id"]],
+                    status=PENDING_PRICE,
+                    failure_reason="no execution price for session",
+                )
+                orders[order["order_id"]] = updated
+                orders_pending_price += 1
 
     # Build sector map for held positions (for reporting)
     sector_map = {}
@@ -694,6 +844,10 @@ def run_strategy_execution(
     relevant_tickers = set(state["positions"].keys()) | {t["ticker"] for t in buys}
     strategy_pm_flags = {t: m for t, m in premarket_flags.items() if t in relevant_tickers}
 
+    buy_fill_rate = (buy_orders_executed / buy_orders_created) if buy_orders_created > 0 else None
+    sell_fill_rate = (sell_orders_executed / sell_orders_created) if sell_orders_created > 0 else None
+    fill_rate = (orders_executed / orders_created) if orders_created > 0 else None
+
     return {
         "strategy": strategy_name,
         "description": config["description"],
@@ -711,6 +865,18 @@ def run_strategy_execution(
         "premarket_flags": strategy_pm_flags,
         "sector_map": sector_map,
         "correlation_log": correlation_log,
+        "candidates_count": len(candidates),
+        "orders_created": orders_created,
+        "orders_executed": orders_executed,
+        "orders_pending_price": orders_pending_price,
+        "orders_failed_price": orders_failed_price,
+        "buy_orders_created": buy_orders_created,
+        "buy_orders_executed": buy_orders_executed,
+        "sell_orders_created": sell_orders_created,
+        "sell_orders_executed": sell_orders_executed,
+        "buy_fill_rate": buy_fill_rate,
+        "sell_fill_rate": sell_fill_rate,
+        "fill_rate": fill_rate,
     }, trades_df
 
 
@@ -802,6 +968,13 @@ def run_execute():
     if not market_open:
         print("Markedet er stengt — stop-loss kan fortsatt utføres, kjøp hoppes over")
 
+    # --- Order state: load, expire stale, share across all strategies ---
+    signal_run_id = signal.get("signal_run_id", "unknown")
+    orders = load_orders()
+    expired = expire_stale_orders(orders, session_date)
+    if expired:
+        print(f"Utløpte ordre fra tidligere sesjoner: {len(expired)}")
+
     results = []
     drawdown_warnings = []
 
@@ -809,6 +982,10 @@ def run_execute():
         print(f"\nKjører {strategy_name}...")
         result, trades_df = run_strategy_execution(
             strategy_name, signal, trades_df, valuation_price_cache, execution_price_cache,
+            orders=orders,
+            signal_run_id=signal_run_id,
+            session_date=session_date,
+            execution_version=EXECUTION_VERSION,
             premarket_flags=premarket_flags,
             macro_mult=macro_mult,
             corr_pairs=corr_pairs,

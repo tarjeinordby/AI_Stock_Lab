@@ -127,6 +127,15 @@ def execute_sell(
         "execution_session": today_str(),
         "execution_price_source": EXECUTION_PRICE_SOURCE,
         "order_status": "filled",
+        # Slippage: zero in paper model (next_session_daily_open_v1 has no market impact)
+        "slippage_bps": 0,
+        "slippage_amount": 0.0,
+        "gross_execution_value": round(value, 2),
+        "total_execution_cost": round(cost, 2),
+        "net_cash_effect": round(net_value, 2),
+        # Traceability — caller sets order_id and trade_id
+        "order_id": None,
+        "trade_id": None,
     }
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
@@ -213,6 +222,13 @@ def execute_buy(
         "execution_session": today_str(),
         "execution_price_source": EXECUTION_PRICE_SOURCE,
         "order_status": "filled",
+        "slippage_bps": 0,
+        "slippage_amount": 0.0,
+        "gross_execution_value": round(target_value, 2),
+        "total_execution_cost": round(cost, 2),
+        "net_cash_effect": round(-(target_value + cost), 2),
+        "order_id": None,
+        "trade_id": None,
     }
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
@@ -287,6 +303,13 @@ def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_pric
         "execution_session": today_str(),
         "execution_price_source": EXECUTION_PRICE_SOURCE,
         "order_status": "filled",
+        "slippage_bps": 0,
+        "slippage_amount": 0.0,
+        "gross_execution_value": round(remaining, 2),
+        "total_execution_cost": round(cost, 2),
+        "net_cash_effect": round(-(remaining + cost), 2),
+        "order_id": None,
+        "trade_id": None,
     }
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
