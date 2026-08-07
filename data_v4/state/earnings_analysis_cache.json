@@ -65,16 +65,16 @@
     "risk_level": "high"
   },
   "SE": {
-    "beat_probability": 0.42,
-    "expected_reaction": "Elevated volatility; likely negative bias given declining revenue trend and inconsistent beat history, though last quart",
-    "fetched_at": "2026-08-05T22:10:29.409828+00:00",
+    "beat_probability": 0.4,
+    "expected_reaction": "Likely negative to neutral; declining revenue trend and mixed beat history pressure sentiment, though last quarter beat ",
+    "fetched_at": "2026-08-07T21:35:44.950501+00:00",
     "key_metrics_to_watch": [
-      "Revenue trajectory/sequential decline",
-      "Gross margin & operating leverage",
-      "Forward guidance vs $5.25 EPS consensus"
+      "Revenue trajectory / sequential decline",
+      "EPS vs $5.25 consensus",
+      "Forward guidance"
     ],
     "position_recommendation": "reduce_before",
-    "reasoning": "Revenue falling 4 straight quarters (-26% peak), mixed surprise history with a -19.8% miss, and huge EPS jump to $5.25 raises bar. Trim risk pre-print.",
+    "reasoning": "4 straight quarters of falling revenue ($7.1B to $5.26B) and 3 of 4 misses signal weakness; consensus $5.25 vs recent sub-$1 actuals looks inconsistent, raising uncertainty.",
     "risk_level": "high"
   },
   "U": {
