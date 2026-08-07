@@ -10,15 +10,15 @@ from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
 from modules.exchange_calendar import CalendarUnavailableError, intended_execution_session
 from modules.orders import (
-    EXECUTED, EXPIRED, FAILED_PRICE, PENDING_PRICE, SETTLING, TERMINAL,
+    EXECUTED, EXPIRED, FAILED_PRICE, PENDING_PRICE, SETTLING, TERMINAL,  # noqa: F401 (FAILED_PRICE used in legacy print)
     expire_stale_orders,
     get_or_create_order,
     get_pending_for_session,
     load_orders,
-    make_candidate_signal_id,
+
     make_trade_id,
     reconcile_settling_orders,
-    recover_settling_orders,
+
     save_order,
 )
 from modules.versioning import PORTFOLIO_VERSION
@@ -462,6 +462,16 @@ def run_signal():
                 n_feature_snapshots=n_fs, n_signal_records=n_sr,
             )
             print(f"Ledger: {n_fs} feature snapshots, {n_sr} signal records skrevet.")
+
+            # Embed the ledger's authoritative signal_id into each candidate so execute can
+            # read candidate["signal_id"] directly — no separate ID system in execute.
+            sig_id_map = {
+                (sr["strategy_id"], sr["ticker"]): sr["signal_id"]
+                for sr in signal_records
+            }
+            for strat_name, strat_data in strategies_payload.items():
+                for c in strat_data.get("candidates", []):
+                    c["signal_id"] = sig_id_map.get((strat_name, c.get("ticker", "")))
         except LedgerWriteError as exc:
             update_signal_run_status(
                 signal_run_id, "failed", year_month, error=str(exc)
@@ -644,20 +654,31 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
                                 cash_after: float, execution_version: str) -> None:
     """Append a fill event to the WAL (fills.jsonl) before portfolio state is saved to disk."""
     from modules.fills import write_fill_event  # noqa: PLC0415
+    price = float(trade.get("price", 0))
+    commission = float(trade.get("cost", 0))
     write_fill_event(
         order_id=order["order_id"],
         trade_id=make_trade_id(order["order_id"]),
         signal_id=order.get("signal_id"),
         signal_run_id=order.get("signal_run_id"),
         portfolio_id=order.get("portfolio_id", ""),
+        portfolio_version=order.get("portfolio_version", ""),
         strategy=order.get("strategy", ""),
         ticker=trade.get("ticker", ""),
         action=trade.get("action", order.get("action", "")),
-        session_date=order.get("intended_execution_session", ""),
+        intended_execution_session=order.get("intended_execution_session", ""),
+        actual_execution_session=trade.get("execution_session", trade.get("date", "")),
         shares=float(trade.get("shares", 0)),
-        price=float(trade.get("price", 0)),
-        value=float(trade.get("value", 0)),
-        cost=float(trade.get("cost", 0)),
+        execution_price=price,
+        execution_price_source=trade.get("execution_price_source", "next_session_daily_open_v1"),
+        execution_price_timestamp=trade.get("timestamp_utc"),
+        gross_execution_price=trade.get("gross_execution_price", price),
+        gross_execution_value=trade.get("gross_execution_value"),
+        total_execution_cost=trade.get("total_execution_cost"),
+        net_cash_effect=trade.get("net_cash_effect"),
+        slippage_bps=trade.get("slippage_bps", 0),
+        slippage_amount=float(trade.get("slippage_amount", 0.0)),
+        commission_amount=commission,
         reason=trade.get("reason", ""),
         execution_version=execution_version,
         cash_before=cash_before,
@@ -707,12 +728,12 @@ def run_strategy_execution(
     state = load_strategy_state(strategy_name)
     state = reset_week_if_needed(state)
 
-    # Reconcile any SETTLING orders: portfolio-state check determines EXECUTED vs FAILED_PRICE
+    # Reconcile SETTLING orders — raises RuntimeError if fill ledger is unreadable (fail-closed)
     reconciled = reconcile_settling_orders(orders, strategy_name, state)
     if reconciled:
         ex = sum(1 for r in reconciled if r["status"] == EXECUTED)
-        fp = sum(1 for r in reconciled if r["status"] == FAILED_PRICE)
-        print(f"  [{strategy_name}] Crash-recovery: {ex} EXECUTED, {fp} FAILED_PRICE")
+        pp = sum(1 for r in reconciled if r["status"] == PENDING_PRICE)
+        print(f"  [{strategy_name}] Crash-recovery: {ex} EXECUTED, {pp} PENDING_PRICE")
 
     strategy_payload = signal["strategies"].get(strategy_name, {})
     candidates = strategy_payload.get("candidates", [])
@@ -799,16 +820,21 @@ def run_strategy_execution(
                     orders_pending_price += 1
 
     # --- Helper: get or create order and mark outcome ---
-    def _sell_with_order(ticker, reason, signal_price=None):
+    def _sell_with_order(ticker, reason, signal_price=None, action_origin="signal"):
         nonlocal orders_created, orders_executed, orders_pending_price
         nonlocal sell_orders_created, sell_orders_executed
-        sell_signal_id = make_candidate_signal_id(signal_run_id, strategy_name, ticker, "SELL")
+        # Portfolio-safety sells (stop-loss, drawdown protection) have no signal_id.
+        # Signal-based sells use the candidate's ledger signal_id if available.
+        sell_signal_id = (
+            None if action_origin == "portfolio_safety"
+            else candidates_by_ticker.get(ticker, {}).get("signal_id")
+        )
         order, is_new = get_or_create_order(
             orders, signal_run_id, ticker, strategy_name, session_date, "SELL",
             target_value=0.0, reason=reason, signal_price=signal_price,
             execution_version=execution_version,
             portfolio_id=portfolio_id, portfolio_version=portfolio_version,
-            signal_id=sell_signal_id,
+            signal_id=sell_signal_id, action_origin=action_origin,
         )
         if order["status"] in TERMINAL:
             return None   # already handled
@@ -882,7 +908,9 @@ def run_strategy_execution(
         if not allow_signal_sells and not is_protective:
             print(f"  [{strategy_name}] SKIP SELG {ticker}: signal ugyldig, kun stop-loss tillatt ({reason})")
             continue
-        result = _sell_with_order(ticker, reason, signal_price=pos.get("last_price"))
+        _origin = "portfolio_safety" if is_protective else "signal"
+        result = _sell_with_order(ticker, reason, signal_price=pos.get("last_price"),
+                                  action_origin=_origin)
         if result is None:
             continue
         trade, state, trades_df = result
@@ -916,7 +944,7 @@ def run_strategy_execution(
             pyr_remaining_val = float(pos.get("pyramid_remaining_value", 0.0))
 
             # Idempotency check FIRST — before any portfolio mutation
-            pyr_signal_id = make_candidate_signal_id(signal_run_id, strategy_name, ticker, "PYRAMID_FILL")
+            pyr_signal_id = candidates_by_ticker.get(ticker, {}).get("signal_id")
             pyr_order, pyr_is_new = get_or_create_order(
                 orders, signal_run_id, ticker, strategy_name, session_date,
                 "PYRAMID_FILL",
@@ -1036,7 +1064,7 @@ def run_strategy_execution(
             pm_move = premarket_flags.get(ticker)
             signal_price = candidate.get("price")
 
-            buy_signal_id = make_candidate_signal_id(signal_run_id, strategy_name, ticker, "BUY")
+            buy_signal_id = candidate.get("signal_id")  # ledger's authoritative signal_id
             order, is_new = get_or_create_order(
                 orders, signal_run_id, ticker, strategy_name, session_date, "BUY",
                 target_value=initial_value, reason=reason, signal_price=signal_price,
@@ -1097,19 +1125,23 @@ def run_strategy_execution(
     state["last_execution_date"] = today_str()
     save_strategy_state(strategy_name, state)
 
-    # Mark fills as persisted in WAL — portfolio is now durably on disk
+    # Mark fills as persisted in WAL + finalize SETTLING → EXECUTED (fail-closed per order)
+    # EXECUTED is only written if mark_fill_persisted succeeds.
+    # A WAL write failure leaves the order as SETTLING for reconcile_settling_orders on restart.
     from modules.fills import mark_fill_persisted  # noqa: PLC0415
     for oid in settling_order_ids:
+        if oid not in orders or orders[oid].get("status") != SETTLING:
+            continue
         try:
             mark_fill_persisted(oid)
-        except Exception as exc:
-            send_telegram(f"⚠️ Fill-WAL mark_fill_persisted feilet for {oid}: {exc}")
-
-    # Crash-consistent persistence: portfolio is now on disk — finalize SETTLING → EXECUTED
-    for oid in settling_order_ids:
-        if oid in orders and orders[oid].get("status") == SETTLING:
-            updated = save_order(orders[oid], status=EXECUTED)
-            orders[oid] = updated
+        except RuntimeError as exc:
+            send_telegram(
+                f"⚠️ KRITISK: Fill-WAL feilet for {oid}: {exc} "
+                "— ordre forblir SETTLING, kjøring avbrutt"
+            )
+            raise  # fail-closed: order stays SETTLING, next run reconciles
+        updated = save_order(orders[oid], status=EXECUTED)
+        orders[oid] = updated
 
     return_pct = (total_after / START_CAPITAL) - 1
 
@@ -1242,6 +1274,14 @@ def run_execute():
 
     trades_df = load_trades()
     performance_df = load_performance()
+
+    # WAL trade recovery: project any persisted fill events into trades_df
+    # Idempotent — skips trade_ids already present in trades.csv
+    try:
+        from modules.fills import project_fills_to_trades  # noqa: PLC0415
+        trades_df = project_fills_to_trades(trades_df)
+    except RuntimeError as exc:
+        send_telegram(f"⚠️ WAL-gjenoppbygging feilet (trades.csv kan mangle rader): {exc}")
 
     # Macro filter (FRED 10Y/2Y yield spread, no API key)
     macro = get_macro_status()

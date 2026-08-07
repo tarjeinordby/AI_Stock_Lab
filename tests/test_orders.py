@@ -27,6 +27,7 @@ from modules.orders import (
     PENDING_PRICE,
     SETTLING,
     TERMINAL,
+    _make_legacy_order_id,
     build_order,
     expire_stale_orders,
     get_or_create_order,
@@ -36,6 +37,7 @@ from modules.orders import (
     make_order_id,
     make_trade_id,
     reconcile_settling_orders,
+    recover_settling_orders,
     save_order,
 )
 
@@ -833,43 +835,58 @@ class TestFillEventWAL:
         monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", __import__("pathlib").Path(lock_path))
         return fills_path
 
-    def test_write_fill_event_creates_file(self, tmp_path, monkeypatch):
+    def _write_fill(self, order_id, *, trade_id="trd-x", signal_id=None,
+                    signal_run_id="run-001", portfolio_id="", portfolio_version="",
+                    strategy=None, ticker=None, action="BUY",
+                    shares=1.0, execution_price=100.0, commission_amount=0.0,
+                    reason="test", execution_version="v1",
+                    cash_before=1000.0, cash_after=900.0):
         from modules.fills import write_fill_event
-        self._patch_fills(tmp_path, monkeypatch)
-        rec = write_fill_event(
-            order_id="ord-abc123456789", trade_id="trd-x", signal_id="sig-y",
-            signal_run_id="run-001", portfolio_id="port-a", strategy=STRATEGY,
-            ticker=TICKER, action="BUY", session_date=SESSION,
-            shares=10.0, price=150.0, value=1500.0, cost=0.0, reason="test",
-            execution_version="v1", cash_before=10000.0, cash_after=8500.0,
+        strategy = strategy or STRATEGY
+        ticker = ticker or TICKER
+        return write_fill_event(
+            order_id=order_id, trade_id=trade_id, signal_id=signal_id,
+            signal_run_id=signal_run_id, portfolio_id=portfolio_id,
+            portfolio_version=portfolio_version, strategy=strategy, ticker=ticker,
+            action=action,
+            intended_execution_session=SESSION, actual_execution_session=SESSION,
+            shares=shares, execution_price=execution_price,
+            commission_amount=commission_amount, reason=reason,
+            execution_version=execution_version,
+            cash_before=cash_before, cash_after=cash_after,
         )
+
+    def test_write_fill_event_creates_file(self, tmp_path, monkeypatch):
+        self._patch_fills(tmp_path, monkeypatch)
+        rec = self._write_fill("ord-abc123456789", trade_id="trd-x", signal_id="sig-y",
+                               portfolio_id="port-a", execution_price=150.0, shares=10.0,
+                               cash_before=10000.0, cash_after=8500.0)
         assert rec["status"] == "filling"
         assert rec["fill_id"].startswith("fill-")
+        assert "content_hash" in rec and rec["content_hash"]
 
     def test_is_fill_persisted_false_before_mark(self, tmp_path, monkeypatch):
-        from modules.fills import write_fill_event, is_fill_persisted
+        from modules.fills import is_fill_persisted
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-abc123456789"
-        write_fill_event(
-            order_id=oid, trade_id="trd-x", signal_id=None, signal_run_id=None,
-            portfolio_id="", strategy=STRATEGY, ticker=TICKER, action="BUY",
-            session_date=SESSION, shares=1.0, price=100.0, value=100.0, cost=0.0,
-            reason="t", execution_version="v1", cash_before=1000.0, cash_after=900.0,
-        )
+        self._write_fill(oid)
         assert not is_fill_persisted(oid)
 
     def test_is_fill_persisted_true_after_mark(self, tmp_path, monkeypatch):
-        from modules.fills import write_fill_event, mark_fill_persisted, is_fill_persisted
+        from modules.fills import mark_fill_persisted, is_fill_persisted
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-abc123456789"
-        write_fill_event(
-            order_id=oid, trade_id="trd-x", signal_id=None, signal_run_id=None,
-            portfolio_id="", strategy=STRATEGY, ticker=TICKER, action="BUY",
-            session_date=SESSION, shares=1.0, price=100.0, value=100.0, cost=0.0,
-            reason="t", execution_version="v1", cash_before=1000.0, cash_after=900.0,
-        )
+        self._write_fill(oid)
         mark_fill_persisted(oid)
         assert is_fill_persisted(oid)
+
+    def test_persisted_without_filling_event_is_not_valid(self, tmp_path, monkeypatch):
+        """Orphaned 'persisted' marker without a 'filling' event must not be treated as persisted."""
+        from modules.fills import mark_fill_persisted, is_fill_persisted
+        self._patch_fills(tmp_path, monkeypatch)
+        oid = "ord-orphan-persisted"
+        mark_fill_persisted(oid)  # write persisted with no prior filling
+        assert not is_fill_persisted(oid)
 
     def test_make_fill_id_deterministic(self):
         from modules.fills import make_fill_id
@@ -880,11 +897,10 @@ class TestFillEventWAL:
 
     def test_reconcile_uses_fill_event_persisted(self, tmp_path, monkeypatch):
         """SETTLING + fill_event 'persisted' → EXECUTED regardless of portfolio state."""
-        import modules.fills as fills_mod
         self._patch_fills(tmp_path, monkeypatch)
         _with_file(tmp_path, monkeypatch)
 
-        from modules.fills import write_fill_event, mark_fill_persisted
+        from modules.fills import mark_fill_persisted
         orders = {}
         order, _ = get_or_create_order(
             orders=orders, signal_run_id="run-001", ticker=TICKER,
@@ -896,16 +912,12 @@ class TestFillEventWAL:
         s = save_order(s, status="settling", trade_id="trd-crash")
         orders[order["order_id"]] = s
 
-        write_fill_event(
-            order_id=order["order_id"], trade_id="trd-crash", signal_id=None,
-            signal_run_id="run-001", portfolio_id="", strategy=STRATEGY,
-            ticker=TICKER, action="BUY", session_date=SESSION,
-            shares=5.0, price=100.0, value=500.0, cost=0.0, reason="test",
-            execution_version=EXEC_VERSION, cash_before=10000.0, cash_after=9500.0,
-        )
+        self._write_fill(order["order_id"], trade_id="trd-crash",
+                         shares=5.0, execution_price=100.0,
+                         cash_before=10000.0, cash_after=9500.0)
         mark_fill_persisted(order["order_id"])
 
-        # Portfolio does NOT have position (to test fill WAL takes precedence)
+        # Portfolio does NOT have position (fill WAL should take precedence)
         state = {"positions": {}, "cash": 10000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
@@ -916,7 +928,6 @@ class TestFillEventWAL:
         self._patch_fills(tmp_path, monkeypatch)
         _with_file(tmp_path, monkeypatch)
 
-        from modules.fills import write_fill_event
         orders = {}
         order, _ = get_or_create_order(
             orders=orders, signal_run_id="run-001", ticker=TICKER,
@@ -929,13 +940,9 @@ class TestFillEventWAL:
         orders[order["order_id"]] = s
 
         # WAL entry exists but not marked persisted (crash before portfolio save)
-        write_fill_event(
-            order_id=order["order_id"], trade_id="trd-x", signal_id=None,
-            signal_run_id="run-001", portfolio_id="", strategy=STRATEGY,
-            ticker=TICKER, action="BUY", session_date=SESSION,
-            shares=5.0, price=100.0, value=500.0, cost=0.0, reason="test",
-            execution_version=EXEC_VERSION, cash_before=10000.0, cash_after=9500.0,
-        )
+        self._write_fill(order["order_id"], trade_id="trd-x",
+                         shares=5.0, execution_price=100.0,
+                         cash_before=10000.0, cash_after=9500.0)
 
         # Portfolio does NOT have position (portfolio save was not completed)
         state = {"positions": {}, "cash": 10000.0}
@@ -948,7 +955,7 @@ class TestFillEventWAL:
         self._patch_fills(tmp_path, monkeypatch)
         _with_file(tmp_path, monkeypatch)
 
-        from modules.fills import write_fill_event, is_fill_persisted
+        from modules.fills import is_fill_persisted
         orders = {}
         order, _ = get_or_create_order(
             orders=orders, signal_run_id="run-001", ticker=TICKER,
@@ -960,22 +967,43 @@ class TestFillEventWAL:
         s = save_order(s, status="settling", trade_id="trd-y")
         orders[order["order_id"]] = s
 
-        # WAL entry exists but not marked persisted (crash after save, before mark)
-        write_fill_event(
-            order_id=order["order_id"], trade_id="trd-y", signal_id=None,
-            signal_run_id="run-001", portfolio_id="", strategy=STRATEGY,
-            ticker=TICKER, action="BUY", session_date=SESSION,
-            shares=5.0, price=100.0, value=500.0, cost=0.0, reason="test",
-            execution_version=EXEC_VERSION, cash_before=10000.0, cash_after=9500.0,
-        )
+        # WAL entry exists but not marked persisted (crash after portfolio save, before mark)
+        self._write_fill(order["order_id"], trade_id="trd-y",
+                         shares=5.0, execution_price=100.0,
+                         cash_before=10000.0, cash_after=9500.0)
 
         # Portfolio HAS position (portfolio save completed before crash)
         state = {"positions": {TICKER: {"shares": 5}}, "cash": 9500.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
         assert orders[order["order_id"]]["status"] == EXECUTED
-        # Fill event should now be marked persisted (reconstruction)
         assert is_fill_persisted(order["order_id"])
+
+    def test_reconcile_raises_on_corrupt_fills_ledger(self, tmp_path, monkeypatch):
+        """If fills.jsonl is mid-file corrupt, reconcile raises RuntimeError (fail-closed)."""
+        import modules.fills as fills_mod
+        fills_path = tmp_path / "fills.jsonl"
+        lock_path = tmp_path / "fills.jsonl.lock"
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", fills_path)
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", lock_path)
+        _with_file(tmp_path, monkeypatch)
+
+        # Write two lines, first is valid, second is corrupt JSON mid-file
+        fills_path.write_text('{"order_id":"ord-a","status":"filling","fill_id":"fill-x"}\n'
+                              '{"corrupt":\n'
+                              '{"order_id":"ord-b","status":"filling","fill_id":"fill-y"}\n')
+
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-001", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(save_order(order), status=SETTLING, trade_id="t")
+
+        with pytest.raises(RuntimeError):
+            reconcile_settling_orders(orders, STRATEGY, {"positions": {}, "cash": 10000.0})
 
 
 # ---------------------------------------------------------------------------
@@ -1145,3 +1173,291 @@ class TestExecutionTiming:
         # CalendarUnavailableError must be caught and re-raised (not swallowed)
         assert "except CalendarUnavailableError" in fn_body
         assert "raise" in fn_body
+
+
+# ---------------------------------------------------------------------------
+# Blocker 5: Legacy order fallback must be portfolio-safe
+# ---------------------------------------------------------------------------
+
+class TestLegacyOrderPortfolioSafe:
+    """Legacy order fallback must NOT cross portfolio boundaries."""
+
+    def _patch(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "orders.jsonl")
+        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
+        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+
+    def _legacy_order(self, *, portfolio_id="", signal_run_id="run-abc123",
+                      ticker="AAPL", strategy="s1", session="2026-08-07", action="BUY"):
+        """Build and persist a pre-upgrade (v1) order with the legacy order_id format."""
+        legacy_id = _make_legacy_order_id(signal_run_id, ticker, strategy, session, action)
+        order = {
+            "order_id": legacy_id,
+            "signal_id": signal_run_id,
+            "signal_run_id": signal_run_id,
+            "portfolio_id": portfolio_id,
+            "portfolio_version": "",
+            "ticker": ticker,
+            "strategy": strategy,
+            "intended_execution_session": session,
+            "action": action,
+            "action_origin": None,
+            "target_value": 5000.0,
+            "pyramid_remaining": 0.0,
+            "reason": "test",
+            "signal_price": 100.0,
+            "execution_version": "v1",
+            "status": PENDING_PRICE,
+            "created_at": "2026-08-07T10:00:00+00:00",
+            "updated_at": "2026-08-07T10:00:00+00:00",
+            "attempted_at": None,
+            "failure_reason": None,
+            "trade_id": None,
+        }
+        save_order(order)
+        return order
+
+    def test_legacy_fallback_same_portfolio_id_found(self, tmp_path, monkeypatch):
+        """Legacy order with matching portfolio_id is found (no duplicate created)."""
+        self._patch(tmp_path, monkeypatch)
+        run_id = "run-abc123"
+        old = self._legacy_order(portfolio_id="port-A")
+        orders = {old["order_id"]: old}
+
+        _, is_new = get_or_create_order(
+            orders=orders, signal_run_id=run_id, ticker="AAPL",
+            strategy="s1", session_date="2026-08-07", action="BUY",
+            target_value=5000.0, reason="t", signal_price=100.0,
+            execution_version="v1", portfolio_id="port-A",
+        )
+        assert not is_new
+
+    def test_legacy_fallback_empty_portfolio_id_found(self, tmp_path, monkeypatch):
+        """Legacy order with empty portfolio_id matches any portfolio (pre-upgrade record)."""
+        self._patch(tmp_path, monkeypatch)
+        run_id = "run-abc123"
+        old = self._legacy_order(portfolio_id="")
+        orders = {old["order_id"]: old}
+
+        _, is_new = get_or_create_order(
+            orders=orders, signal_run_id=run_id, ticker="AAPL",
+            strategy="s1", session_date="2026-08-07", action="BUY",
+            target_value=5000.0, reason="t", signal_price=100.0,
+            execution_version="v1", portfolio_id="port-B",
+        )
+        assert not is_new
+
+    def test_legacy_fallback_different_portfolio_id_creates_new(self, tmp_path, monkeypatch):
+        """Legacy order from portfolio_A must NOT block portfolio_B — returns is_new=True."""
+        self._patch(tmp_path, monkeypatch)
+        run_id = "run-abc123"
+        old = self._legacy_order(portfolio_id="port-A")
+        orders = {old["order_id"]: old}
+
+        _, is_new = get_or_create_order(
+            orders=orders, signal_run_id=run_id, ticker="AAPL",
+            strategy="s1", session_date="2026-08-07", action="BUY",
+            target_value=5000.0, reason="t", signal_price=100.0,
+            execution_version="v1", portfolio_id="port-B",
+        )
+        assert is_new, "Legacy order for port-A must not block port-B from consuming the signal"
+
+
+# ---------------------------------------------------------------------------
+# Blocker 2: recover_settling_orders removed (raises NotImplementedError)
+# ---------------------------------------------------------------------------
+
+class TestRecoverSettlingOrdersRemoved:
+    def test_recover_settling_orders_raises_not_implemented(self):
+        """recover_settling_orders() is disabled — callers must use reconcile_settling_orders."""
+        with pytest.raises(NotImplementedError, match="reconcile_settling_orders"):
+            recover_settling_orders({})
+
+
+# ---------------------------------------------------------------------------
+# Blocker 4: WAL → trades.csv projection
+# ---------------------------------------------------------------------------
+
+class TestProjectFillsToTrades:
+    """project_fills_to_trades recovers missing trade rows from persisted fill events."""
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        fills_path = tmp_path / "fills.jsonl"
+        lock_path = tmp_path / "fills.jsonl.lock"
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", fills_path)
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", lock_path)
+
+    def _write_fill(self, order_id, trade_id, *, ticker="AAPL", strategy="s1",
+                    execution_price=100.0, shares=5.0, commission=0.0,
+                    session="2026-08-07"):
+        from modules.fills import write_fill_event, mark_fill_persisted
+        write_fill_event(
+            order_id=order_id, trade_id=trade_id, signal_id=None,
+            signal_run_id="run-001", portfolio_id="", portfolio_version="",
+            strategy=strategy, ticker=ticker, action="BUY",
+            intended_execution_session=session, actual_execution_session=session,
+            shares=shares, execution_price=execution_price,
+            commission_amount=commission,
+            reason="test", execution_version="v1",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        mark_fill_persisted(order_id)
+
+    def test_missing_trade_recovered_from_wal(self, tmp_path, monkeypatch):
+        """Trade row absent from trades_df is added when fills.jsonl has a persisted event."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import project_fills_to_trades
+        self._write_fill("ord-aaa", "trd-111")
+
+        empty_df = pd.DataFrame()
+        recovered = project_fills_to_trades(empty_df)
+        assert "trd-111" in recovered["trade_id"].values
+
+    def test_existing_trade_not_duplicated(self, tmp_path, monkeypatch):
+        """Trade already in trades_df is not duplicated even if fill event is persisted."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import project_fills_to_trades
+        self._write_fill("ord-bbb", "trd-222")
+
+        existing = pd.DataFrame([{"trade_id": "trd-222", "ticker": "AAPL", "date": "2026-08-07"}])
+        recovered = project_fills_to_trades(existing)
+        assert len(recovered[recovered["trade_id"] == "trd-222"]) == 1
+
+    def test_unpersisted_fill_not_projected(self, tmp_path, monkeypatch):
+        """Fill event without a 'persisted' marker is NOT projected to trades_df."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, project_fills_to_trades
+        write_fill_event(
+            order_id="ord-ccc", trade_id="trd-333", signal_id=None,
+            signal_run_id="run-001", portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=1.0, execution_price=100.0, commission_amount=0.0,
+            reason="test", execution_version="v1",
+            cash_before=10000.0, cash_after=9900.0,
+        )  # No mark_fill_persisted
+
+        recovered = project_fills_to_trades(pd.DataFrame())
+        assert "trade_id" not in recovered.columns or "trd-333" not in recovered.get("trade_id", pd.Series()).values
+
+    def test_multiple_fills_all_recovered(self, tmp_path, monkeypatch):
+        """Multiple persisted fills across different orders all appear in recovered trades_df."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import project_fills_to_trades
+        self._write_fill("ord-d1", "trd-d1", ticker="AAPL")
+        self._write_fill("ord-d2", "trd-d2", ticker="MSFT")
+        self._write_fill("ord-d3", "trd-d3", ticker="NVDA")
+
+        recovered = project_fills_to_trades(pd.DataFrame())
+        trade_ids = set(recovered["trade_id"].values)
+        assert {"trd-d1", "trd-d2", "trd-d3"}.issubset(trade_ids)
+
+    def test_crash_scenario_d_after_executed_before_save_csv(self, tmp_path, monkeypatch):
+        """Crash scenario (d): EXECUTED in orders.jsonl but trades.csv not yet saved.
+
+        project_fills_to_trades() reconstructs the trade row idempotently.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import project_fills_to_trades
+        self._write_fill("ord-e1", "trd-e1", ticker="TSLA", execution_price=250.0, shares=2.0)
+
+        # Simulate: trades.csv is empty (crash before save_csv)
+        empty_df = pd.DataFrame()
+        recovered = project_fills_to_trades(empty_df)
+        assert "trd-e1" in recovered["trade_id"].values
+        row = recovered[recovered["trade_id"] == "trd-e1"].iloc[0]
+        assert row["ticker"] == "TSLA"
+        assert float(row["price"]) == 250.0
+        assert float(row["shares"]) == 2.0
+
+        # Second call is idempotent — no duplicate
+        recovered2 = project_fills_to_trades(recovered)
+        assert len(recovered2[recovered2["trade_id"] == "trd-e1"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Blocker 1: signal_id from ledger integration test
+# ---------------------------------------------------------------------------
+
+class TestSignalIdFromLedger:
+    """signal_file candidate.signal_id must match ledger signal_record.signal_id."""
+
+    def test_candidate_signal_id_matches_ledger(self):
+        """Source check: build_all_ledger_records embeds signal_ids into candidates."""
+        from modules.ledger import (
+            build_all_ledger_records,
+            make_feature_snapshot_id,
+            make_signal_id,
+            compute_input_hash,
+        )
+
+        signal_run_id = "run-test-signal-id"
+        model_version = "test-model-v1"
+        model_config_hash = "abc123"
+        ticker = "AAPL"
+        strat_name = "test_strategy"
+
+        analyzed_by_ticker = [{
+            "ticker": ticker,
+            "price": 150.0, "sma200": 140.0, "above_sma200": True,
+            "vol60": 0.25, "rsi": 55.0, "overbought": False, "very_weak_rsi": False,
+            "is_megacap": True, "mom_12_1": 0.12, "mom_6_1": 0.08, "mom_3_1": 0.04,
+            "ret_1m": 0.03, "relative_strength_3m": 0.05, "momentum_score": 0.7,
+            "quality_score": 0.8, "value_score": 0.6, "sentiment_score": 0.5,
+            "insider_buying": False,
+        }]
+        strategies_payload = {
+            strat_name: {
+                "candidates": [{"ticker": ticker, "rank": 1, "score_percentile": 0.9,
+                                "strategy_score": 0.75}],
+            }
+        }
+        strategies_config = {
+            strat_name: {"buy_top_n": 20, "min_score_percentile": 0.70, "score_column": "strategy_score"},
+        }
+
+        feature_snapshots, signal_records = build_all_ledger_records(
+            signal_run_id=signal_run_id,
+            analyzed_by_ticker=analyzed_by_ticker,
+            strategies_payload=strategies_payload,
+            fundamentals={}, sentiment_scores={}, full_earnings={},
+            macro={}, regime="neutral",
+            model_version=model_version, model_config_hash=model_config_hash,
+            strategies_config=strategies_config,
+        )
+
+        # Build the sig_id_map exactly as run_signal() does
+        sig_id_map = {(sr["strategy_id"], sr["ticker"]): sr["signal_id"] for sr in signal_records}
+
+        # Embed signal_id into candidates (as run_signal() does before saving signal file)
+        for c in strategies_payload[strat_name]["candidates"]:
+            c["signal_id"] = sig_id_map.get((strat_name, c["ticker"]))
+
+        # Verify candidate signal_id == ledger signal_record signal_id
+        ledger_signal_id = signal_records[0]["signal_id"]
+        candidate_signal_id = strategies_payload[strat_name]["candidates"][0]["signal_id"]
+
+        assert candidate_signal_id is not None, "Candidate must have a signal_id after embedding"
+        assert candidate_signal_id == ledger_signal_id, (
+            f"candidate.signal_id {candidate_signal_id!r} must equal "
+            f"ledger signal_record.signal_id {ledger_signal_id!r}"
+        )
+        assert candidate_signal_id.startswith("sig-")
+
+    def test_make_candidate_signal_id_differs_from_ledger(self):
+        """Prove that make_candidate_signal_id() ≠ ledger's make_signal_id() (why it was removed)."""
+        from modules.ledger import make_signal_id, make_feature_snapshot_id, compute_input_hash
+        run_id = "run-abc123"
+        model = "test-model"
+        strat = "my_strategy"
+        ticker = "AAPL"
+        features = {"price": 150.0}
+        snapshot_id = make_feature_snapshot_id(run_id, ticker, compute_input_hash(features))
+        ledger_id = make_signal_id(run_id, model, strat, ticker, snapshot_id)
+        candidate_id = make_candidate_signal_id(run_id, strat, ticker, "BUY")
+        assert ledger_id != candidate_id, (
+            "make_candidate_signal_id produces a DIFFERENT hash than ledger make_signal_id — "
+            "this confirms they are separate systems and make_candidate_signal_id must not be "
+            "used as the authoritative signal_id"
+        )

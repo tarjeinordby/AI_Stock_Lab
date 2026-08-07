@@ -81,10 +81,13 @@ def _make_legacy_order_id(signal_run_id: str, ticker: str, strategy: str,
 
 def make_candidate_signal_id(signal_run_id: str, strategy: str, ticker: str,
                               action: str = "BUY") -> str:
-    """Stable per-candidate signal identifier: one per (signal_run_id, strategy, ticker, action).
+    """Deprecated: Do not use in new production code.
 
-    Two portfolios consuming the same signal get the SAME signal_id, but different order_ids
-    (because portfolio_id differs). This allows tracing a recommendation across portfolios.
+    Use the signal_id embedded in the signal file candidate (from modules.ledger.make_signal_id)
+    instead.  This function produces a different hash than the ledger's signal_id and creates
+    a parallel ID system, which is forbidden by the design contract.
+
+    Kept here only to avoid breaking the import in tests that verify the old contract.
     """
     raw = f"{signal_run_id}|{strategy}|{ticker}|{action}"
     return "sig-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
@@ -120,12 +123,15 @@ def build_order(
     portfolio_id: str = "",
     portfolio_version: str = "",
     signal_id=_SIGNAL_ID_UNSET,
+    action_origin: str | None = None,
 ) -> dict:
     """Build a new order dict (not yet persisted).
 
-    signal_id: stable content-addressed signal identifier (e.g. signal_content_hash).
+    signal_id: stable content-addressed signal identifier (ledger's signal_id for the candidate).
     Omit to default to signal_run_id (backward compat).
     Pass None explicitly for safety-action orders that have no associated signal.
+    action_origin: "signal" | "portfolio_safety" | None.
+      "portfolio_safety" marks stop-loss / drawdown protection sells that run without a valid signal.
     """
     _signal_id = signal_run_id if signal_id is _SIGNAL_ID_UNSET else signal_id
     return {
@@ -138,6 +144,7 @@ def build_order(
         "strategy": strategy,
         "intended_execution_session": session_date,
         "action": action,
+        "action_origin": action_origin,
         "target_value": round(float(target_value), 2),
         "pyramid_remaining": round(float(pyramid_remaining), 2),
         "reason": reason,
@@ -177,9 +184,10 @@ def _append(record: dict) -> None:
 def _truncate_corrupt_last_line() -> None:
     """Remove the corrupt last line from orders.jsonl under exclusive lock + fsync.
 
-    Called after detecting a corrupt last line during load_orders(). Prevents the next
-    append from writing after a corrupt partial record (which would leave the file in a
-    permanently broken mid-file state on the next load).
+    Called after detecting a corrupt last line during load_orders(). Re-reads and
+    re-validates the last line under the EXCLUSIVE lock before truncating — this closes
+    the race window between the shared-lock read (in load_orders) and the exclusive-lock
+    truncation: if another process appended a valid record in between, we skip truncation.
     """
     lock_dir = os.path.dirname(_ORDERS_LOCK_FILE)
     if lock_dir:
@@ -192,15 +200,23 @@ def _truncate_corrupt_last_line() -> None:
                 content = f.read()
                 if not content:
                     return
-                if content.endswith(b"\n"):
-                    # Complete line (ends with \n) but invalid JSON — remove entire last line
-                    last_nl = len(content) - 1
-                    prev_nl = content.rfind(b"\n", 0, last_nl)
-                    truncate_at = prev_nl + 1  # 0 if prev_nl == -1 (single corrupt line)
-                else:
-                    # File truncated mid-write (no trailing \n) — truncate at last valid \n
-                    last_nl = content.rfind(b"\n")
-                    truncate_at = last_nl + 1 if last_nl >= 0 else 0
+
+                # Re-verify under exclusive lock: find and re-check the last non-empty line
+                stripped = content.rstrip(b"\n")
+                last_nl = stripped.rfind(b"\n")
+                last_line = stripped[last_nl + 1:] if last_nl >= 0 else stripped
+
+                if not last_line:
+                    return  # Nothing to truncate
+
+                try:
+                    json.loads(last_line.decode("utf-8"))
+                    return  # Valid now — another process appended a good record, skip truncation
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass  # Still corrupt — proceed with truncation
+
+                # Truncate to end of last valid line (keep the trailing \n of previous record)
+                truncate_at = last_nl + 1 if last_nl >= 0 else 0
                 f.seek(truncate_at)
                 f.truncate()
                 f.flush()
@@ -303,22 +319,28 @@ def get_or_create_order(
     portfolio_id: str = "",
     portfolio_version: str = "",
     signal_id=_SIGNAL_ID_UNSET,
+    action_origin: str | None = None,
 ) -> tuple[dict, bool]:
     """Return (order, is_new).
 
     Lookup order by new-format order_id first (signal_id + portfolio_id + portfolio_version).
-    Falls back to legacy-format order_id (signal_run_id + ticker + strategy) to prevent
-    double-fills when upgrading from old code that used a different key scheme.
+    Falls back to legacy-format order_id (signal_run_id + ticker + strategy) only if the
+    stored order's portfolio_id is empty or matches the current portfolio_id — prevents
+    a legacy order for portfolio_A from blocking portfolio_B.
     Returns (existing, False) if found; (new, True) if not — caller must persist the new order.
     """
     _signal_id = signal_run_id if signal_id is _SIGNAL_ID_UNSET else signal_id
     order_id = make_order_id(_signal_id, portfolio_id, portfolio_version, ticker, session_date, action)
     if order_id in orders:
         return orders[order_id], False
-    # Legacy fallback: check v1 order_id format to prevent double-fills on upgrade
+    # Legacy fallback: check v1 order_id format to prevent double-fills on upgrade.
+    # Portfolio-safe: only match if the stored portfolio_id is empty or matches ours.
     legacy_id = _make_legacy_order_id(signal_run_id, ticker, strategy, session_date, action)
     if legacy_id in orders and legacy_id != order_id:
-        return orders[legacy_id], False
+        legacy_order = orders[legacy_id]
+        stored_pid = legacy_order.get("portfolio_id", "")
+        if stored_pid == "" or stored_pid == portfolio_id:
+            return legacy_order, False
     order = build_order(
         signal_run_id, ticker, strategy, session_date, action,
         target_value, reason, signal_price, execution_version,
@@ -326,6 +348,7 @@ def get_or_create_order(
         portfolio_id=portfolio_id,
         portfolio_version=portfolio_version,
         signal_id=signal_id,
+        action_origin=action_origin,
     )
     return order, True
 
@@ -340,8 +363,14 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
     Crash-before-portfolio-save → PENDING_PRICE (not FAILED_PRICE — transient, retry).
     Crash-after-portfolio-save → reconstructed as EXECUTED (portfolio is authoritative).
 
+    Raises RuntimeError if the fill ledger cannot be read (fail-closed — caller must alert).
+
     Returns the list of reconciled orders.
     """
+    from modules.fills import load_fill_events, mark_fill_persisted  # noqa: PLC0415
+    # Raises RuntimeError on ledger read failure — do not catch; let it propagate fail-closed
+    fill_events_by_order = load_fill_events()
+
     reconciled = []
     positions = state.get("positions", {})
 
@@ -355,7 +384,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         ticker = order.get("ticker")
         action = order.get("action")
 
-        # Portfolio state check (used as fallback if no fill events exist)
+        # Portfolio state check (authoritative fallback when no fill events exist)
         if action == "BUY":
             portfolio_has_fill = ticker in positions
         elif action == "SELL":
@@ -366,31 +395,24 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         else:
             portfolio_has_fill = False
 
-        # Fill event WAL (most authoritative — available from fills.jsonl)
-        try:
-            from modules.fills import (  # noqa: PLC0415
-                get_fill_events_for_order,
-                is_fill_persisted,
-                mark_fill_persisted,
-            )
-            fill_persisted = is_fill_persisted(order_id)
-            fill_events = get_fill_events_for_order(order_id)
-        except Exception:
-            fill_persisted = False
-            fill_events = []
+        # Fill event WAL (primary crash-recovery source)
+        order_fill_events = fill_events_by_order.get(order_id, [])
+        has_filling = any(e.get("status") == "filling" for e in order_fill_events)
+        fill_persisted = (
+            has_filling
+            and any(e.get("status") == "persisted" for e in order_fill_events)
+        )
 
         if fill_persisted:
             # Fill WAL confirmed persisted → portfolio definitely on disk → EXECUTED
             updated = save_order(order, status=EXECUTED)
-        elif fill_events and portfolio_has_fill:
+        elif order_fill_events and has_filling and portfolio_has_fill:
             # Fill event exists but not marked persisted — crash after portfolio save,
             # before mark_fill_persisted. Reconstruct: mark persisted now, EXECUTED.
-            try:
-                mark_fill_persisted(order_id)
-            except Exception:
-                pass
+            # Raises RuntimeError if WAL write fails — propagates fail-closed.
+            mark_fill_persisted(order_id)
             updated = save_order(order, status=EXECUTED)
-        elif not fill_events and portfolio_has_fill:
+        elif not order_fill_events and portfolio_has_fill:
             # No fill events (legacy system before fills.jsonl) — portfolio is authoritative
             updated = save_order(order, status=EXECUTED)
         else:
@@ -408,27 +430,16 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
 
 
 def recover_settling_orders(orders: dict) -> list:
-    """
-    Crash recovery: convert any SETTLING orders to FAILED_PRICE.
+    """Removed: blindly converting SETTLING → FAILED_PRICE is incorrect.
 
-    SETTLING orders represent fills that were annotated but whose portfolio state
-    was never persisted (crash between fill and save_strategy_state). On the next
-    run they are unknown — conservative recovery marks them FAILED_PRICE so the
-    position is not double-credited.
-
-    Returns the list of recovered orders.
+    Use reconcile_settling_orders() instead, which uses the fill-event WAL and
+    portfolio state to correctly classify crash scenarios as EXECUTED or PENDING_PRICE.
+    FAILED_PRICE is reserved for permanent price failures, not transient crashes.
     """
-    recovered = []
-    for order_id, order in list(orders.items()):
-        if order.get("status") == SETTLING:
-            updated = save_order(
-                order,
-                status=FAILED_PRICE,
-                failure_reason="crash-recovery: settling order not finalized",
-            )
-            orders[order_id] = updated
-            recovered.append(updated)
-    return recovered
+    raise NotImplementedError(
+        "recover_settling_orders() has been removed. "
+        "Use reconcile_settling_orders(orders, strategy_name, state) instead."
+    )
 
 
 def get_pending_for_session(orders: dict, session_date: str, strategy: str | None = None) -> list:

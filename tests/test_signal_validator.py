@@ -1996,26 +1996,15 @@ class TestPoint6CrashConsistency:
         from modules.orders import SETTLING, TERMINAL
         assert SETTLING not in TERMINAL
 
-    def test_recover_settling_converts_to_failed_price(self, tmp_path, monkeypatch):
-        import modules.orders as orders_mod
-        from modules.orders import (
-            build_order, save_order, load_orders, recover_settling_orders,
-            SETTLING, FAILED_PRICE
-        )
-        path = str(tmp_path / "orders.jsonl")
-        monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
-        monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+    def test_recover_settling_orders_is_disabled(self):
+        """recover_settling_orders() is removed — it incorrectly used FAILED_PRICE for crashes.
 
-        o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
-        save_order(o)
-        save_order(o, status=SETTLING, trade_id="trd-abc")
-        orders_dict = load_orders()
-        assert orders_dict[o["order_id"]]["status"] == SETTLING
-
-        recovered = recover_settling_orders(orders_dict)
-        assert len(recovered) == 1
-        assert orders_dict[o["order_id"]]["status"] == FAILED_PRICE
-        assert "crash-recovery" in orders_dict[o["order_id"]]["failure_reason"]
+        Use reconcile_settling_orders(orders, strategy, state) instead, which correctly
+        classifies crashes as EXECUTED or PENDING_PRICE using the fill-event WAL.
+        """
+        from modules.orders import recover_settling_orders
+        with pytest.raises(NotImplementedError, match="reconcile_settling_orders"):
+            recover_settling_orders({})
 
     def test_settling_transitions_to_executed_in_normal_lifecycle(self, tmp_path, monkeypatch):
         import modules.orders as orders_mod
@@ -2277,21 +2266,34 @@ class TestPoint10FinalIntegration:
         assert o["portfolio_id"] == state["portfolio_id"]
         assert o["signal_id"] == "r1"
 
-    def test_settling_crash_recovery_end_to_end(self, tmp_path, monkeypatch):
-        """Point 6: SETTLING orders left after crash are recovered as FAILED_PRICE."""
+    def test_settling_crash_recovery_uses_reconcile_not_failed_price(self, tmp_path, monkeypatch):
+        """Point 6: SETTLING orders left after crash → reconcile_settling_orders (not FAILED_PRICE).
+
+        Crash-before-portfolio-save → PENDING_PRICE (transient, retry).
+        Crash-after-portfolio-save  → EXECUTED (portfolio is authoritative).
+        FAILED_PRICE is only for permanent price failures, not transient crashes.
+        """
+        import modules.fills as fills_mod
         import modules.orders as orders_mod
-        from modules.orders import build_order, save_order, load_orders, recover_settling_orders, SETTLING, FAILED_PRICE
+        from modules.orders import build_order, save_order, load_orders, SETTLING, PENDING_PRICE
 
         path = str(tmp_path / "orders.jsonl")
+        fills_path = tmp_path / "fills.jsonl"
         monkeypatch.setattr(orders_mod, "ORDERS_FILE", path)
         monkeypatch.setattr(orders_mod, "_ORDERS_LOCK_FILE", path + ".lock")
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", fills_path)
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
 
         o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1")
         save_order(o)
         save_order(o, status=SETTLING, trade_id="trd-crash")
         orders_dict = load_orders()
-        recovered = recover_settling_orders(orders_dict)
-        assert len(recovered) == 1 and orders_dict[o["order_id"]]["status"] == FAILED_PRICE
+
+        # No fill event, no portfolio position → crash before portfolio save → PENDING_PRICE
+        from modules.orders import reconcile_settling_orders
+        reconciled = reconcile_settling_orders(orders_dict, "s1", {"positions": {}, "cash": 10000.0})
+        assert len(reconciled) == 1
+        assert orders_dict[o["order_id"]]["status"] == PENDING_PRICE
 
     def test_ack_without_hash_rejected_end_to_end(self):
         """Point 7: ack without content_hash raises PublicationWriteError."""
