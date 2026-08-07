@@ -682,17 +682,16 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
     commission = float(trade.get("cost", 0))
     actual_session = trade.get("execution_session", trade.get("date", ""))
 
-    # Blocker 5: use NYSE session open as execution_price_timestamp, not runner processing time.
-    # Fallback to trade["timestamp_utc"] only if calendar is unavailable.
+    # Fail-closed: calendar must be available; no fallback to runner timestamp (Bug 7 fix).
+    from modules.exchange_calendar import session_open_utc  # noqa: PLC0415
     try:
-        from modules.exchange_calendar import (  # noqa: PLC0415
-            CalendarUnavailableError,
-            session_open_utc,
-        )
         open_ts = session_open_utc(actual_session)
         execution_price_timestamp = open_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        execution_price_timestamp = trade.get("timestamp_utc")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Kan ikke bestemme execution_price_timestamp for session {actual_session!r}: {exc} "
+            "— fyll-event avvist fail-closed"
+        ) from exc
 
     return write_fill_event(
         order_id=order["order_id"],

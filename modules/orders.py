@@ -423,15 +423,38 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                 updated = save_order(order, status=EXECUTED)
             elif has_filling:
                 # Portfolio matches intent but persisted marker missing — crash after save,
-                # before mark_fill_persisted. Reconstruct now.
-                mark_fill_persisted(
-                    order_id,
-                    filling_ev.get("fill_attempt_id", ""),
-                    filling_ev.get("content_hash", ""),
-                    commit_id=commit_id,
-                    post_portfolio_state_hash=intent_hash,
+                # before mark_fill_persisted. Reconstruct using the commit_intent's fill reference
+                # (Bug 2 fix: must not blindly use the FIRST filling event).
+                fill_ref = next(
+                    (f for f in commit_intent.get("fills", []) if f.get("order_id") == order_id),
+                    None,
                 )
-                updated = save_order(order, status=EXECUTED)
+                if fill_ref is None:
+                    updated = save_order(
+                        order, status=PENDING_PRICE,
+                        failure_reason="commit_intent mangler fill-referanse for ordre — retry",
+                    )
+                else:
+                    ref_fa_id = fill_ref.get("fill_attempt_id", "")
+                    matched_filling = next(
+                        (e for e in order_fill_events
+                         if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
+                        None,
+                    )
+                    if matched_filling is None:
+                        updated = save_order(
+                            order, status=PENDING_PRICE,
+                            failure_reason="commit_intent-referert filling-event ikke funnet — retry",
+                        )
+                    else:
+                        mark_fill_persisted(
+                            order_id,
+                            matched_filling.get("fill_attempt_id", ""),
+                            matched_filling.get("content_hash", ""),
+                            commit_id=commit_id,
+                            post_portfolio_state_hash=intent_hash,
+                        )
+                        updated = save_order(order, status=EXECUTED)
             else:
                 # commit_intent exists but no filling event — should not happen in normal flow
                 updated = save_order(
@@ -481,6 +504,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                     order_id,
                     last_filling.get("fill_attempt_id", ""),
                     last_filling.get("content_hash", ""),
+                    post_portfolio_state_hash=current_hash,
                 )
                 updated = save_order(order, status=EXECUTED)
             elif not order_fill_events and portfolio_has_fill:

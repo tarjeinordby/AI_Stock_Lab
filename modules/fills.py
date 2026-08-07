@@ -488,6 +488,29 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"= {expected_cash_after}, men cash_after={cash_after} — fail-closed"
                 )
 
+            # Bug 4: intended_execution_session must equal actual_execution_session
+            if rec.get("intended_execution_session") != rec.get("actual_execution_session"):
+                raise RuntimeError(
+                    f"Fill-ledger session-feil (linje {i + 1}): "
+                    f"intended_execution_session {rec.get('intended_execution_session')!r} "
+                    f"≠ actual_execution_session {rec.get('actual_execution_session')!r} — fail-closed"
+                )
+
+            # Bug 5: execution_price_timestamp must be non-null
+            if not rec.get("execution_price_timestamp"):
+                raise RuntimeError(
+                    f"Fill-ledger execution_price_timestamp mangler/null (linje {i + 1}) — fail-closed"
+                )
+
+            # Bug 6: total_execution_cost must be >= commission_amount
+            _ev_total = float(rec.get("total_execution_cost", 0))
+            _ev_comm = float(rec.get("commission_amount", 0))
+            if _ev_total < _ev_comm - 0.001:
+                raise RuntimeError(
+                    f"Fill-ledger cost-feil (linje {i + 1}): "
+                    f"total_execution_cost ({_ev_total}) < commission_amount ({_ev_comm}) — fail-closed"
+                )
+
         # Schema validation for "persisted" events
         elif status == "persisted":
             missing_p = [fld for fld in _PERSISTED_SCHEMA_FIELDS if fld not in rec]
@@ -500,6 +523,12 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                 raise RuntimeError(
                     f"Fill-ledger integritets-feil (linje {i + 1}): "
                     f"filling_content_hash mangler/tom — fail-closed"
+                )
+            # Bug 3: post_portfolio_state_hash must be non-empty
+            if not rec.get("post_portfolio_state_hash"):
+                raise RuntimeError(
+                    f"Fill-ledger integritets-feil (linje {i + 1}): "
+                    f"post_portfolio_state_hash mangler/tom — fail-closed"
                 )
 
         oid = rec.get("order_id")
@@ -537,24 +566,25 @@ def is_fill_persisted(order_id: str) -> bool:
     """Return True if the fill for this order was durably persisted.
 
     Strict resolver:
-    - Requires a valid filling event (status=filling, fill_attempt_id set).
-    - Requires a persisted marker whose fill_attempt_id AND filling_content_hash match.
-    - Orphaned markers (no filling event) or mismatched IDs/hashes → False.
+    - Finds the persisted marker first.
+    - Uses the persisted marker's fill_attempt_id to find the exact filling event.
+    - Orphaned markers (no matching filling event) or hash mismatches → False.
     """
     events_by_order, _ = load_fill_events()
     events = events_by_order.get(order_id, [])
-    filling = next((e for e in events if e.get("status") == "filling"), None)
-    if filling is None:
-        return False
     persisted = next((e for e in events if e.get("status") == "persisted"), None)
     if persisted is None:
         return False
-    # Strict cross-reference: fill_attempt_id must match
-    p_fa = persisted.get("fill_attempt_id")
-    f_fa = filling.get("fill_attempt_id")
-    if p_fa and f_fa and p_fa != f_fa:
+    ref_fa_id = persisted.get("fill_attempt_id")
+    if not ref_fa_id:
         return False
-    # Also verify filling_content_hash if present
+    # Find the filling event that matches the persisted marker's fill_attempt_id (Bug 1 fix)
+    filling = next(
+        (e for e in events if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
+        None,
+    )
+    if filling is None:
+        return False
     ref_hash = persisted.get("filling_content_hash")
     if ref_hash and filling.get("content_hash") != ref_hash:
         return False

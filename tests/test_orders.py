@@ -828,6 +828,7 @@ class TestFillEventWAL:
             action=action,
             intended_execution_session=SESSION, actual_execution_session=SESSION,
             shares=shares, execution_price=execution_price,
+            execution_price_timestamp="2026-08-06T13:30:00Z",
             commission_amount=commission_amount, reason=reason,
             execution_version=execution_version,
             cash_before=cash_before, cash_after=cash_after,
@@ -854,7 +855,8 @@ class TestFillEventWAL:
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-abc123456789"
         rec = self._write_fill(oid)
-        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"])
+        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="a" * 64)
         assert is_fill_persisted(oid)
 
     def test_persisted_without_filling_event_is_not_valid(self, tmp_path, monkeypatch):
@@ -862,7 +864,8 @@ class TestFillEventWAL:
         from modules.fills import mark_fill_persisted, is_fill_persisted
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-orphan-persisted"
-        mark_fill_persisted(oid, "fa-dummy000000", "hash-dummy")  # no prior filling event
+        mark_fill_persisted(oid, "fa-dummy000000", "hash-dummy",
+                            post_portfolio_state_hash="a" * 64)  # no prior filling event
         assert not is_fill_persisted(oid)
 
     def test_make_fill_id_deterministic(self):
@@ -892,7 +895,8 @@ class TestFillEventWAL:
         rec = self._write_fill(order["order_id"], trade_id="trd-crash",
                                shares=5.0, execution_price=100.0,
                                cash_before=10000.0, cash_after=9500.0)
-        mark_fill_persisted(order["order_id"], rec["fill_attempt_id"], rec["content_hash"])
+        mark_fill_persisted(order["order_id"], rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="a" * 64)
 
         # Portfolio does NOT have position (fill WAL should take precedence)
         state = {"positions": {}, "cash": 10000.0}
@@ -1275,11 +1279,13 @@ class TestProjectFillsToTrades:
             strategy=strategy, ticker=ticker, action="BUY",
             intended_execution_session=session, actual_execution_session=session,
             shares=shares, execution_price=execution_price,
+            execution_price_timestamp=f"{session}T13:30:00Z",
             commission_amount=commission,
             reason="test", execution_version="v1",
             cash_before=10000.0, cash_after=9500.0,
         )
-        mark_fill_persisted(order_id, rec["fill_attempt_id"], rec["content_hash"])
+        mark_fill_persisted(order_id, rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="a" * 64)
 
     def test_missing_trade_recovered_from_wal(self, tmp_path, monkeypatch):
         """Trade row absent from trades_df is added when fills.jsonl has a persisted event."""
@@ -1311,6 +1317,7 @@ class TestProjectFillsToTrades:
             strategy="s1", ticker="AAPL", action="BUY",
             intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
             shares=1.0, execution_price=100.0, commission_amount=0.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             reason="test", execution_version="v1",
             cash_before=10000.0, cash_after=9900.0,
         )  # No mark_fill_persisted
@@ -1463,6 +1470,7 @@ class TestFillAttemptId:
             strategy="s1", ticker="AAPL", action=action,
             intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
             shares=5.0, execution_price=price,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=cash_before, cash_after=cash_after,
         )
 
@@ -1543,6 +1551,7 @@ class TestFillAttemptId:
             intended_execution_session="2026-08-07",
             actual_execution_session="2026-08-07",
             shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9500.0,
         )
         rec2 = write_fill_event(
@@ -1553,10 +1562,12 @@ class TestFillAttemptId:
             intended_execution_session="2026-08-07",
             actual_execution_session="2026-08-07",
             shares=5.0, execution_price=102.0,  # different retry price
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9490.0,
         )
         # Mark the SECOND attempt as persisted
-        mark_fill_persisted("ord-two-fills123", rec2["fill_attempt_id"], rec2["content_hash"])
+        mark_fill_persisted("ord-two-fills123", rec2["fill_attempt_id"], rec2["content_hash"],
+                            post_portfolio_state_hash="a" * 64)
 
         recovered = project_fills_to_trades(pd.DataFrame())
         # Must project the second attempt's trade_id, not the first
@@ -1577,10 +1588,12 @@ class TestFillAttemptId:
             intended_execution_session="2026-08-07",
             actual_execution_session="2026-08-07",
             shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9500.0,
         )
         # Write persisted marker with a DIFFERENT (non-existent) fill_attempt_id
-        mark_fill_persisted("ord-orphan-test0", "fa-doesnotexist0", rec["content_hash"])
+        mark_fill_persisted("ord-orphan-test0", "fa-doesnotexist0", rec["content_hash"],
+                            post_portfolio_state_hash="a" * 64)
 
         with pytest.raises(RuntimeError, match="fail-closed"):
             project_fills_to_trades(pd.DataFrame())
@@ -1633,6 +1646,7 @@ class TestMandatoryContentHash:
             intended_execution_session="2026-08-07",
             actual_execution_session="2026-08-07",
             shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9500.0,
         )
         fills_path = tmp_path / "fills.jsonl"
@@ -1659,7 +1673,7 @@ class TestMandatoryContentHash:
             "actual_execution_session": "2026-08-07",
             "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
             "execution_price_source": "next_session_daily_open_v1",
-            "execution_price_timestamp": None,
+            "execution_price_timestamp": "2026-08-07T13:30:00Z",
             "execution_price_interval": "1d",
             "gross_execution_price": 100.0,
             "slippage_bps": 0, "slippage_amount": 0.0, "commission_amount": 0.0,
@@ -1732,10 +1746,12 @@ class TestPyramidFillAction:
             intended_execution_session="2026-08-07",
             actual_execution_session="2026-08-07",
             shares=3.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9700.0,
         )
         assert rec["action"] == "PYRAMID_FILL"
-        mark_fill_persisted("ord-pyr-test0000", rec["fill_attempt_id"], rec["content_hash"])
+        mark_fill_persisted("ord-pyr-test0000", rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="a" * 64)
 
         recovered = project_fills_to_trades(pd.DataFrame())
         row = recovered[recovered["trade_id"] == "trd-pyr"]
@@ -1945,6 +1961,7 @@ class TestCommitIntent:
             strategy="s1", ticker="AAPL", action="BUY",
             intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
             shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9500.0,
         )
         write_commit_intent(
@@ -1987,6 +2004,7 @@ class TestCommitIntent:
             strategy=STRATEGY, ticker=TICKER, action="BUY",
             intended_execution_session=SESSION, actual_execution_session=SESSION,
             shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-06T13:30:00Z",
             cash_before=10000.0, cash_after=9500.0,
         )
 
@@ -2035,6 +2053,7 @@ class TestCommitIntent:
             strategy=STRATEGY, ticker=TICKER, action="BUY",
             intended_execution_session=SESSION, actual_execution_session=SESSION,
             shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-06T13:30:00Z",
             cash_before=10000.0, cash_after=9500.0,
         )
 
@@ -2099,3 +2118,283 @@ class TestExecutionPriceTimestamp:
             cash_before=10000.0, cash_after=9500.0,
         )
         assert rec["execution_price_timestamp"] == "2026-08-07T13:30:00Z"
+
+
+# ---------------------------------------------------------------------------
+# Round 5 regressions — 7 bugs found in commit 0bd362e
+# ---------------------------------------------------------------------------
+
+class TestRound5Regressions:
+    """Reproduction-confirmed regressions for the 7 bugs found in 0bd362e."""
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _append_raw(self, tmp_path, record: dict) -> None:
+        fills_path = tmp_path / "fills.jsonl"
+        with open(fills_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    # --- Bug 1: is_fill_persisted picks FIRST filling event ---
+
+    def test_is_fill_persisted_uses_persisted_marker_fa_id(self, tmp_path, monkeypatch):
+        """Bug 1: is_fill_persisted must return True when attempt B is persisted, A is first."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted, is_fill_persisted
+
+        oid = "ord-b1-regression00"
+
+        fill_a = write_fill_event(
+            order_id=oid, trade_id="trd-b1-a", signal_id=None,
+            signal_run_id="run-001", portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        fill_b = write_fill_event(
+            order_id=oid, trade_id="trd-b1-b", signal_id=None,
+            signal_run_id="run-001", portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        assert fill_a["fill_attempt_id"] != fill_b["fill_attempt_id"]
+
+        # Persist attempt B (not A)
+        mark_fill_persisted(oid, fill_b["fill_attempt_id"], fill_b["content_hash"],
+                            post_portfolio_state_hash="a" * 64)
+
+        # Bug 1 (old code): picks first filling (A) → fill_attempt_id mismatch → False
+        # Fixed code: finds persisted marker first → looks for B → True
+        assert is_fill_persisted(oid), (
+            "is_fill_persisted must return True when attempt B is persisted, "
+            "even though attempt A appeared first in the ledger"
+        )
+
+    # --- Bug 2: reconcile_settling_orders commit_intent path uses first filling ---
+
+    def test_reconcile_commit_intent_uses_referenced_filling_not_first(
+            self, tmp_path, monkeypatch):
+        """Bug 2: reconcile must reconstruct using the filling referenced by commit_intent."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            write_fill_event, write_commit_intent, compute_portfolio_state_hash,
+            load_fill_events,
+        )
+
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-001", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id="trd-b2"
+        )
+
+        fill_a = write_fill_event(
+            order_id=order["order_id"], trade_id="trd-b2-a",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy=STRATEGY, ticker=TICKER, action="BUY",
+            intended_execution_session=SESSION, actual_execution_session=SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-06T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        fill_b = write_fill_event(
+            order_id=order["order_id"], trade_id="trd-b2-b",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy=STRATEGY, ticker=TICKER, action="BUY",
+            intended_execution_session=SESSION, actual_execution_session=SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-06T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        assert fill_a["fill_attempt_id"] != fill_b["fill_attempt_id"]
+
+        state = {"cash": 9500.0, "positions": {TICKER: _make_position(5.0, 100.0)}}
+        intent_hash = compute_portfolio_state_hash(state)
+
+        # commit_intent references attempt B, not A
+        write_commit_intent(
+            strategy=STRATEGY,
+            portfolio_id="", portfolio_version="",
+            post_portfolio_state_hash=intent_hash,
+            fills=[{"order_id": order["order_id"],
+                    "fill_attempt_id": fill_b["fill_attempt_id"],
+                    "filling_content_hash": fill_b["content_hash"]}],
+        )
+
+        reconciled = reconcile_settling_orders(orders, STRATEGY, state)
+        assert len(reconciled) == 1
+        assert orders[order["order_id"]]["status"] == EXECUTED
+
+        # Verify persisted marker references attempt B, not A
+        events_by_order, _ = load_fill_events()
+        order_events = events_by_order.get(order["order_id"], [])
+        persisted = next((e for e in order_events if e.get("status") == "persisted"), None)
+        assert persisted is not None
+        assert persisted["fill_attempt_id"] == fill_b["fill_attempt_id"], (
+            "Persisted marker must reference attempt B (from commit_intent), not attempt A"
+        )
+        assert persisted["fill_attempt_id"] != fill_a["fill_attempt_id"]
+
+    # --- Bug 3: post_portfolio_state_hash=None accepted in persisted events ---
+
+    def test_persisted_record_null_post_portfolio_state_hash_fails_closed(
+            self, tmp_path, monkeypatch):
+        """Bug 3: persisted event with null post_portfolio_state_hash must fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events
+
+        rec = {
+            "fill_id": "fill-b3test000000", "fill_attempt_id": "fa-b3test000",
+            "filling_content_hash": "abc" * 20 + "ab",
+            "order_id": "ord-b3-test00000",
+            "post_portfolio_state_hash": None,  # Bug 3: null must be rejected
+            "commit_id": None,
+            "status": "persisted", "written_at": "2026-08-07T14:00:00Z",
+            "content_hash": "",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        self._append_raw(tmp_path, rec)
+
+        with pytest.raises(RuntimeError, match="post_portfolio_state_hash"):
+            load_fill_events()
+
+    # --- Bug 4: intended_execution_session != actual_execution_session accepted ---
+
+    def test_filling_event_session_mismatch_fails_closed(self, tmp_path, monkeypatch):
+        """Bug 4: filling event with intended ≠ actual session must fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events
+
+        rec = {
+            "fill_id": "fill-" + __import__("hashlib").sha256(b"ord-b4-test00000").hexdigest()[:12],
+            "fill_attempt_id": "fa-b4test000",
+            "order_id": "ord-b4-test00000", "trade_id": "trd-b4",
+            "signal_id": None, "signal_run_id": "run-001",
+            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
+            "ticker": "AAPL", "action": "BUY",
+            "intended_execution_session": "2026-08-06",   # Bug 4: mismatch
+            "actual_execution_session": "2026-08-07",    # different!
+            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": "2026-08-07T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "slippage_bps": 0, "slippage_amount": 0.0, "commission_amount": 0.0,
+            "gross_execution_value": 500.0, "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,
+            "reason": "", "cash_before": 10000.0, "cash_after": 9500.0,
+            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
+            "content_hash": "",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        self._append_raw(tmp_path, rec)
+
+        with pytest.raises(RuntimeError, match="session"):
+            load_fill_events()
+
+    # --- Bug 5: execution_price_timestamp=None accepted ---
+
+    def test_filling_event_null_execution_price_timestamp_fails_closed(
+            self, tmp_path, monkeypatch):
+        """Bug 5: filling event with null execution_price_timestamp must fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events
+
+        rec = {
+            "fill_id": "fill-" + __import__("hashlib").sha256(b"ord-b5-test00000").hexdigest()[:12],
+            "fill_attempt_id": "fa-b5test000",
+            "order_id": "ord-b5-test00000", "trade_id": "trd-b5",
+            "signal_id": None, "signal_run_id": "run-001",
+            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
+            "ticker": "AAPL", "action": "BUY",
+            "intended_execution_session": "2026-08-07",
+            "actual_execution_session": "2026-08-07",
+            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": None,  # Bug 5: null must be rejected
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "slippage_bps": 0, "slippage_amount": 0.0, "commission_amount": 0.0,
+            "gross_execution_value": 500.0, "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,
+            "reason": "", "cash_before": 10000.0, "cash_after": 9500.0,
+            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
+            "content_hash": "",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        self._append_raw(tmp_path, rec)
+
+        with pytest.raises(RuntimeError, match="execution_price_timestamp"):
+            load_fill_events()
+
+    # --- Bug 6: total_execution_cost < commission_amount accepted ---
+
+    def test_filling_event_total_cost_less_than_commission_fails_closed(
+            self, tmp_path, monkeypatch):
+        """Bug 6: total_execution_cost < commission_amount must fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events
+
+        rec = {
+            "fill_id": "fill-" + __import__("hashlib").sha256(b"ord-b6-test00000").hexdigest()[:12],
+            "fill_attempt_id": "fa-b6test000",
+            "order_id": "ord-b6-test00000", "trade_id": "trd-b6",
+            "signal_id": None, "signal_run_id": "run-001",
+            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
+            "ticker": "AAPL", "action": "BUY",
+            "intended_execution_session": "2026-08-07",
+            "actual_execution_session": "2026-08-07",
+            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": "2026-08-07T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "slippage_bps": 0, "slippage_amount": 0.0,
+            "commission_amount": 5.0,         # Bug 6: total < commission
+            "total_execution_cost": 2.0,      # must be >= commission_amount
+            "gross_execution_value": 500.0,
+            "net_cash_effect": -507.0,
+            "reason": "", "cash_before": 10000.0, "cash_after": 9493.0,
+            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
+            "content_hash": "",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        self._append_raw(tmp_path, rec)
+
+        with pytest.raises(RuntimeError, match="total_execution_cost"):
+            load_fill_events()
+
+    # --- Bug 7: calendar error falls back to runner timestamp ---
+
+    def test_calendar_error_raises_not_fallback(self):
+        """Bug 7: _write_fill_event_for_order must raise on calendar failure, not fall back."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def _write_fill_event_for_order(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+        assert 'trade.get("timestamp_utc")' not in fn_body, (
+            "_write_fill_event_for_order must not fall back to trade.get('timestamp_utc') "
+            "on calendar failure — fail-closed required"
+        )
+        assert "raise RuntimeError" in fn_body, (
+            "_write_fill_event_for_order must raise RuntimeError when calendar is unavailable"
+        )
+        assert "fail-closed" in fn_body, (
+            "_write_fill_event_for_order must include 'fail-closed' in the error message"
+        )
