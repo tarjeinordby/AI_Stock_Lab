@@ -1453,18 +1453,64 @@ class TestFillAttemptId:
         monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
         monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
 
-    def test_fill_attempt_id_deterministic(self):
-        from modules.fills import make_fill_attempt_id
-        a = make_fill_attempt_id("ord-abc", 100.0, "2026-08-07")
-        b = make_fill_attempt_id("ord-abc", 100.0, "2026-08-07")
-        assert a == b
-        assert a.startswith("fa-")
+    def _write_fill(self, tmp_path, monkeypatch, order_id, trade_id="trd-x",
+                    price=100.0, cash_before=10000.0, cash_after=9500.0, action="BUY"):
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=order_id, trade_id=trade_id, signal_id=None,
+            signal_run_id="run-001", portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action=action,
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=price,
+            cash_before=cash_before, cash_after=cash_after,
+        )
 
-    def test_fill_attempt_id_differs_on_price_change(self):
-        from modules.fills import make_fill_attempt_id
-        a = make_fill_attempt_id("ord-abc", 100.0, "2026-08-07")
-        b = make_fill_attempt_id("ord-abc", 101.0, "2026-08-07")
-        assert a != b
+    def test_fill_attempt_id_has_correct_format(self, tmp_path, monkeypatch):
+        """fill_attempt_id must start with 'fa-' and have correct length."""
+        rec = self._write_fill(tmp_path, monkeypatch, "ord-format-test000")
+        fa_id = rec["fill_attempt_id"]
+        assert fa_id.startswith("fa-")
+        assert len(fa_id) == 15  # "fa-" (3) + 12 hex chars
+
+    def test_fill_attempt_id_unique_per_write(self, tmp_path, monkeypatch):
+        """Two sequential writes for the same order get different fill_attempt_ids."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event
+
+        def _w(trade_id):
+            return write_fill_event(
+                order_id="ord-unique-test01", trade_id=trade_id, signal_id=None,
+                signal_run_id="run-001", portfolio_id="", portfolio_version="",
+                strategy="s1", ticker="AAPL", action="BUY",
+                intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+                shares=5.0, execution_price=100.0,
+                cash_before=10000.0, cash_after=9500.0,
+            )
+
+        rec1 = _w("trd-u1")
+        rec2 = _w("trd-u2")
+        # Even same price and session: different UUID per write
+        assert rec1["fill_attempt_id"] != rec2["fill_attempt_id"]
+
+    def test_fill_attempt_id_differs_on_price_change(self, tmp_path, monkeypatch):
+        """Two writes at different prices get different fill_attempt_ids (UUID-based)."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event
+
+        def _w(price, cash_after):
+            return write_fill_event(
+                order_id="ord-price-diff000", trade_id="trd-p", signal_id=None,
+                signal_run_id="run-001", portfolio_id="", portfolio_version="",
+                strategy="s1", ticker="AAPL", action="BUY",
+                intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+                shares=5.0, execution_price=price,
+                cash_before=10000.0, cash_after=cash_after,
+            )
+
+        a = _w(100.0, 9500.0)
+        b = _w(101.0, 9495.0)
+        assert a["fill_attempt_id"] != b["fill_attempt_id"]
 
     def test_write_fill_event_includes_fill_attempt_id(self, tmp_path, monkeypatch):
         self._patch_fills(tmp_path, monkeypatch)
@@ -1601,23 +1647,40 @@ class TestMandatoryContentHash:
         with pytest.raises(RuntimeError, match="content_hash"):
             load_fill_events()
 
-    def test_invalid_action_rejected(self, tmp_path, monkeypatch):
-        """action not in {BUY, SELL, PYRAMID_FILL} → fail-closed on load."""
-        self._patch_fills(tmp_path, monkeypatch)
-        from modules.fills import _make_content_hash, load_fill_events
-        import json
+    def _full_filling_record(self, **overrides) -> dict:
+        """Build a raw filling record with all required schema fields."""
         rec = {
             "fill_id": "fill-bad-action", "fill_attempt_id": "fa-bad",
             "order_id": "ord-bad-action0", "trade_id": "trd-x",
             "signal_id": None, "signal_run_id": "run-001",
             "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
-            "ticker": "AAPL", "action": "INVALID_ACTION",
+            "ticker": "AAPL", "action": "BUY",
             "intended_execution_session": "2026-08-07",
             "actual_execution_session": "2026-08-07",
             "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": None,
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "slippage_bps": 0, "slippage_amount": 0.0, "commission_amount": 0.0,
+            "gross_execution_value": 500.0, "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,  # BUY: negative
+            "reason": "",
             "cash_before": 10000.0, "cash_after": 9500.0,
             "status": "filling", "written_at": "2026-08-07T14:00:00Z",
         }
+        rec["fill_id"] = "fill-" + __import__("hashlib").sha256(
+            rec["order_id"].encode()
+        ).hexdigest()[:12]
+        rec.update(overrides)
+        return rec
+
+    def test_invalid_action_rejected(self, tmp_path, monkeypatch):
+        """action not in {BUY, SELL, PYRAMID_FILL} → fail-closed on load."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events
+        import json
+        rec = self._full_filling_record(action="INVALID_ACTION")
         rec["content_hash"] = _make_content_hash(rec)
         fills_path = tmp_path / "fills.jsonl"
         with open(fills_path, "a", encoding="utf-8") as f:
@@ -1630,18 +1693,15 @@ class TestMandatoryContentHash:
         self._patch_fills(tmp_path, monkeypatch)
         from modules.fills import _make_content_hash, load_fill_events
         import json
-        rec = {
-            "fill_id": "fill-bad-cash00", "fill_attempt_id": "fa-bc",
-            "order_id": "ord-bad-cash00", "trade_id": "trd-x",
-            "signal_id": None, "signal_run_id": "run-001",
-            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
-            "ticker": "AAPL", "action": "BUY",
-            "intended_execution_session": "2026-08-07",
-            "actual_execution_session": "2026-08-07",
-            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
-            "cash_before": 9000.0, "cash_after": 9500.0,  # wrong direction!
-            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
-        }
+        # net_cash_effect positive is also wrong for BUY; direction check fires first
+        rec = self._full_filling_record(
+            order_id="ord-bad-cash00",
+            fill_id="fill-" + __import__("hashlib").sha256(b"ord-bad-cash00").hexdigest()[:12],
+            fill_attempt_id="fa-bc",
+            action="BUY",
+            cash_before=9000.0, cash_after=9500.0,  # wrong direction!
+            net_cash_effect=500.0,  # positive is wrong for BUY but direction check fires first
+        )
         rec["content_hash"] = _make_content_hash(rec)
         fills_path = tmp_path / "fills.jsonl"
         with open(fills_path, "a", encoding="utf-8") as f:
@@ -1683,15 +1743,32 @@ class TestPyramidFillAction:
         assert row.iloc[0]["action"] == "PYRAMID_FILL"
 
 
+def _make_position(shares, avg_price, last_price=None, highest_price=None,
+                   is_partial=False, pyramid_remaining_value=0.0, pyramid_min_price=0.0):
+    """Build a real portfolio position dict matching modules/portfolio.py schema."""
+    return {
+        "shares": shares,
+        "avg_price": avg_price,
+        "last_price": last_price if last_price is not None else avg_price,
+        "highest_price": highest_price if highest_price is not None else avg_price,
+        "is_partial": is_partial,
+        "pyramid_remaining_value": pyramid_remaining_value,
+        "pyramid_min_price": pyramid_min_price,
+    }
+
+
 class TestPortfolioStateHash:
     """compute_portfolio_state_hash produces a stable, canonical hash of cash+positions."""
 
     def test_hash_deterministic(self):
         from modules.fills import compute_portfolio_state_hash
-        state = {"cash": 5000.0, "positions": {"AAPL": {"shares": 10.0, "avg_cost": 150.0}}}
+        state = {"cash": 5000.0, "positions": {
+            "AAPL": _make_position(10.0, 150.0, last_price=155.0, highest_price=160.0),
+        }}
         a = compute_portfolio_state_hash(state)
         b = compute_portfolio_state_hash(state)
         assert a == b
+        assert len(a) == 64  # full SHA-256, not truncated
 
     def test_hash_changes_on_cash_change(self):
         from modules.fills import compute_portfolio_state_hash
@@ -1701,39 +1778,64 @@ class TestPortfolioStateHash:
 
     def test_hash_changes_on_position_change(self):
         from modules.fills import compute_portfolio_state_hash
-        s1 = {"cash": 5000.0, "positions": {"AAPL": {"shares": 10.0, "avg_cost": 150.0}}}
-        s2 = {"cash": 5000.0, "positions": {"AAPL": {"shares": 11.0, "avg_cost": 150.0}}}
+        s1 = {"cash": 5000.0, "positions": {"AAPL": _make_position(10.0, 150.0)}}
+        s2 = {"cash": 5000.0, "positions": {"AAPL": _make_position(11.0, 150.0)}}
+        assert compute_portfolio_state_hash(s1) != compute_portfolio_state_hash(s2)
+
+    def test_hash_changes_on_avg_price_change(self):
+        from modules.fills import compute_portfolio_state_hash
+        s1 = {"cash": 5000.0, "positions": {"AAPL": _make_position(10.0, 150.0)}}
+        s2 = {"cash": 5000.0, "positions": {"AAPL": _make_position(10.0, 151.0)}}
         assert compute_portfolio_state_hash(s1) != compute_portfolio_state_hash(s2)
 
     def test_hash_order_independent(self):
         from modules.fills import compute_portfolio_state_hash
-        s1 = {"cash": 5000.0, "positions": {"AAPL": {"shares": 10.0, "avg_cost": 150.0},
-                                             "MSFT": {"shares": 5.0, "avg_cost": 300.0}}}
-        s2 = {"cash": 5000.0, "positions": {"MSFT": {"shares": 5.0, "avg_cost": 300.0},
-                                             "AAPL": {"shares": 10.0, "avg_cost": 150.0}}}
+        s1 = {"cash": 5000.0, "positions": {
+            "AAPL": _make_position(10.0, 150.0),
+            "MSFT": _make_position(5.0, 300.0),
+        }}
+        s2 = {"cash": 5000.0, "positions": {
+            "MSFT": _make_position(5.0, 300.0),
+            "AAPL": _make_position(10.0, 150.0),
+        }}
         assert compute_portfolio_state_hash(s1) == compute_portfolio_state_hash(s2)
+
+    def test_hash_changes_on_is_partial_change(self):
+        from modules.fills import compute_portfolio_state_hash
+        s1 = {"cash": 5000.0, "positions": {"AAPL": _make_position(10.0, 150.0, is_partial=False)}}
+        s2 = {"cash": 5000.0, "positions": {"AAPL": _make_position(10.0, 150.0, is_partial=True,
+                                                                    pyramid_remaining_value=1000.0)}}
+        assert compute_portfolio_state_hash(s1) != compute_portfolio_state_hash(s2)
 
 
 class TestIdempotentRetrySignalId:
     """get_signal_records_for_run returns all signal_records for a completed run."""
 
+    def _write_signal_records(self, jpath, records):
+        """Write signal_records with proper content_hash (as _append_batch would)."""
+        import hashlib
+        import json
+        with open(jpath, "w", encoding="utf-8") as f:
+            for rec in records:
+                r = {k: v for k, v in rec.items() if k != "content_hash"}
+                rec["content_hash"] = hashlib.sha256(
+                    json.dumps(r, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+                ).hexdigest()
+                f.write(json.dumps(rec, sort_keys=True) + "\n")
+
     def test_get_signal_records_for_run(self, tmp_path, monkeypatch):
         """Returns matching records for signal_run_id, skips others."""
         import modules.ledger as ledger_mod
-        import json
-        # _jsonl_path("signal_record", "2026-08") → LEDGER_DIR / "2026-08_signal_records.jsonl"
         jpath = tmp_path / "2026-08_signal_records.jsonl"
         monkeypatch.setattr(ledger_mod, "LEDGER_DIR", tmp_path)
 
-        rec1 = {"signal_run_id": "run-target", "strategy_id": "s1",
+        rec1 = {"signal_run_id": "run-target", "strategy_id": "s1", "model_version": "v1",
                 "ticker": "AAPL", "signal_id": "sig-aapl0000001"}
-        rec2 = {"signal_run_id": "run-other", "strategy_id": "s1",
+        rec2 = {"signal_run_id": "run-other", "strategy_id": "s1", "model_version": "v1",
                 "ticker": "AAPL", "signal_id": "sig-other"}
-        rec3 = {"signal_run_id": "run-target", "strategy_id": "s2",
+        rec3 = {"signal_run_id": "run-target", "strategy_id": "s2", "model_version": "v1",
                 "ticker": "MSFT", "signal_id": "sig-msft0000001"}
-        with open(jpath, "w") as f:
-            for r in [rec1, rec2, rec3]:
-                f.write(json.dumps(r) + "\n")
+        self._write_signal_records(jpath, [rec1, rec2, rec3])
 
         from modules.ledger import get_signal_records_for_run
         records = get_signal_records_for_run("run-target", "2026-08")
@@ -1747,3 +1849,253 @@ class TestIdempotentRetrySignalId:
         from modules.ledger import get_signal_records_for_run
         records = get_signal_records_for_run("run-nobody", "2026-08")
         assert records == []
+
+    def test_get_signal_records_fails_closed_on_missing_content_hash(self, tmp_path, monkeypatch):
+        """Record without content_hash → fail-closed RuntimeError."""
+        import modules.ledger as ledger_mod
+        import json
+        monkeypatch.setattr(ledger_mod, "LEDGER_DIR", tmp_path)
+        jpath = tmp_path / "2026-08_signal_records.jsonl"
+        rec = {"signal_run_id": "run-x", "strategy_id": "s1", "model_version": "v1",
+               "ticker": "AAPL", "signal_id": "sig-x"}  # no content_hash
+        jpath.write_text(json.dumps(rec) + "\n")
+        from modules.ledger import get_signal_records_for_run
+        with pytest.raises(RuntimeError, match="content_hash"):
+            get_signal_records_for_run("run-x", "2026-08")
+
+    def test_get_signal_records_fails_closed_on_duplicate_strategy_ticker(self, tmp_path, monkeypatch):
+        """Duplicate (strategy_id, ticker) for same signal_run_id → fail-closed."""
+        import modules.ledger as ledger_mod
+        monkeypatch.setattr(ledger_mod, "LEDGER_DIR", tmp_path)
+        jpath = tmp_path / "2026-08_signal_records.jsonl"
+
+        rec1 = {"signal_run_id": "run-dup", "strategy_id": "s1", "model_version": "v1",
+                "ticker": "AAPL", "signal_id": "sig-a"}
+        rec2 = {"signal_run_id": "run-dup", "strategy_id": "s1", "model_version": "v1",
+                "ticker": "AAPL", "signal_id": "sig-b"}  # duplicate (s1, AAPL)
+        self._write_signal_records(jpath, [rec1, rec2])
+
+        from modules.ledger import get_signal_records_for_run
+        with pytest.raises(RuntimeError, match="duplikat"):
+            get_signal_records_for_run("run-dup", "2026-08")
+
+    def test_get_signal_records_fails_closed_on_missing_model_version(self, tmp_path, monkeypatch):
+        """Record missing model_version for matching run → fail-closed."""
+        import modules.ledger as ledger_mod
+        monkeypatch.setattr(ledger_mod, "LEDGER_DIR", tmp_path)
+        jpath = tmp_path / "2026-08_signal_records.jsonl"
+
+        rec = {"signal_run_id": "run-nomodel", "strategy_id": "s1",
+               "ticker": "AAPL", "signal_id": "sig-x"}  # no model_version
+        self._write_signal_records(jpath, [rec])
+
+        from modules.ledger import get_signal_records_for_run
+        with pytest.raises(RuntimeError, match="model_version"):
+            get_signal_records_for_run("run-nomodel", "2026-08")
+
+
+# ---------------------------------------------------------------------------
+# Blocker 4: portfolio_commit_intent
+# ---------------------------------------------------------------------------
+
+class TestCommitIntent:
+    """write_commit_intent + recovery via reconcile_settling_orders."""
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def test_write_commit_intent_returns_record_with_commit_id(self, tmp_path, monkeypatch):
+        """write_commit_intent returns a dict with commit_id and content_hash."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_commit_intent, write_fill_event
+        rec = write_fill_event(
+            order_id="ord-ci-test00001", trade_id="trd-ci",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        ci = write_commit_intent(
+            strategy="s1",
+            portfolio_id="port-a",
+            portfolio_version="v1",
+            post_portfolio_state_hash="abcd1234" * 8,
+            fills=[{"order_id": "ord-ci-test00001",
+                    "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
+        assert ci["commit_id"].startswith("ci-")
+        assert ci["status"] == "commit_intent"
+        assert ci["content_hash"]  # set by _append_record
+        assert ci["post_portfolio_state_hash"] == "abcd1234" * 8
+        assert len(ci["fills"]) == 1
+
+    def test_commit_intent_loaded_from_fill_ledger(self, tmp_path, monkeypatch):
+        """load_fill_events returns commit_intents in the second element of the tuple."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, write_commit_intent, load_fill_events
+        rec = write_fill_event(
+            order_id="ord-ci-load00001", trade_id="trd-ci",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        write_commit_intent(
+            strategy="s1",
+            portfolio_id="p",
+            portfolio_version="v1",
+            post_portfolio_state_hash="a" * 64,
+            fills=[{"order_id": "ord-ci-load00001",
+                    "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
+        events_by_order, commit_intents = load_fill_events()
+        assert len(commit_intents) == 1
+        assert commit_intents[0]["commit_id"].startswith("ci-")
+        assert "ord-ci-load00001" in events_by_order
+
+    def test_reconcile_commit_intent_hash_match_reconstructs(self, tmp_path, monkeypatch):
+        """commit_intent + portfolio hash match + no persisted → reconstruct as EXECUTED."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            write_fill_event, write_commit_intent, compute_portfolio_state_hash,
+        )
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-001", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id="trd-ci-rc"
+        )
+
+        fill_rec = write_fill_event(
+            order_id=order["order_id"], trade_id="trd-ci-rc",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy=STRATEGY, ticker=TICKER, action="BUY",
+            intended_execution_session=SESSION, actual_execution_session=SESSION,
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        # State that would have been saved (matches intent hash)
+        state = {
+            "cash": 9500.0,
+            "positions": {TICKER: _make_position(5.0, 100.0)},
+        }
+        intent_hash = compute_portfolio_state_hash(state)
+
+        write_commit_intent(
+            strategy=STRATEGY,
+            portfolio_id="", portfolio_version="",
+            post_portfolio_state_hash=intent_hash,
+            fills=[{"order_id": order["order_id"],
+                    "fill_attempt_id": fill_rec["fill_attempt_id"],
+                    "filling_content_hash": fill_rec["content_hash"]}],
+        )
+
+        # Portfolio matches intent → should reconstruct EXECUTED
+        reconciled = reconcile_settling_orders(orders, STRATEGY, state)
+        assert len(reconciled) == 1
+        assert orders[order["order_id"]]["status"] == EXECUTED
+
+    def test_reconcile_commit_intent_hash_mismatch_gives_pending(self, tmp_path, monkeypatch):
+        """commit_intent + portfolio hash MISMATCH → PENDING_PRICE (crash before save)."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import write_fill_event, write_commit_intent, compute_portfolio_state_hash
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-001", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id="trd-ci-mismatch"
+        )
+
+        fill_rec = write_fill_event(
+            order_id=order["order_id"], trade_id="trd-ci-mismatch",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy=STRATEGY, ticker=TICKER, action="BUY",
+            intended_execution_session=SESSION, actual_execution_session=SESSION,
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        # Commit intent says one hash…
+        write_commit_intent(
+            strategy=STRATEGY,
+            portfolio_id="", portfolio_version="",
+            post_portfolio_state_hash="aaa" + "0" * 61,  # intentionally wrong hash
+            fills=[{"order_id": order["order_id"],
+                    "fill_attempt_id": fill_rec["fill_attempt_id"],
+                    "filling_content_hash": fill_rec["content_hash"]}],
+        )
+
+        # …but current portfolio state is EMPTY (crash before save)
+        state = {"cash": 10000.0, "positions": {}}
+        reconciled = reconcile_settling_orders(orders, STRATEGY, state)
+        assert len(reconciled) == 1
+        assert orders[order["order_id"]]["status"] == PENDING_PRICE
+
+
+# ---------------------------------------------------------------------------
+# Blocker 5: execution_price_timestamp must be NYSE session open
+# ---------------------------------------------------------------------------
+
+class TestExecutionPriceTimestamp:
+    """execution_price_timestamp should be NYSE session open (09:30 ET), not runner time."""
+
+    def test_session_open_utc_summer_edt(self):
+        """Summer (EDT=UTC-4): NYSE open 09:30 ET = 13:30 UTC."""
+        from modules.exchange_calendar import session_open_utc
+        ts = session_open_utc("2026-08-07")
+        assert ts.strftime("%Y-%m-%dT%H:%M:%SZ") == "2026-08-07T13:30:00Z"
+
+    def test_session_open_utc_winter_est(self):
+        """Winter (EST=UTC-5): NYSE open 09:30 ET = 14:30 UTC."""
+        from modules.exchange_calendar import session_open_utc
+        ts = session_open_utc("2026-01-07")
+        assert ts.strftime("%Y-%m-%dT%H:%M:%SZ") == "2026-01-07T14:30:00Z"
+
+    def test_session_open_independent_of_runtime(self):
+        """session_open_utc returns fixed open time regardless of when the runner runs."""
+        from modules.exchange_calendar import session_open_utc
+        # Runtime 10:40 ET but session open is 09:30 ET — function is deterministic
+        ts = session_open_utc("2026-08-07")
+        assert ts.hour == 13 and ts.minute == 30  # UTC (EDT=UTC-4)
+
+    def test_write_fill_event_stores_passed_timestamp(self, tmp_path, monkeypatch):
+        """write_fill_event passes through the execution_price_timestamp field."""
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+        from modules.fills import write_fill_event
+        rec = write_fill_event(
+            order_id="ord-ts-test00000", trade_id="trd-ts",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07",
+            actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        assert rec["execution_price_timestamp"] == "2026-08-07T13:30:00Z"

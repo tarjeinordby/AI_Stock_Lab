@@ -673,10 +673,27 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
 
     action is taken from order["action"] — the authoritative source. trade.get("action")
     may be "BUY" even for a PYRAMID_FILL trade, so we must not use it.
+
+    execution_price_timestamp is set to the NYSE session open (09:30 ET) for the actual
+    execution session — not the runner processing time (trade["timestamp_utc"]).
     """
     from modules.fills import write_fill_event  # noqa: PLC0415
     price = float(trade.get("price", 0))
     commission = float(trade.get("cost", 0))
+    actual_session = trade.get("execution_session", trade.get("date", ""))
+
+    # Blocker 5: use NYSE session open as execution_price_timestamp, not runner processing time.
+    # Fallback to trade["timestamp_utc"] only if calendar is unavailable.
+    try:
+        from modules.exchange_calendar import (  # noqa: PLC0415
+            CalendarUnavailableError,
+            session_open_utc,
+        )
+        open_ts = session_open_utc(actual_session)
+        execution_price_timestamp = open_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        execution_price_timestamp = trade.get("timestamp_utc")
+
     return write_fill_event(
         order_id=order["order_id"],
         trade_id=make_trade_id(order["order_id"]),
@@ -688,11 +705,11 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
         ticker=trade.get("ticker", ""),
         action=order["action"],  # authoritative: PYRAMID_FILL must not be overridden by trade
         intended_execution_session=order.get("intended_execution_session", ""),
-        actual_execution_session=trade.get("execution_session", trade.get("date", "")),
+        actual_execution_session=actual_session,
         shares=float(trade.get("shares", 0)),
         execution_price=price,
         execution_price_source=trade.get("execution_price_source", "next_session_daily_open_v1"),
-        execution_price_timestamp=trade.get("timestamp_utc"),
+        execution_price_timestamp=execution_price_timestamp,
         gross_execution_price=trade.get("gross_execution_price", price),
         gross_execution_value=trade.get("gross_execution_value"),
         total_execution_cost=trade.get("total_execution_cost"),
@@ -1146,8 +1163,37 @@ def run_strategy_execution(
     state["last_execution_date"] = today_str()
 
     # Compute portfolio state hash before save — verified after atomic write
-    from modules.fills import compute_portfolio_state_hash, mark_fill_persisted  # noqa: PLC0415
+    from modules.fills import (  # noqa: PLC0415
+        compute_portfolio_state_hash,
+        mark_fill_persisted,
+        write_commit_intent,
+    )
     pre_save_hash = compute_portfolio_state_hash(state)
+
+    # Write commit_intent BEFORE portfolio save — proves what we intended to persist.
+    # On crash recovery: if portfolio hash matches this intent → save completed.
+    portfolio_id = state.get("portfolio_id", strategy_name)
+    portfolio_version = state.get("portfolio_version", "")
+    fills_for_intent = [
+        {"order_id": oid, "fill_attempt_id": fa_id, "filling_content_hash": ch}
+        for oid, fa_id, ch in settling_fills
+    ]
+    commit_intent_rec = None
+    if fills_for_intent:
+        try:
+            commit_intent_rec = write_commit_intent(
+                strategy=strategy_name,
+                portfolio_id=portfolio_id,
+                portfolio_version=portfolio_version,
+                post_portfolio_state_hash=pre_save_hash,
+                fills=fills_for_intent,
+            )
+        except RuntimeError as exc:
+            send_telegram(
+                f"⚠️ KRITISK: commit_intent WAL feilet for {strategy_name}: {exc} "
+                "— kjøring avbrutt"
+            )
+            raise
 
     save_strategy_state(strategy_name, state)
 
@@ -1167,11 +1213,16 @@ def run_strategy_execution(
     # Mark fills as persisted in WAL + finalize SETTLING → EXECUTED (fail-closed per fill)
     # EXECUTED is only written if mark_fill_persisted succeeds and hash matches.
     # A WAL write failure leaves the order as SETTLING for reconcile_settling_orders on restart.
+    _commit_id = commit_intent_rec.get("commit_id") if commit_intent_rec else None
     for oid, fa_id, ch in settling_fills:
         if oid not in orders or orders[oid].get("status") != SETTLING:
             continue
         try:
-            mark_fill_persisted(oid, fa_id, ch, post_portfolio_state_hash=pre_save_hash)
+            mark_fill_persisted(
+                oid, fa_id, ch,
+                post_portfolio_state_hash=pre_save_hash,
+                commit_id=_commit_id,
+            )
         except RuntimeError as exc:
             send_telegram(
                 f"⚠️ KRITISK: Fill-WAL feilet for {oid}: {exc} "

@@ -341,25 +341,49 @@ def get_or_create_order(
 
 
 def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> list:
-    """Reconcile SETTLING orders using fill event WAL + portfolio state.
+    """Reconcile SETTLING orders using fill event WAL + commit_intent + portfolio state.
 
-    Called after loading strategy state so we can tell whether the portfolio was saved
-    before a crash. Uses the fills.jsonl WAL as the primary source; falls back to
-    portfolio state check for legacy orders (before fills.jsonl existed).
+    Primary recovery path (WAL-based orders with commit_intent):
+    - commit_intent found + current portfolio hash == intent hash:
+        - persisted event present → EXECUTED
+        - no persisted event → crash after portfolio save, before mark → reconstruct
+    - commit_intent found + hashes do NOT match → crash before portfolio save → PENDING_PRICE
+    - no commit_intent → legacy path (fill events + ticker-presence check)
 
-    Crash-before-portfolio-save → PENDING_PRICE (not FAILED_PRICE — transient, retry).
-    Crash-after-portfolio-save → reconstructed as EXECUTED (portfolio is authoritative).
+    Legacy path (orders without commit_intent — pre-Round4 code):
+    - fill event present + portfolio reflects fill → crash after save → reconstruct
+    - fill event present + portfolio does NOT reflect fill → crash before save → PENDING_PRICE
+    - no fill event + portfolio reflects fill → very old code (no WAL) → EXECUTED
+    - no fill event + no portfolio fill → crash before save → PENDING_PRICE
 
     Raises RuntimeError if the fill ledger cannot be read (fail-closed — caller must alert).
-
     Returns the list of reconciled orders.
     """
-    from modules.fills import load_fill_events, mark_fill_persisted  # noqa: PLC0415
+    from modules.fills import (  # noqa: PLC0415
+        compute_portfolio_state_hash,
+        load_fill_events,
+        mark_fill_persisted,
+    )
+
     # Raises RuntimeError on ledger read failure — do not catch; let it propagate fail-closed
-    fill_events_by_order = load_fill_events()
+    fill_events_by_order, commit_intents = load_fill_events()
+
+    # Build map: order_id → commit_intent (for this strategy)
+    order_to_intent: dict[str, dict] = {}
+    for ci in commit_intents:
+        if ci.get("strategy") != strategy_name:
+            continue
+        for fill_ref in ci.get("fills", []):
+            oid = fill_ref.get("order_id")
+            if oid:
+                # Last commit_intent wins (most recent batch attempt)
+                order_to_intent[oid] = ci
+
+    # Compute current portfolio hash once for all orders in this strategy
+    current_hash = compute_portfolio_state_hash(state)
+    positions = state.get("positions", {})
 
     reconciled = []
-    positions = state.get("positions", {})
 
     for order in list(orders.values()):
         if order.get("status") != SETTLING:
@@ -371,59 +395,103 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         ticker = order.get("ticker")
         action = order.get("action")
 
-        # Portfolio state check (authoritative fallback when no fill events exist)
-        if action == "BUY":
-            portfolio_has_fill = ticker in positions
-        elif action == "SELL":
-            portfolio_has_fill = ticker not in positions
-        elif action == "PYRAMID_FILL":
-            pos = positions.get(ticker, {})
-            portfolio_has_fill = bool(pos) and not pos.get("is_partial", True)
-        else:
-            portfolio_has_fill = False
-
-        # Fill event WAL (primary crash-recovery source)
         order_fill_events = fill_events_by_order.get(order_id, [])
         filling_ev = next((e for e in order_fill_events if e.get("status") == "filling"), None)
         persisted_ev = next((e for e in order_fill_events if e.get("status") == "persisted"), None)
         has_filling = filling_ev is not None
-        # Strict: persisted marker must reference the filling event's fill_attempt_id
-        fill_persisted = (
-            filling_ev is not None
-            and persisted_ev is not None
-            and (
-                not persisted_ev.get("fill_attempt_id")
-                or not filling_ev.get("fill_attempt_id")
-                or persisted_ev.get("fill_attempt_id") == filling_ev.get("fill_attempt_id")
-            )
-        )
 
-        if fill_persisted:
-            # Fill WAL confirmed persisted → portfolio definitely on disk → EXECUTED
-            updated = save_order(order, status=EXECUTED)
-        elif order_fill_events and has_filling and portfolio_has_fill:
-            # Fill event exists but not marked persisted — crash after portfolio save,
-            # before mark_fill_persisted. Reconstruct: mark persisted now, EXECUTED.
-            # Use the last filling event (most recent attempt — the one that succeeded).
-            # Raises RuntimeError if WAL write fails — propagates fail-closed.
-            filling_events = [e for e in order_fill_events if e.get("status") == "filling"]
-            last_filling = filling_events[-1]
-            mark_fill_persisted(
-                order_id,
-                last_filling.get("fill_attempt_id", ""),
-                last_filling.get("content_hash", ""),
-            )
-            updated = save_order(order, status=EXECUTED)
-        elif not order_fill_events and portfolio_has_fill:
-            # No fill events (legacy system before fills.jsonl) — portfolio is authoritative
-            updated = save_order(order, status=EXECUTED)
+        commit_intent = order_to_intent.get(order_id)
+
+        if commit_intent is not None:
+            # ---------------------------------------------------------------
+            # New WAL-based path: commit_intent proves intended state
+            # ---------------------------------------------------------------
+            intent_hash = commit_intent.get("post_portfolio_state_hash", "")
+            commit_id = commit_intent.get("commit_id")
+
+            if current_hash != intent_hash:
+                # Portfolio hash doesn't match intent — crash happened before portfolio save
+                updated = save_order(
+                    order, status=PENDING_PRICE,
+                    failure_reason=(
+                        "crash-recovery: commit_intent hash mismatch — "
+                        "portfolio not saved, queued for retry"
+                    ),
+                )
+            elif persisted_ev is not None:
+                # Portfolio matches + persisted event exists → fully committed → EXECUTED
+                updated = save_order(order, status=EXECUTED)
+            elif has_filling:
+                # Portfolio matches intent but persisted marker missing — crash after save,
+                # before mark_fill_persisted. Reconstruct now.
+                mark_fill_persisted(
+                    order_id,
+                    filling_ev.get("fill_attempt_id", ""),
+                    filling_ev.get("content_hash", ""),
+                    commit_id=commit_id,
+                    post_portfolio_state_hash=intent_hash,
+                )
+                updated = save_order(order, status=EXECUTED)
+            else:
+                # commit_intent exists but no filling event — should not happen in normal flow
+                updated = save_order(
+                    order, status=PENDING_PRICE,
+                    failure_reason=(
+                        "crash-recovery: commit_intent utan filling-event — queued for retry"
+                    ),
+                )
+
         else:
-            # Portfolio does not reflect fill → crash happened before portfolio save.
-            # Not FAILED_PRICE (crash is transient) — reset to PENDING_PRICE for retry.
-            updated = save_order(
-                order, status=PENDING_PRICE,
-                failure_reason="crash-recovery: fill not persisted to portfolio, queued for retry",
+            # ---------------------------------------------------------------
+            # Legacy path: no commit_intent — use fill events + portfolio state
+            # Isolated clearly from the new WAL path above.
+            # ---------------------------------------------------------------
+
+            # Portfolio state check (authoritative fallback for legacy orders)
+            if action == "BUY":
+                portfolio_has_fill = ticker in positions
+            elif action == "SELL":
+                portfolio_has_fill = ticker not in positions
+            elif action == "PYRAMID_FILL":
+                pos = positions.get(ticker, {})
+                portfolio_has_fill = bool(pos) and not pos.get("is_partial", True)
+            else:
+                portfolio_has_fill = False
+
+            # Strict: persisted marker must reference the filling event's fill_attempt_id
+            fill_persisted = (
+                filling_ev is not None
+                and persisted_ev is not None
+                and (
+                    not persisted_ev.get("fill_attempt_id")
+                    or not filling_ev.get("fill_attempt_id")
+                    or persisted_ev.get("fill_attempt_id") == filling_ev.get("fill_attempt_id")
+                )
             )
+
+            if fill_persisted:
+                # Fill WAL confirmed persisted → portfolio definitely on disk → EXECUTED
+                updated = save_order(order, status=EXECUTED)
+            elif order_fill_events and has_filling and portfolio_has_fill:
+                # Fill event exists but not marked persisted — crash after portfolio save,
+                # before mark_fill_persisted. Reconstruct: mark persisted now, EXECUTED.
+                filling_events = [e for e in order_fill_events if e.get("status") == "filling"]
+                last_filling = filling_events[-1]
+                mark_fill_persisted(
+                    order_id,
+                    last_filling.get("fill_attempt_id", ""),
+                    last_filling.get("content_hash", ""),
+                )
+                updated = save_order(order, status=EXECUTED)
+            elif not order_fill_events and portfolio_has_fill:
+                # No fill events (legacy system before fills.jsonl) — portfolio is authoritative
+                updated = save_order(order, status=EXECUTED)
+            else:
+                # Portfolio does not reflect fill → crash before portfolio save → retry
+                updated = save_order(
+                    order, status=PENDING_PRICE,
+                    failure_reason="crash-recovery: fill not persisted to portfolio, queued for retry",
+                )
 
         orders[order_id] = updated
         reconciled.append(updated)

@@ -659,29 +659,91 @@ def get_signal_records_for_run(signal_run_id: str, year_month: str) -> list[dict
     """Return all signal_record entries for the given signal_run_id.
 
     Used by run_signal() idempotent-retry path and signal_validator Layer 6.
-    Raises RuntimeError on OSError (fail-closed — caller must handle).
-    Returns empty list if file does not exist or no records match.
+
+    Integrity:
+    - Reads under LOCK_SH to prevent reading a partially-written record.
+    - content_hash is mandatory — missing or mismatch → fail-closed RuntimeError.
+    - signal_run_id and model_version must be present in each record.
+    - Duplicate (strategy_id, ticker) for the same signal_run_id → fail-closed.
+    - Mid-file JSON corruption → fail-closed (not silently skipped).
+    - Raises RuntimeError on OSError or integrity failure (fail-closed — caller must alert).
+    - Returns empty list if file does not exist or no records match.
     """
     jpath = _jsonl_path("signal_record", year_month)
     if not jpath.exists():
         return []
-    records = []
+
+    lpath = _lock_path("signal_record", year_month)
+    lpath.touch(exist_ok=True)
+
     try:
-        with open(jpath, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    if rec.get("signal_run_id") == signal_run_id:
-                        records.append(rec)
-                except json.JSONDecodeError:
-                    pass
+        with open(lpath, "rb") as lf:
+            fcntl.flock(lf, fcntl.LOCK_SH)
+            try:
+                with open(jpath, encoding="utf-8") as f:
+                    raw = f.read()
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
     except OSError as exc:
         raise RuntimeError(
             f"Kan ikke lese signal_record-ledger for {signal_run_id}: {exc}"
         ) from exc
+
+    records = []
+    seen_strategy_ticker: set[tuple[str, str]] = set()
+
+    for i, line in enumerate(raw.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"signal_record-ledger korrupt JSON (linje {i}, {jpath}): "
+                f"{exc} — fail-closed"
+            ) from exc
+
+        # content_hash: mandatory, must match
+        stored_hash = rec.get("content_hash", "")
+        if not stored_hash:
+            raise RuntimeError(
+                f"signal_record-ledger mangler content_hash (linje {i}, {jpath}) — fail-closed"
+            )
+        computed = _make_content_hash(rec)
+        if stored_hash != computed:
+            raise RuntimeError(
+                f"signal_record-ledger content_hash mismatch (linje {i}, {jpath}): "
+                f"lagret {stored_hash[:8]}…, forventet {computed[:8]}… — fail-closed"
+            )
+
+        if rec.get("signal_run_id") != signal_run_id:
+            continue
+
+        # Mandatory fields for records belonging to this run
+        if not rec.get("signal_run_id"):
+            raise RuntimeError(
+                f"signal_record mangler signal_run_id (linje {i}, {jpath}) — fail-closed"
+            )
+        if not rec.get("model_version"):
+            raise RuntimeError(
+                f"signal_record mangler model_version for {signal_run_id} "
+                f"(linje {i}, {jpath}) — fail-closed"
+            )
+
+        # Duplicate detection: (strategy_id, ticker) must be unique per signal_run_id
+        strategy_id = rec.get("strategy_id", "")
+        ticker = rec.get("ticker", "")
+        key = (strategy_id, ticker)
+        if key in seen_strategy_ticker:
+            raise RuntimeError(
+                f"signal_record-ledger duplikat (strategy_id={strategy_id!r}, ticker={ticker!r}) "
+                f"for signal_run_id={signal_run_id!r} — fail-closed"
+            )
+        seen_strategy_ticker.add(key)
+        records.append(rec)
+
     return records
 
 
