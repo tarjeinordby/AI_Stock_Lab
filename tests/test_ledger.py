@@ -1018,12 +1018,19 @@ class TestWorkflowPersistenceGuarantees:
         content = self._read_workflow("signal")
         assert "if: always()" in content
 
-    def test_execute_workflow_requires_signal_conclusion_success(self):
-        """execute.yml must check conclusion == 'success' before running."""
+    def test_execute_workflow_uses_independent_schedule(self):
+        """execute.yml must use a scheduled cron at 14:40 UTC (after NYSE open), not workflow_run.
+
+        14:40 UTC = 10:40 ET (EDT) / 09:40 ET (EST) — always after NYSE open (09:30 ET).
+        Running after a fixed UTC time avoids the DST ambiguity of 'workflow_run' chaining
+        and ensures daily Open prices are available before execution.
+        """
         content = self._read_workflow("execute")
-        assert "conclusion == 'success'" in content, (
-            "execute.yml must guard on workflow_run conclusion to prevent "
-            "running after a failed signal push"
+        assert "40 14" in content, (
+            "execute.yml must schedule at 14:40 UTC (always after NYSE open)"
+        )
+        assert "workflow_run:" not in content, (
+            "execute.yml must not use workflow_run — that fires before NYSE open"
         )
 
     def test_premarket_workflow_has_cancel_in_progress_false(self):

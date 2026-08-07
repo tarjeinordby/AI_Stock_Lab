@@ -15,6 +15,7 @@ from modules.orders import (
     get_or_create_order,
     get_pending_for_session,
     load_orders,
+    make_candidate_signal_id,
     make_trade_id,
     reconcile_settling_orders,
     recover_settling_orders,
@@ -639,6 +640,31 @@ def run_ack_publication():
 # ============================================================
 
 
+def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
+                                cash_after: float, execution_version: str) -> None:
+    """Append a fill event to the WAL (fills.jsonl) before portfolio state is saved to disk."""
+    from modules.fills import write_fill_event  # noqa: PLC0415
+    write_fill_event(
+        order_id=order["order_id"],
+        trade_id=make_trade_id(order["order_id"]),
+        signal_id=order.get("signal_id"),
+        signal_run_id=order.get("signal_run_id"),
+        portfolio_id=order.get("portfolio_id", ""),
+        strategy=order.get("strategy", ""),
+        ticker=trade.get("ticker", ""),
+        action=trade.get("action", order.get("action", "")),
+        session_date=order.get("intended_execution_session", ""),
+        shares=float(trade.get("shares", 0)),
+        price=float(trade.get("price", 0)),
+        value=float(trade.get("value", 0)),
+        cost=float(trade.get("cost", 0)),
+        reason=trade.get("reason", ""),
+        execution_version=execution_version,
+        cash_before=cash_before,
+        cash_after=cash_after,
+    )
+
+
 def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
     """Add traceability fields to a trade dict and persist the order as SETTLING.
 
@@ -718,18 +744,18 @@ def run_strategy_execution(
     settling_order_ids = []
     portfolio_id = state.get("portfolio_id", strategy_name)
     portfolio_version = PORTFOLIO_VERSION  # schema version from versioning.py, not created_at
-    # Stable signal content identifier (may be None for safety-action orders)
-    _signal_id = signal_id
 
     # --- Retry pending orders from today's session (same-day retry) ---
     for order in get_pending_for_session(orders, session_date, strategy_name):
         ticker = order["ticker"]
         if order["action"] == "SELL" and ticker in state["positions"]:
+            cash_before = state["cash"]
             state, trades_df, trade = execute_sell(
                 state, trades_df, strategy_name, ticker, order["reason"],
                 execution_price_cache,
             )
             if trade:
+                _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
                 settling_order_ids.append(order["order_id"])
                 sells.append(trade)
@@ -747,6 +773,7 @@ def run_strategy_execution(
         elif order["action"] == "BUY" and ticker not in state["positions"]:
             candidate = candidates_by_ticker.get(ticker)
             if candidate:
+                cash_before = state["cash"]
                 state, trades_df, trade = execute_buy(
                     state, trades_df, strategy_name, ticker,
                     order["target_value"], order["reason"], candidate,
@@ -755,6 +782,7 @@ def run_strategy_execution(
                     pyramid_remaining=order.get("pyramid_remaining", 0.0),
                 )
                 if trade:
+                    _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
                     _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
                     settling_order_ids.append(order["order_id"])
                     buys.append(trade)
@@ -774,12 +802,13 @@ def run_strategy_execution(
     def _sell_with_order(ticker, reason, signal_price=None):
         nonlocal orders_created, orders_executed, orders_pending_price
         nonlocal sell_orders_created, sell_orders_executed
+        sell_signal_id = make_candidate_signal_id(signal_run_id, strategy_name, ticker, "SELL")
         order, is_new = get_or_create_order(
             orders, signal_run_id, ticker, strategy_name, session_date, "SELL",
             target_value=0.0, reason=reason, signal_price=signal_price,
             execution_version=execution_version,
             portfolio_id=portfolio_id, portfolio_version=portfolio_version,
-            signal_id=_signal_id,
+            signal_id=sell_signal_id,
         )
         if order["status"] in TERMINAL:
             return None   # already handled
@@ -790,10 +819,12 @@ def run_strategy_execution(
             orders[order["order_id"]] = saved
             orders_created += 1
             sell_orders_created += 1
+        cash_before = state["cash"]
         state2, trades2, trade = execute_sell(
             state, trades_df, strategy_name, ticker, reason, execution_price_cache
         )
         if trade:
+            _write_fill_event_for_order(order, trade, cash_before, state2["cash"], execution_version)
             _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
             settling_order_ids.append(order["order_id"])
             orders_executed += 1
@@ -885,6 +916,7 @@ def run_strategy_execution(
             pyr_remaining_val = float(pos.get("pyramid_remaining_value", 0.0))
 
             # Idempotency check FIRST — before any portfolio mutation
+            pyr_signal_id = make_candidate_signal_id(signal_run_id, strategy_name, ticker, "PYRAMID_FILL")
             pyr_order, pyr_is_new = get_or_create_order(
                 orders, signal_run_id, ticker, strategy_name, session_date,
                 "PYRAMID_FILL",
@@ -893,7 +925,7 @@ def run_strategy_execution(
                 signal_price=pos.get("last_price"),
                 execution_version=execution_version,
                 portfolio_id=portfolio_id, portfolio_version=portfolio_version,
-                signal_id=_signal_id,
+                signal_id=pyr_signal_id,
             )
             # Terminal or in-flight orders must never trigger another fill
             if pyr_order["status"] in TERMINAL or pyr_order["status"] == SETTLING:
@@ -905,10 +937,12 @@ def run_strategy_execution(
                 orders_created += 1
 
             # NOW execute portfolio mutation — order ledger already committed
+            pyr_cash_before = state["cash"]
             state, trades_df, fill = execute_pyramid_fill(
                 state, trades_df, strategy_name, ticker, execution_price_cache
             )
             if fill:
+                _write_fill_event_for_order(pyr_order, fill, pyr_cash_before, state["cash"], execution_version)
                 _annotate_trade(fill, pyr_order["order_id"], orders, signal_run_id, execution_version)
                 settling_order_ids.append(pyr_order["order_id"])
                 pyramid_fills.append(fill)
@@ -1002,12 +1036,13 @@ def run_strategy_execution(
             pm_move = premarket_flags.get(ticker)
             signal_price = candidate.get("price")
 
+            buy_signal_id = make_candidate_signal_id(signal_run_id, strategy_name, ticker, "BUY")
             order, is_new = get_or_create_order(
                 orders, signal_run_id, ticker, strategy_name, session_date, "BUY",
                 target_value=initial_value, reason=reason, signal_price=signal_price,
                 execution_version=execution_version, pyramid_remaining=pyramid_remaining,
                 portfolio_id=portfolio_id, portfolio_version=portfolio_version,
-                signal_id=_signal_id,
+                signal_id=buy_signal_id,
             )
             if order["status"] in TERMINAL:
                 continue   # already executed or expired in a previous run
@@ -1020,6 +1055,7 @@ def run_strategy_execution(
                 orders_created += 1
                 buy_orders_created += 1
 
+            buy_cash_before = state["cash"]
             state, trades_df, trade = execute_buy(
                 state, trades_df, strategy_name, ticker, initial_value,
                 reason, candidate, execution_price_cache,
@@ -1028,6 +1064,7 @@ def run_strategy_execution(
             )
 
             if trade:
+                _write_fill_event_for_order(order, trade, buy_cash_before, state["cash"], execution_version)
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
                 settling_order_ids.append(order["order_id"])
                 buys.append(trade)
@@ -1059,6 +1096,14 @@ def run_strategy_execution(
     )
     state["last_execution_date"] = today_str()
     save_strategy_state(strategy_name, state)
+
+    # Mark fills as persisted in WAL — portfolio is now durably on disk
+    from modules.fills import mark_fill_persisted  # noqa: PLC0415
+    for oid in settling_order_ids:
+        try:
+            mark_fill_persisted(oid)
+        except Exception as exc:
+            send_telegram(f"⚠️ Fill-WAL mark_fill_persisted feilet for {oid}: {exc}")
 
     # Crash-consistent persistence: portfolio is now on disk — finalize SETTLING → EXECUTED
     for oid in settling_order_ids:
@@ -1127,22 +1172,25 @@ def run_execute():
         signal_load_error = str(exc)
         print(f"Signal ikke tilgjengelig: {exc}")
 
-    # Determine session_date via NYSE calendar (fail-closed on CalendarUnavailableError)
+    # Determine session_date via NYSE calendar.
+    # CalendarUnavailableError = calendar cannot be validated (fail-closed, alert + raise).
+    # is_trading_session() returning False = known holiday/weekend (graceful SKIPPED exit).
     from modules.exchange_calendar import CalendarUnavailableError, is_trading_session  # noqa: PLC0415
     ny_date = now_ny().strftime("%Y-%m-%d")
     try:
-        if not is_trading_session(ny_date):
-            raise CalendarUnavailableError(
-                f"{ny_date} er ikke en NYSE handelssesjon "
-                "(helg, helligdag eller utenfor handelsperiode)"
-            )
-        session_date = ny_date
+        trading_today = is_trading_session(ny_date)
     except CalendarUnavailableError as exc:
-        send_telegram(
-            f"⚠️ KRITISK: NYSE-kalender utilgjengelig eller ikke handelssesjon "
-            f"— execute avbrutt: {exc}"
-        )
+        send_telegram(f"⚠️ KRITISK: NYSE-kalender utilgjengelig — execute avbrutt: {exc}")
         raise
+
+    if not trading_today:
+        print(
+            f"{ny_date} er ikke en NYSE-handelsdag (helligdag/helg) "
+            "— ingen kjøring (SKIPPED_NON_TRADING_SESSION)"
+        )
+        return
+
+    session_date = ny_date
 
     if signal is not None:
         print(f"Bruker signal: {signal_path}")

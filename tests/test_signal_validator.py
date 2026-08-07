@@ -1794,7 +1794,7 @@ class TestPoint1ProtectiveSellsWithoutSignal:
             src = f.read()
         start = src.find("def run_execute()")
         assert start != -1
-        snippet = src[start:start + 3500]
+        snippet = src[start:start + 5000]
         assert "FileNotFoundError" in snippet, "run_execute must catch FileNotFoundError"
         assert "SignalNotPublishedError" in snippet, "run_execute must catch SignalNotPublishedError"
         assert "allow_protective_sells=True" in snippet, (
@@ -1809,7 +1809,7 @@ class TestPoint1ProtectiveSellsWithoutSignal:
         with open("stock_bot.py") as f:
             src = f.read()
         start = src.find("def run_execute()")
-        snippet = src[start:start + 3500]
+        snippet = src[start:start + 5000]
         signal_load_pos = snippet.find("load_latest_signal()")
         calendar_pos = snippet.find("is_trading_session(")
         assert signal_load_pos != -1
@@ -1849,8 +1849,8 @@ class TestPoint2PyramidFillsInLedger:
     def test_pyramid_fill_and_initial_buy_have_different_ids(self):
         """PYRAMID_FILL and BUY for same ticker get different order IDs."""
         from modules.orders import make_order_id
-        buy_id = make_order_id("run-001", "AAPL", "s1", "2026-08-06", "BUY")
-        pyr_id = make_order_id("run-001", "AAPL", "s1", "2026-08-06", "PYRAMID_FILL")
+        buy_id = make_order_id("sig-run-001", "port-abc", "v1", "AAPL", "2026-08-06", "BUY")
+        pyr_id = make_order_id("sig-run-001", "port-abc", "v1", "AAPL", "2026-08-06", "PYRAMID_FILL")
         assert buy_id != pyr_id
 
     def test_run_strategy_execution_source_has_pyramid_order_ledger(self):
@@ -2271,8 +2271,9 @@ class TestPoint10FinalIntegration:
         from modules.orders import build_order
         state = initial_strategy_state("quant_baseline_v1")
         assert re.match(r"[0-9a-f\-]{36}", state["portfolio_id"])
+        from modules.versioning import PORTFOLIO_VERSION
         o = build_order("r1", "AAPL", "s1", "2026-08-06", "BUY", 5000.0, "t", 100.0, "v1",
-                        portfolio_id=state["portfolio_id"], portfolio_version=state["created_at"])
+                        portfolio_id=state["portfolio_id"], portfolio_version=PORTFOLIO_VERSION)
         assert o["portfolio_id"] == state["portfolio_id"]
         assert o["signal_id"] == "r1"
 

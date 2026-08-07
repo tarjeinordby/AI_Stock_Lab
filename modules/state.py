@@ -182,8 +182,27 @@ def initial_strategy_state(strategy_name):
 
 
 def load_strategy_state(strategy_name):
-    state = load_json(strategy_state_file(strategy_name), initial_strategy_state(strategy_name))
-    # Ensure all required keys exist for backward compatibility
+    path = strategy_state_file(strategy_name)
+    if not os.path.exists(path):
+        return initial_strategy_state(strategy_name)
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+    except OSError as exc:
+        raise RuntimeError(f"Kan ikke lese porteføljefil {path}: {exc}") from exc
+    if not content.strip():
+        raise RuntimeError(
+            f"Porteføljefil for '{strategy_name}' er tom: {path}. "
+            "Slett filen for å starte på nytt med initial kapital."
+        )
+    try:
+        state = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Porteføljefil for '{strategy_name}' er korrupt: {path}. "
+            f"JSON-feil: {exc}. Slett eller reparer filen manuelt."
+        ) from exc
+    # Backward-compat migrations
     if "highest_portfolio_value" not in state:
         state["highest_portfolio_value"] = START_CAPITAL
     if "cooldowns" not in state:
@@ -196,7 +215,19 @@ def load_strategy_state(strategy_name):
 
 
 def save_strategy_state(strategy_name, state):
-    save_json(state, strategy_state_file(strategy_name))
+    """Atomically save portfolio state: temp file → fsync → os.replace.
+
+    Crash between write and os.replace leaves a .tmp file (harmless) but never
+    produces a partially-written portfolio JSON at the canonical path.
+    """
+    path = strategy_state_file(strategy_name)
+    ensure_dirs()
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(to_json_safe(state), f, indent=2, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
 
 
 def reset_week_if_needed(state):

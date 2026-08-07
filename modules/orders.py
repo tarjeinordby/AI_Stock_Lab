@@ -2,18 +2,28 @@
 Persistent order state for the next_session_daily_open_v1 execution model.
 
 Lifecycle:
-  pending_price → executed  (fill succeeded)
+  pending_price → settling  (fill annotated, portfolio not yet persisted)
+  settling → executed       (after portfolio + fill ledger both durably saved)
   pending_price → expired   (session passed without fill)
-  pending_price → failed_price  (permanent failure, not retried)
+  pending_price → failed_price  (permanent market/price failure, not retried)
 
-The order_id is deterministic: same (signal_run_id, ticker, strategy,
-session_date, action) always yields the same order_id — this is the
-idempotency key. Running execute twice for the same session cannot
-create duplicate orders or double-fills.
+The order_id is deterministic:
+  make_order_id(signal_id, portfolio_id, portfolio_version, ticker, session_date, action)
+  — same inputs always yield the same order_id (idempotency key).
+
+signal_id is a stable per-candidate identifier derived from (signal_run_id, strategy, ticker, action).
+portfolio_id and portfolio_version ensure two portfolios consuming the same signal get different
+order_ids, preventing cross-portfolio confusion.
+
+Legacy fallback: _make_legacy_order_id() matches order_ids created by code prior to this scheme.
+get_or_create_order() checks both new and legacy formats to prevent double-fills on upgrade.
 
 Storage: STATE_DIR/orders.jsonl — append-only snapshots. Each update
 appends a full order snapshot; the current state is the last record
 per order_id when the file is read.
+
+Crash recovery: a corrupt last line (truncated mid-write) is repaired on disk
+under an exclusive lock on the first load_orders() call after the crash.
 """
 
 from __future__ import annotations
@@ -43,19 +53,41 @@ TERMINAL = frozenset([EXECUTED, EXPIRED, FAILED_PRICE, CANCELLED])
 # ID generation
 # ---------------------------------------------------------------------------
 
-def make_order_id(signal_run_id: str, ticker: str, strategy: str,
-                  session_date: str, action: str) -> str:
-    """
-    Deterministic order ID — identical inputs always produce the same 16-char hex string.
-    This is both the primary key and the idempotency guard: running execute twice for the
-    same session returns the existing order, not a duplicate.
+def make_order_id(signal_id, portfolio_id: str, portfolio_version: str,
+                  ticker: str, session_date: str, action: str) -> str:
+    """Deterministic order ID: same inputs always produce the same 16-char hex string.
 
-    portfolio_id is stored as order metadata for multi-portfolio traceability but is NOT
-    included in the key to preserve idempotency across runs (portfolio_id is stable per
-    portfolio instance but must not invalidate orders written before this field existed).
+    Uses signal_id (per-candidate, not per-run), portfolio_id, and portfolio_version
+    so that two portfolios consuming the same signal get DIFFERENT order_ids, preventing
+    cross-portfolio confusion while still being idempotent across reruns.
+
+    signal_id=None is treated as "" for hashing (safe for safety-action orders).
+    """
+    sid = signal_id if signal_id is not None else ""
+    raw = f"{sid}|{portfolio_id}|{portfolio_version}|{ticker}|{session_date}|{action}"
+    return "ord-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def _make_legacy_order_id(signal_run_id: str, ticker: str, strategy: str,
+                          session_date: str, action: str) -> str:
+    """Old v1 order ID format — for backward-compat lookup only.
+
+    Matches order_ids created before the signal_id+portfolio_id scheme was introduced.
+    Used exclusively in get_or_create_order() to prevent double-fills on upgrade.
     """
     raw = f"{signal_run_id}|{ticker}|{strategy}|{session_date}|{action}"
     return "ord-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def make_candidate_signal_id(signal_run_id: str, strategy: str, ticker: str,
+                              action: str = "BUY") -> str:
+    """Stable per-candidate signal identifier: one per (signal_run_id, strategy, ticker, action).
+
+    Two portfolios consuming the same signal get the SAME signal_id, but different order_ids
+    (because portfolio_id differs). This allows tracing a recommendation across portfolios.
+    """
+    raw = f"{signal_run_id}|{strategy}|{ticker}|{action}"
+    return "sig-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
 def make_trade_id(order_id: str, timestamp_iso: str = "") -> str:
@@ -95,11 +127,10 @@ def build_order(
     Omit to default to signal_run_id (backward compat).
     Pass None explicitly for safety-action orders that have no associated signal.
     """
-    if signal_id is _SIGNAL_ID_UNSET:
-        signal_id = signal_run_id  # backward compat: signal_id = signal_run_id
+    _signal_id = signal_run_id if signal_id is _SIGNAL_ID_UNSET else signal_id
     return {
-        "order_id": make_order_id(signal_run_id, ticker, strategy, session_date, action),
-        "signal_id": signal_id,
+        "order_id": make_order_id(_signal_id, portfolio_id, portfolio_version, ticker, session_date, action),
+        "signal_id": _signal_id,
         "signal_run_id": signal_run_id,
         "portfolio_id": portfolio_id,
         "portfolio_version": portfolio_version,
@@ -143,15 +174,51 @@ def _append(record: dict) -> None:
         raise RuntimeError(f"Kunne ikke skrive ordre til {ORDERS_FILE}: {exc}") from exc
 
 
-def load_orders() -> dict:
+def _truncate_corrupt_last_line() -> None:
+    """Remove the corrupt last line from orders.jsonl under exclusive lock + fsync.
+
+    Called after detecting a corrupt last line during load_orders(). Prevents the next
+    append from writing after a corrupt partial record (which would leave the file in a
+    permanently broken mid-file state on the next load).
     """
-    Return {order_id: order} with the latest state per order.
+    lock_dir = os.path.dirname(_ORDERS_LOCK_FILE)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+    open(_ORDERS_LOCK_FILE, "a").close()
+    with open(_ORDERS_LOCK_FILE, "rb") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            with open(ORDERS_FILE, "r+b") as f:
+                content = f.read()
+                if not content:
+                    return
+                if content.endswith(b"\n"):
+                    # Complete line (ends with \n) but invalid JSON — remove entire last line
+                    last_nl = len(content) - 1
+                    prev_nl = content.rfind(b"\n", 0, last_nl)
+                    truncate_at = prev_nl + 1  # 0 if prev_nl == -1 (single corrupt line)
+                else:
+                    # File truncated mid-write (no trailing \n) — truncate at last valid \n
+                    last_nl = content.rfind(b"\n")
+                    truncate_at = last_nl + 1 if last_nl >= 0 else 0
+                f.seek(truncate_at)
+                f.truncate()
+                f.flush()
+                os.fsync(f.fileno())
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def load_orders() -> dict:
+    """Return {order_id: order} with the latest state per order.
+
     Since each update appends a full snapshot, the last record for a given
     order_id overrides earlier ones.
 
     Acquires a shared lock on read to prevent reading a partially-written record.
     Mid-history corruption (non-last line) is fail-closed — raises RuntimeError.
-    A corrupt last line is skipped gracefully (crash during write is expected).
+    A corrupt last line is repaired: truncated from disk under exclusive lock + fsync,
+    then skipped gracefully (crash during write is the expected cause).
     """
     orders: dict = {}
     if not os.path.exists(ORDERS_FILE):
@@ -168,6 +235,7 @@ def load_orders() -> dict:
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
+    corrupt_last_line = False
     for i, raw_line in enumerate(raw_lines):
         line = raw_line.strip()
         if not line:
@@ -176,17 +244,18 @@ def load_orders() -> dict:
             rec = json.loads(line)
             orders[rec["order_id"]] = rec
         except json.JSONDecodeError:
-            # Decide: is this the last non-empty write, or mid-history corruption?
             has_more = any(l.strip() for l in raw_lines[i + 1:])
             if has_more:
-                # Corruption mid-history — terminal statuses for preceding orders are intact;
-                # refusing to continue prevents silently losing those statuses.
                 raise RuntimeError(
                     f"Ordre-ledger er korrupt (linje {i + 1}/{len(raw_lines)}): "
                     f"{ORDERS_FILE}. "
                     "Korrupt JSON midt i filen — kan ikke repareres automatisk."
                 ) from None
-            # Last line only — likely a truncated append from a crash; skip gracefully.
+            # Last line only — crash during write. Repair disk state under exclusive lock.
+            corrupt_last_line = True
+
+    if corrupt_last_line:
+        _truncate_corrupt_last_line()
 
     return orders
 
@@ -235,14 +304,21 @@ def get_or_create_order(
     portfolio_version: str = "",
     signal_id=_SIGNAL_ID_UNSET,
 ) -> tuple[dict, bool]:
+    """Return (order, is_new).
+
+    Lookup order by new-format order_id first (signal_id + portfolio_id + portfolio_version).
+    Falls back to legacy-format order_id (signal_run_id + ticker + strategy) to prevent
+    double-fills when upgrading from old code that used a different key scheme.
+    Returns (existing, False) if found; (new, True) if not — caller must persist the new order.
     """
-    Return (order, is_new). If an order with the same deterministic ID already
-    exists in `orders`, return it (is_new=False). Otherwise build a new one
-    (is_new=True) — the caller is responsible for persisting it.
-    """
-    order_id = make_order_id(signal_run_id, ticker, strategy, session_date, action)
+    _signal_id = signal_run_id if signal_id is _SIGNAL_ID_UNSET else signal_id
+    order_id = make_order_id(_signal_id, portfolio_id, portfolio_version, ticker, session_date, action)
     if order_id in orders:
         return orders[order_id], False
+    # Legacy fallback: check v1 order_id format to prevent double-fills on upgrade
+    legacy_id = _make_legacy_order_id(signal_run_id, ticker, strategy, session_date, action)
+    if legacy_id in orders and legacy_id != order_id:
+        return orders[legacy_id], False
     order = build_order(
         signal_run_id, ticker, strategy, session_date, action,
         target_value, reason, signal_price, execution_version,
@@ -255,11 +331,14 @@ def get_or_create_order(
 
 
 def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> list:
-    """Reconcile SETTLING orders by comparing portfolio state to expected fill outcome.
+    """Reconcile SETTLING orders using fill event WAL + portfolio state.
 
     Called after loading strategy state so we can tell whether the portfolio was saved
-    before a crash. Avoids blindly marking fills as FAILED_PRICE when the portfolio
-    already reflects the fill (crash happened after save_strategy_state, before EXECUTED).
+    before a crash. Uses the fills.jsonl WAL as the primary source; falls back to
+    portfolio state check for legacy orders (before fills.jsonl existed).
+
+    Crash-before-portfolio-save → PENDING_PRICE (not FAILED_PRICE — transient, retry).
+    Crash-after-portfolio-save → reconstructed as EXECUTED (portfolio is authoritative).
 
     Returns the list of reconciled orders.
     """
@@ -272,28 +351,57 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         if order.get("strategy") != strategy_name:
             continue
 
+        order_id = order["order_id"]
         ticker = order.get("ticker")
         action = order.get("action")
 
+        # Portfolio state check (used as fallback if no fill events exist)
         if action == "BUY":
             portfolio_has_fill = ticker in positions
         elif action == "SELL":
             portfolio_has_fill = ticker not in positions
         elif action == "PYRAMID_FILL":
             pos = positions.get(ticker, {})
-            # Fill succeeded → is_partial=False and pyramid_remaining_value ≈ 0
             portfolio_has_fill = bool(pos) and not pos.get("is_partial", True)
         else:
             portfolio_has_fill = False
 
-        if portfolio_has_fill:
+        # Fill event WAL (most authoritative — available from fills.jsonl)
+        try:
+            from modules.fills import (  # noqa: PLC0415
+                get_fill_events_for_order,
+                is_fill_persisted,
+                mark_fill_persisted,
+            )
+            fill_persisted = is_fill_persisted(order_id)
+            fill_events = get_fill_events_for_order(order_id)
+        except Exception:
+            fill_persisted = False
+            fill_events = []
+
+        if fill_persisted:
+            # Fill WAL confirmed persisted → portfolio definitely on disk → EXECUTED
+            updated = save_order(order, status=EXECUTED)
+        elif fill_events and portfolio_has_fill:
+            # Fill event exists but not marked persisted — crash after portfolio save,
+            # before mark_fill_persisted. Reconstruct: mark persisted now, EXECUTED.
+            try:
+                mark_fill_persisted(order_id)
+            except Exception:
+                pass
+            updated = save_order(order, status=EXECUTED)
+        elif not fill_events and portfolio_has_fill:
+            # No fill events (legacy system before fills.jsonl) — portfolio is authoritative
             updated = save_order(order, status=EXECUTED)
         else:
+            # Portfolio does not reflect fill → crash happened before portfolio save.
+            # Not FAILED_PRICE (crash is transient) — reset to PENDING_PRICE for retry.
             updated = save_order(
-                order, status=FAILED_PRICE,
-                failure_reason="crash-recovery: portfolio does not reflect fill",
+                order, status=PENDING_PRICE,
+                failure_reason="crash-recovery: fill not persisted to portfolio, queued for retry",
             )
-        orders[order["order_id"]] = updated
+
+        orders[order_id] = updated
         reconciled.append(updated)
 
     return reconciled

@@ -25,12 +25,14 @@ from modules.orders import (
     EXPIRED,
     FAILED_PRICE,
     PENDING_PRICE,
+    SETTLING,
     TERMINAL,
     build_order,
     expire_stale_orders,
     get_or_create_order,
     get_pending_for_session,
     load_orders,
+    make_candidate_signal_id,
     make_order_id,
     make_trade_id,
     reconcile_settling_orders,
@@ -81,39 +83,53 @@ def _with_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestMakeOrderId:
+    """New key format: (signal_id, portfolio_id, portfolio_version, ticker, session, action)."""
+
     def test_same_inputs_same_id(self):
-        a = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
-        b = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
+        a = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "BUY")
+        b = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "BUY")
         assert a == b
 
     def test_different_action_different_id(self):
-        buy = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
-        sell = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "SELL")
+        buy = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "BUY")
+        sell = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "SELL")
         assert buy != sell
 
     def test_different_ticker_different_id(self):
-        aapl = make_order_id(SIGNAL_RUN_ID, "AAPL", STRATEGY, SESSION, "BUY")
-        msft = make_order_id(SIGNAL_RUN_ID, "MSFT", STRATEGY, SESSION, "BUY")
+        aapl = make_order_id("sig-abc", "port-abc", "v1", "AAPL", SESSION, "BUY")
+        msft = make_order_id("sig-abc", "port-abc", "v1", "MSFT", SESSION, "BUY")
         assert aapl != msft
 
     def test_different_session_different_id(self):
-        today = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, "2026-08-06", "BUY")
-        tomorrow = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, "2026-08-07", "BUY")
+        today = make_order_id("sig-abc", "port-abc", "v1", TICKER, "2026-08-06", "BUY")
+        tomorrow = make_order_id("sig-abc", "port-abc", "v1", TICKER, "2026-08-07", "BUY")
         assert today != tomorrow
 
-    def test_different_signal_run_id_different_id(self):
-        a = make_order_id("run-aaa", TICKER, STRATEGY, SESSION, "BUY")
-        b = make_order_id("run-bbb", TICKER, STRATEGY, SESSION, "BUY")
+    def test_different_signal_id_different_id(self):
+        a = make_order_id("sig-aaa", "port-abc", "v1", TICKER, SESSION, "BUY")
+        b = make_order_id("sig-bbb", "port-abc", "v1", TICKER, SESSION, "BUY")
+        assert a != b
+
+    def test_different_portfolio_id_different_id(self):
+        """Two portfolios consuming same signal → different order_ids."""
+        a = make_order_id("sig-same", "port-A", "v1", TICKER, SESSION, "BUY")
+        b = make_order_id("sig-same", "port-B", "v1", TICKER, SESSION, "BUY")
         assert a != b
 
     def test_id_starts_with_ord_prefix(self):
-        oid = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
+        oid = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "BUY")
         assert oid.startswith("ord-")
 
     def test_id_has_fixed_length(self):
         # "ord-" + 12 hex chars = 16 chars total
-        oid = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
+        oid = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "BUY")
         assert len(oid) == 16
+
+    def test_signal_id_none_treated_as_empty(self):
+        """signal_id=None (safety actions) maps to same key as signal_id=''."""
+        a = make_order_id(None, "port-abc", "v1", TICKER, SESSION, "SELL")
+        b = make_order_id("", "port-abc", "v1", TICKER, SESSION, "SELL")
+        assert a == b
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +157,9 @@ class TestBuildOrder:
         assert o["status"] == PENDING_PRICE
 
     def test_order_id_matches_make_order_id(self):
+        # _order() uses default signal_id (=signal_run_id), portfolio_id="", portfolio_version=""
         o = _order()
-        expected = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
+        expected = make_order_id(SIGNAL_RUN_ID, "", "", TICKER, SESSION, "BUY")
         assert o["order_id"] == expected
 
     def test_trade_id_is_none(self):
@@ -522,14 +539,14 @@ class TestPyramidFillIdempotency:
 
     def test_pyramid_order_deterministic_id(self):
         """PYRAMID_FILL and BUY for same ticker/session get different order IDs."""
-        buy_id = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
-        pyr_id = make_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "PYRAMID_FILL")
+        buy_id = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "BUY")
+        pyr_id = make_order_id("sig-abc", "port-abc", "v1", TICKER, SESSION, "PYRAMID_FILL")
         assert buy_id != pyr_id
 
     def test_pyramid_order_same_inputs_same_id(self):
         """Same pyramid fill inputs always produce the same order ID."""
-        a = make_order_id("run-pyr", TICKER, STRATEGY, SESSION, "PYRAMID_FILL")
-        b = make_order_id("run-pyr", TICKER, STRATEGY, SESSION, "PYRAMID_FILL")
+        a = make_order_id("sig-pyr", "port-abc", "v1", TICKER, SESSION, "PYRAMID_FILL")
+        b = make_order_id("sig-pyr", "port-abc", "v1", TICKER, SESSION, "PYRAMID_FILL")
         assert a == b
 
 
@@ -562,13 +579,13 @@ class TestCrashReconciliation:
         assert len(reconciled) == 1
         assert orders[oid]["status"] == EXECUTED
 
-    def test_reconcile_buy_without_position_marks_failed_price(self, tmp_path, monkeypatch):
-        """SETTLING BUY + ticker NOT in portfolio → crash before save → FAILED_PRICE."""
+    def test_reconcile_buy_without_position_marks_pending_price(self, tmp_path, monkeypatch):
+        """SETTLING BUY + ticker NOT in portfolio → crash before save → PENDING_PRICE retry."""
         orders, oid = self._make_orders_with_settling(tmp_path, monkeypatch, "BUY", "AAPL")
         state = {"positions": {}, "cash": 10000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
-        assert orders[oid]["status"] == FAILED_PRICE
+        assert orders[oid]["status"] == PENDING_PRICE
         assert "crash-recovery" in orders[oid]["failure_reason"]
 
     def test_reconcile_sell_without_position_marks_executed(self, tmp_path, monkeypatch):
@@ -578,12 +595,12 @@ class TestCrashReconciliation:
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert orders[oid]["status"] == EXECUTED
 
-    def test_reconcile_sell_with_position_marks_failed_price(self, tmp_path, monkeypatch):
-        """SETTLING SELL + ticker still in portfolio → crash before save → FAILED_PRICE."""
+    def test_reconcile_sell_with_position_marks_pending_price(self, tmp_path, monkeypatch):
+        """SETTLING SELL + ticker still in portfolio → crash before save → PENDING_PRICE retry."""
         orders, oid = self._make_orders_with_settling(tmp_path, monkeypatch, "SELL", "AAPL")
         state = {"positions": {"AAPL": {"shares": 10}}, "cash": 10000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
-        assert orders[oid]["status"] == FAILED_PRICE
+        assert orders[oid]["status"] == PENDING_PRICE
 
     def test_reconcile_pyramid_fill_not_partial_marks_executed(self, tmp_path, monkeypatch):
         """SETTLING PYRAMID_FILL + is_partial=False → fill succeeded → EXECUTED."""
@@ -697,3 +714,434 @@ class TestTraceabilityFields:
         assert is_new
         assert order["signal_id"] == "content-hash-abc"
         assert order["signal_run_id"] == "run-001"
+
+
+# ---------------------------------------------------------------------------
+# Point 2: Per-candidate signal_id and new order_id key scheme
+# ---------------------------------------------------------------------------
+
+class TestOrderIdWithSignalId:
+    """make_order_id now uses signal_id + portfolio_id + portfolio_version (not strategy)."""
+
+    def test_two_portfolios_same_signal_different_order_id(self):
+        """Two portfolios consuming same signal for same ticker → different order_ids."""
+        sig_id = "sig-abc123abc123"
+        id_a = make_order_id(sig_id, "port-A", "v1", TICKER, SESSION, "BUY")
+        id_b = make_order_id(sig_id, "port-B", "v1", TICKER, SESSION, "BUY")
+        assert id_a != id_b
+
+    def test_two_signals_same_portfolio_different_order_id(self):
+        """Two different signals in the same portfolio → different order_ids."""
+        id_a = make_order_id("sig-run-001", "port-X", "v1", TICKER, SESSION, "BUY")
+        id_b = make_order_id("sig-run-002", "port-X", "v1", TICKER, SESSION, "BUY")
+        assert id_a != id_b
+
+    def test_rerun_same_portfolio_same_order_id(self):
+        """Rerunning with same signal_id and portfolio → same order_id (idempotent)."""
+        sig_id = "sig-stable123456"
+        a = make_order_id(sig_id, "port-Y", "v1", TICKER, SESSION, "BUY")
+        b = make_order_id(sig_id, "port-Y", "v1", TICKER, SESSION, "BUY")
+        assert a == b
+
+    def test_make_candidate_signal_id_stable(self):
+        """Same (signal_run_id, strategy, ticker, action) → same signal_id."""
+        a = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
+        b = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
+        assert a == b
+
+    def test_make_candidate_signal_id_different_ticker(self):
+        a = make_candidate_signal_id("run-001", STRATEGY, "AAPL", "BUY")
+        b = make_candidate_signal_id("run-001", STRATEGY, "MSFT", "BUY")
+        assert a != b
+
+    def test_make_candidate_signal_id_different_strategy(self):
+        a = make_candidate_signal_id("run-001", "strat_A", TICKER, "BUY")
+        b = make_candidate_signal_id("run-001", "strat_B", TICKER, "BUY")
+        assert a != b
+
+    def test_make_candidate_signal_id_different_action(self):
+        a = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
+        b = make_candidate_signal_id("run-001", STRATEGY, TICKER, "SELL")
+        assert a != b
+
+    def test_make_candidate_signal_id_starts_with_sig_prefix(self):
+        sid = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
+        assert sid.startswith("sig-")
+
+    def test_make_candidate_signal_id_has_fixed_length(self):
+        # "sig-" + 12 hex chars = 16 chars total
+        sid = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
+        assert len(sid) == 16
+
+    def test_legacy_order_found_prevents_duplicate(self, tmp_path, monkeypatch):
+        """Legacy v1 order_id (old make_order_id format) found via fallback → is_new=False."""
+        from modules.orders import _make_legacy_order_id
+        _with_file(tmp_path, monkeypatch)
+        # Simulate an order created by OLD code: order_id uses old hash format
+        # (signal_run_id | ticker | strategy | session | action)
+        legacy_id = _make_legacy_order_id(SIGNAL_RUN_ID, TICKER, STRATEGY, SESSION, "BUY")
+        old_order = {
+            "order_id": legacy_id,
+            "signal_run_id": SIGNAL_RUN_ID,
+            "signal_id": SIGNAL_RUN_ID,
+            "portfolio_id": "",
+            "portfolio_version": "",
+            "ticker": TICKER,
+            "strategy": STRATEGY,
+            "intended_execution_session": SESSION,
+            "action": "BUY",
+            "target_value": 5000.0,
+            "pyramid_remaining": 0.0,
+            "reason": "test",
+            "signal_price": 100.0,
+            "execution_version": EXEC_VERSION,
+            "status": PENDING_PRICE,
+            "created_at": "2026-08-06T00:00:00Z",
+            "updated_at": "2026-08-06T00:00:00Z",
+            "attempted_at": None,
+            "failure_reason": None,
+            "trade_id": None,
+        }
+        save_order(old_order)
+        orders = {legacy_id: old_order}
+
+        # New-style call with per-candidate signal_id and portfolio_id
+        new_sig_id = make_candidate_signal_id(SIGNAL_RUN_ID, STRATEGY, TICKER, "BUY")
+        order, is_new = get_or_create_order(
+            orders=orders, signal_run_id=SIGNAL_RUN_ID, ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION, signal_id=new_sig_id,
+            portfolio_id="port-abc", portfolio_version="v1",
+        )
+        assert not is_new  # legacy order found — no duplicate created
+        assert order["order_id"] == legacy_id
+
+
+# ---------------------------------------------------------------------------
+# Point 3a: Fill event WAL (modules/fills.py)
+# ---------------------------------------------------------------------------
+
+class TestFillEventWAL:
+    """Fill events written before portfolio save; marked persisted after."""
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        fills_path = str(tmp_path / "fills.jsonl")
+        lock_path = str(tmp_path / "fills.jsonl.lock")
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", __import__("pathlib").Path(fills_path))
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", __import__("pathlib").Path(lock_path))
+        return fills_path
+
+    def test_write_fill_event_creates_file(self, tmp_path, monkeypatch):
+        from modules.fills import write_fill_event
+        self._patch_fills(tmp_path, monkeypatch)
+        rec = write_fill_event(
+            order_id="ord-abc123456789", trade_id="trd-x", signal_id="sig-y",
+            signal_run_id="run-001", portfolio_id="port-a", strategy=STRATEGY,
+            ticker=TICKER, action="BUY", session_date=SESSION,
+            shares=10.0, price=150.0, value=1500.0, cost=0.0, reason="test",
+            execution_version="v1", cash_before=10000.0, cash_after=8500.0,
+        )
+        assert rec["status"] == "filling"
+        assert rec["fill_id"].startswith("fill-")
+
+    def test_is_fill_persisted_false_before_mark(self, tmp_path, monkeypatch):
+        from modules.fills import write_fill_event, is_fill_persisted
+        self._patch_fills(tmp_path, monkeypatch)
+        oid = "ord-abc123456789"
+        write_fill_event(
+            order_id=oid, trade_id="trd-x", signal_id=None, signal_run_id=None,
+            portfolio_id="", strategy=STRATEGY, ticker=TICKER, action="BUY",
+            session_date=SESSION, shares=1.0, price=100.0, value=100.0, cost=0.0,
+            reason="t", execution_version="v1", cash_before=1000.0, cash_after=900.0,
+        )
+        assert not is_fill_persisted(oid)
+
+    def test_is_fill_persisted_true_after_mark(self, tmp_path, monkeypatch):
+        from modules.fills import write_fill_event, mark_fill_persisted, is_fill_persisted
+        self._patch_fills(tmp_path, monkeypatch)
+        oid = "ord-abc123456789"
+        write_fill_event(
+            order_id=oid, trade_id="trd-x", signal_id=None, signal_run_id=None,
+            portfolio_id="", strategy=STRATEGY, ticker=TICKER, action="BUY",
+            session_date=SESSION, shares=1.0, price=100.0, value=100.0, cost=0.0,
+            reason="t", execution_version="v1", cash_before=1000.0, cash_after=900.0,
+        )
+        mark_fill_persisted(oid)
+        assert is_fill_persisted(oid)
+
+    def test_make_fill_id_deterministic(self):
+        from modules.fills import make_fill_id
+        a = make_fill_id("ord-abc123456789")
+        b = make_fill_id("ord-abc123456789")
+        assert a == b
+        assert a.startswith("fill-")
+
+    def test_reconcile_uses_fill_event_persisted(self, tmp_path, monkeypatch):
+        """SETTLING + fill_event 'persisted' → EXECUTED regardless of portfolio state."""
+        import modules.fills as fills_mod
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import write_fill_event, mark_fill_persisted
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-001", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        s = save_order(order)
+        s = save_order(s, status="settling", trade_id="trd-crash")
+        orders[order["order_id"]] = s
+
+        write_fill_event(
+            order_id=order["order_id"], trade_id="trd-crash", signal_id=None,
+            signal_run_id="run-001", portfolio_id="", strategy=STRATEGY,
+            ticker=TICKER, action="BUY", session_date=SESSION,
+            shares=5.0, price=100.0, value=500.0, cost=0.0, reason="test",
+            execution_version=EXEC_VERSION, cash_before=10000.0, cash_after=9500.0,
+        )
+        mark_fill_persisted(order["order_id"])
+
+        # Portfolio does NOT have position (to test fill WAL takes precedence)
+        state = {"positions": {}, "cash": 10000.0}
+        reconciled = reconcile_settling_orders(orders, STRATEGY, state)
+        assert len(reconciled) == 1
+        assert orders[order["order_id"]]["status"] == EXECUTED
+
+    def test_reconcile_crash_before_portfolio_gives_pending_retry(self, tmp_path, monkeypatch):
+        """SETTLING + fill_event 'filling' (not persisted) + no position → PENDING_PRICE."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import write_fill_event
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-001", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        s = save_order(order)
+        s = save_order(s, status="settling", trade_id="trd-x")
+        orders[order["order_id"]] = s
+
+        # WAL entry exists but not marked persisted (crash before portfolio save)
+        write_fill_event(
+            order_id=order["order_id"], trade_id="trd-x", signal_id=None,
+            signal_run_id="run-001", portfolio_id="", strategy=STRATEGY,
+            ticker=TICKER, action="BUY", session_date=SESSION,
+            shares=5.0, price=100.0, value=500.0, cost=0.0, reason="test",
+            execution_version=EXEC_VERSION, cash_before=10000.0, cash_after=9500.0,
+        )
+
+        # Portfolio does NOT have position (portfolio save was not completed)
+        state = {"positions": {}, "cash": 10000.0}
+        reconciled = reconcile_settling_orders(orders, STRATEGY, state)
+        assert len(reconciled) == 1
+        assert orders[order["order_id"]]["status"] == PENDING_PRICE
+
+    def test_reconcile_crash_after_portfolio_save_reconstructs(self, tmp_path, monkeypatch):
+        """SETTLING + fill_event 'filling' + position in portfolio → mark persisted + EXECUTED."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import write_fill_event, is_fill_persisted
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-001", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        s = save_order(order)
+        s = save_order(s, status="settling", trade_id="trd-y")
+        orders[order["order_id"]] = s
+
+        # WAL entry exists but not marked persisted (crash after save, before mark)
+        write_fill_event(
+            order_id=order["order_id"], trade_id="trd-y", signal_id=None,
+            signal_run_id="run-001", portfolio_id="", strategy=STRATEGY,
+            ticker=TICKER, action="BUY", session_date=SESSION,
+            shares=5.0, price=100.0, value=500.0, cost=0.0, reason="test",
+            execution_version=EXEC_VERSION, cash_before=10000.0, cash_after=9500.0,
+        )
+
+        # Portfolio HAS position (portfolio save completed before crash)
+        state = {"positions": {TICKER: {"shares": 5}}, "cash": 9500.0}
+        reconciled = reconcile_settling_orders(orders, STRATEGY, state)
+        assert len(reconciled) == 1
+        assert orders[order["order_id"]]["status"] == EXECUTED
+        # Fill event should now be marked persisted (reconstruction)
+        assert is_fill_persisted(order["order_id"])
+
+
+# ---------------------------------------------------------------------------
+# Point 3b: Atomic portfolio save + strict load
+# ---------------------------------------------------------------------------
+
+class TestAtomicPortfolioSave:
+    def test_save_strategy_state_uses_atomic_replace(self):
+        """Source check: save_strategy_state uses os.replace (atomic) and os.fsync."""
+        with open("modules/state.py") as f:
+            src = f.read()
+        assert "os.replace" in src
+        assert ".tmp" in src
+        assert "os.fsync" in src
+
+    def test_load_strategy_state_raises_on_corrupt_json(self, tmp_path, monkeypatch):
+        """Corrupt portfolio JSON raises RuntimeError (not silent empty dict)."""
+        import modules.state as state_mod
+        from modules.state import load_strategy_state
+        (tmp_path / "s1.json").write_text('{"bad": json here}')
+        monkeypatch.setattr(state_mod, "STATE_DIR", str(tmp_path))
+        with pytest.raises(RuntimeError, match="korrupt"):
+            load_strategy_state("s1")
+
+    def test_load_strategy_state_raises_on_empty_file(self, tmp_path, monkeypatch):
+        """Empty portfolio file raises RuntimeError (not silent new state)."""
+        import modules.state as state_mod
+        from modules.state import load_strategy_state
+        (tmp_path / "s2.json").write_text("")
+        monkeypatch.setattr(state_mod, "STATE_DIR", str(tmp_path))
+        with pytest.raises(RuntimeError, match="tom"):
+            load_strategy_state("s2")
+
+    def test_load_strategy_state_missing_file_returns_default(self, tmp_path, monkeypatch):
+        """Missing file (first run) returns initial state (not an error)."""
+        import modules.state as state_mod
+        from modules.state import load_strategy_state
+        monkeypatch.setattr(state_mod, "STATE_DIR", str(tmp_path))
+        state = load_strategy_state("s3")
+        assert "cash" in state
+        assert state["cash"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Point 4: Repair corrupt last ledger line on disk
+# ---------------------------------------------------------------------------
+
+class TestLoadOrdersTruncateLastLine:
+    """load_orders truncates a corrupt last line from disk under exclusive lock."""
+
+    def test_corrupt_last_line_removed_from_disk(self, tmp_path, monkeypatch):
+        """After load_orders, the corrupt last line is removed from the file on disk."""
+        path = _with_file(tmp_path, monkeypatch)
+        o = _order()
+        save_order(o)
+        with open(path, "ab") as f:
+            f.write(b'{"order_id": "bad-partial')  # no \n, crash mid-write
+        # Load → repairs file
+        loaded = load_orders()
+        assert o["order_id"] in loaded
+        # Verify file is clean on disk
+        with open(path) as f:
+            lines = [l for l in f.readlines() if l.strip()]
+        assert len(lines) == 1  # only the valid save line remains
+        for line in lines:
+            json.loads(line)  # must parse without error
+
+    def test_new_append_after_corrupt_last_line_succeeds(self, tmp_path, monkeypatch):
+        """After load_orders truncates corrupt line, next save lands correctly."""
+        path = _with_file(tmp_path, monkeypatch)
+        o = _order(ticker="AAPL")
+        save_order(o)
+        with open(path, "ab") as f:
+            f.write(b'{"partial":')  # crash mid-write
+        # Load → truncates corrupt line
+        load_orders()
+        # Next save must succeed
+        o2 = _order(ticker="MSFT")
+        save_order(o2)
+        loaded = load_orders()
+        assert o["order_id"] in loaded
+        assert o2["order_id"] in loaded
+
+    def test_terminal_history_preserved_after_disk_truncation(self, tmp_path, monkeypatch):
+        """Truncating corrupt last line must not lose earlier EXECUTED status."""
+        path = _with_file(tmp_path, monkeypatch)
+        o = _order()
+        save_order(o)
+        save_order(o, status=EXECUTED, trade_id="trd-xxx")
+        with open(path, "ab") as f:
+            f.write(b'{"corrupt":')
+        loaded = load_orders()
+        assert loaded[o["order_id"]]["status"] == EXECUTED
+
+    def test_mid_file_corruption_still_raises(self, tmp_path, monkeypatch):
+        """Corrupt line in the middle of file still raises RuntimeError (fail-closed)."""
+        path = _with_file(tmp_path, monkeypatch)
+        o1 = _order(ticker="AAPL")
+        o2 = _order(ticker="MSFT")
+        save_order(o1)
+        with open(path, "a") as f:
+            f.write('{"order_id": "bad-json-mid\n')  # broken mid-file
+        save_order(o2)
+        with pytest.raises(RuntimeError, match="korrupt"):
+            load_orders()
+
+
+# ---------------------------------------------------------------------------
+# Point 1: Execution timing — execute.yml and DST-safe UTC schedule
+# ---------------------------------------------------------------------------
+
+class TestExecutionTiming:
+    def test_execute_yml_uses_cron_not_workflow_run(self):
+        """execute.yml must trigger via schedule cron, not workflow_run from premarket."""
+        try:
+            with open(".github/workflows/execute.yml") as f:
+                content = f.read()
+        except FileNotFoundError:
+            pytest.skip("execute.yml not found — run from repo root")
+        assert "cron:" in content
+        assert "40 14" in content  # 14:40 UTC
+        assert "workflow_run:" not in content
+
+    def test_14_40_utc_after_nyse_open_in_edt(self):
+        """14:40 UTC = 10:40 ET (UTC-4 EDT/summer) — after NYSE open at 09:30 ET."""
+        from datetime import datetime, timezone, timedelta
+        ET_EDT = timezone(timedelta(hours=-4))
+        execute_utc = datetime(2026, 7, 1, 14, 40, tzinfo=timezone.utc)  # Summer day
+        execute_et = execute_utc.astimezone(ET_EDT)
+        nyse_open_et = datetime(2026, 7, 1, 9, 30, tzinfo=ET_EDT)
+        assert execute_et > nyse_open_et, "14:40 UTC must be after 09:30 ET in EDT"
+
+    def test_14_40_utc_after_nyse_open_in_est(self):
+        """14:40 UTC = 09:40 ET (UTC-5 EST/winter) — after NYSE open at 09:30 ET."""
+        from datetime import datetime, timezone, timedelta
+        ET_EST = timezone(timedelta(hours=-5))
+        execute_utc = datetime(2026, 1, 15, 14, 40, tzinfo=timezone.utc)  # Winter day
+        execute_et = execute_utc.astimezone(ET_EST)
+        nyse_open_et = datetime(2026, 1, 15, 9, 30, tzinfo=ET_EST)
+        assert execute_et > nyse_open_et, "14:40 UTC must be after 09:30 ET in EST"
+
+    def test_holiday_gives_graceful_skip_not_exception(self):
+        """is_trading_session() returning False → graceful return, not CalendarUnavailableError.
+
+        Source check: run_execute must separate the holiday check from CalendarUnavailableError.
+        """
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_execute(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+        # Non-trading day (holiday/weekend) must produce graceful skip, not an exception
+        assert "SKIPPED_NON_TRADING_SESSION" in fn_body, (
+            "run_execute must log SKIPPED_NON_TRADING_SESSION on holiday"
+        )
+        assert "if not trading_today" in fn_body, (
+            "run_execute must guard on 'if not trading_today' to return gracefully"
+        )
+
+    def test_calendar_unavailable_error_propagates(self):
+        """CalendarUnavailableError from is_trading_session → fail-closed (raised in run_execute)."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_execute(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+        # CalendarUnavailableError must be caught and re-raised (not swallowed)
+        assert "except CalendarUnavailableError" in fn_body
+        assert "raise" in fn_body
