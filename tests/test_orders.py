@@ -33,7 +33,6 @@ from modules.orders import (
     get_or_create_order,
     get_pending_for_session,
     load_orders,
-    make_candidate_signal_id,
     make_order_id,
     make_trade_id,
     reconcile_settling_orders,
@@ -745,35 +744,13 @@ class TestOrderIdWithSignalId:
         b = make_order_id(sig_id, "port-Y", "v1", TICKER, SESSION, "BUY")
         assert a == b
 
-    def test_make_candidate_signal_id_stable(self):
-        """Same (signal_run_id, strategy, ticker, action) → same signal_id."""
-        a = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
-        b = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
-        assert a == b
-
-    def test_make_candidate_signal_id_different_ticker(self):
-        a = make_candidate_signal_id("run-001", STRATEGY, "AAPL", "BUY")
-        b = make_candidate_signal_id("run-001", STRATEGY, "MSFT", "BUY")
-        assert a != b
-
-    def test_make_candidate_signal_id_different_strategy(self):
-        a = make_candidate_signal_id("run-001", "strat_A", TICKER, "BUY")
-        b = make_candidate_signal_id("run-001", "strat_B", TICKER, "BUY")
-        assert a != b
-
-    def test_make_candidate_signal_id_different_action(self):
-        a = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
-        b = make_candidate_signal_id("run-001", STRATEGY, TICKER, "SELL")
-        assert a != b
-
-    def test_make_candidate_signal_id_starts_with_sig_prefix(self):
-        sid = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
-        assert sid.startswith("sig-")
-
-    def test_make_candidate_signal_id_has_fixed_length(self):
-        # "sig-" + 12 hex chars = 16 chars total
-        sid = make_candidate_signal_id("run-001", STRATEGY, TICKER, "BUY")
-        assert len(sid) == 16
+    def test_make_candidate_signal_id_removed_from_orders(self):
+        """Confirm make_candidate_signal_id has been removed from operational code."""
+        import modules.orders as orders_mod
+        assert not hasattr(orders_mod, "make_candidate_signal_id"), (
+            "make_candidate_signal_id must not be importable from modules.orders — "
+            "it was a parallel ID system that diverged from the ledger"
+        )
 
     def test_legacy_order_found_prevents_duplicate(self, tmp_path, monkeypatch):
         """Legacy v1 order_id (old make_order_id format) found via fallback → is_new=False."""
@@ -808,7 +785,7 @@ class TestOrderIdWithSignalId:
         orders = {legacy_id: old_order}
 
         # New-style call with per-candidate signal_id and portfolio_id
-        new_sig_id = make_candidate_signal_id(SIGNAL_RUN_ID, STRATEGY, TICKER, "BUY")
+        new_sig_id = "sig-legacyfallback00"  # any ledger-style signal_id
         order, is_new = get_or_create_order(
             orders=orders, signal_run_id=SIGNAL_RUN_ID, ticker=TICKER,
             strategy=STRATEGY, session_date=SESSION, action="BUY",
@@ -876,8 +853,8 @@ class TestFillEventWAL:
         from modules.fills import mark_fill_persisted, is_fill_persisted
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-abc123456789"
-        self._write_fill(oid)
-        mark_fill_persisted(oid)
+        rec = self._write_fill(oid)
+        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"])
         assert is_fill_persisted(oid)
 
     def test_persisted_without_filling_event_is_not_valid(self, tmp_path, monkeypatch):
@@ -885,7 +862,7 @@ class TestFillEventWAL:
         from modules.fills import mark_fill_persisted, is_fill_persisted
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-orphan-persisted"
-        mark_fill_persisted(oid)  # write persisted with no prior filling
+        mark_fill_persisted(oid, "fa-dummy000000", "hash-dummy")  # no prior filling event
         assert not is_fill_persisted(oid)
 
     def test_make_fill_id_deterministic(self):
@@ -912,10 +889,10 @@ class TestFillEventWAL:
         s = save_order(s, status="settling", trade_id="trd-crash")
         orders[order["order_id"]] = s
 
-        self._write_fill(order["order_id"], trade_id="trd-crash",
-                         shares=5.0, execution_price=100.0,
-                         cash_before=10000.0, cash_after=9500.0)
-        mark_fill_persisted(order["order_id"])
+        rec = self._write_fill(order["order_id"], trade_id="trd-crash",
+                               shares=5.0, execution_price=100.0,
+                               cash_before=10000.0, cash_after=9500.0)
+        mark_fill_persisted(order["order_id"], rec["fill_attempt_id"], rec["content_hash"])
 
         # Portfolio does NOT have position (fill WAL should take precedence)
         state = {"positions": {}, "cash": 10000.0}
@@ -1292,7 +1269,7 @@ class TestProjectFillsToTrades:
                     execution_price=100.0, shares=5.0, commission=0.0,
                     session="2026-08-07"):
         from modules.fills import write_fill_event, mark_fill_persisted
-        write_fill_event(
+        rec = write_fill_event(
             order_id=order_id, trade_id=trade_id, signal_id=None,
             signal_run_id="run-001", portfolio_id="", portfolio_version="",
             strategy=strategy, ticker=ticker, action="BUY",
@@ -1302,7 +1279,7 @@ class TestProjectFillsToTrades:
             reason="test", execution_version="v1",
             cash_before=10000.0, cash_after=9500.0,
         )
-        mark_fill_persisted(order_id)
+        mark_fill_persisted(order_id, rec["fill_attempt_id"], rec["content_hash"])
 
     def test_missing_trade_recovered_from_wal(self, tmp_path, monkeypatch):
         """Trade row absent from trades_df is added when fills.jsonl has a persisted event."""
@@ -1445,8 +1422,8 @@ class TestSignalIdFromLedger:
         )
         assert candidate_signal_id.startswith("sig-")
 
-    def test_make_candidate_signal_id_differs_from_ledger(self):
-        """Prove that make_candidate_signal_id() ≠ ledger's make_signal_id() (why it was removed)."""
+    def test_ledger_signal_id_is_the_authority(self):
+        """Ledger signal_id (make_signal_id) depends on feature_snapshot_id — richer than any candidate hash."""
         from modules.ledger import make_signal_id, make_feature_snapshot_id, compute_input_hash
         run_id = "run-abc123"
         model = "test-model"
@@ -1455,9 +1432,318 @@ class TestSignalIdFromLedger:
         features = {"price": 150.0}
         snapshot_id = make_feature_snapshot_id(run_id, ticker, compute_input_hash(features))
         ledger_id = make_signal_id(run_id, model, strat, ticker, snapshot_id)
-        candidate_id = make_candidate_signal_id(run_id, strat, ticker, "BUY")
-        assert ledger_id != candidate_id, (
-            "make_candidate_signal_id produces a DIFFERENT hash than ledger make_signal_id — "
-            "this confirms they are separate systems and make_candidate_signal_id must not be "
-            "used as the authoritative signal_id"
+        assert ledger_id.startswith("sig-"), "ledger signal_id must carry the sig- prefix"
+        # Verify make_candidate_signal_id no longer exists in orders module
+        import modules.orders as orders_mod
+        assert not hasattr(orders_mod, "make_candidate_signal_id"), (
+            "make_candidate_signal_id was removed — ledger signal_id is the sole authority"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round 3 blockers: fill_attempt_id, mandatory content_hash, PYRAMID action,
+#                   portfolio state hash, atomic saves, idempotent retry
+# ---------------------------------------------------------------------------
+
+class TestFillAttemptId:
+    """fill_attempt_id ties persisted marker to exactly one filling event."""
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def test_fill_attempt_id_deterministic(self):
+        from modules.fills import make_fill_attempt_id
+        a = make_fill_attempt_id("ord-abc", 100.0, "2026-08-07")
+        b = make_fill_attempt_id("ord-abc", 100.0, "2026-08-07")
+        assert a == b
+        assert a.startswith("fa-")
+
+    def test_fill_attempt_id_differs_on_price_change(self):
+        from modules.fills import make_fill_attempt_id
+        a = make_fill_attempt_id("ord-abc", 100.0, "2026-08-07")
+        b = make_fill_attempt_id("ord-abc", 101.0, "2026-08-07")
+        assert a != b
+
+    def test_write_fill_event_includes_fill_attempt_id(self, tmp_path, monkeypatch):
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event
+        rec = write_fill_event(
+            order_id="ord-fa-test0123", trade_id="trd-x",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07",
+            actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        assert "fill_attempt_id" in rec
+        assert rec["fill_attempt_id"].startswith("fa-")
+
+    def test_persisted_marker_tied_to_exact_fill_attempt(self, tmp_path, monkeypatch):
+        """Persisted marker references fill_attempt_id; project uses that to find the right filling."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted, project_fills_to_trades
+        import pandas as pd
+
+        # Two filling events for the same order (crash + retry with different price)
+        rec1 = write_fill_event(
+            order_id="ord-two-fills123", trade_id="trd-q1",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07",
+            actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        rec2 = write_fill_event(
+            order_id="ord-two-fills123", trade_id="trd-q2",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07",
+            actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=102.0,  # different retry price
+            cash_before=10000.0, cash_after=9490.0,
+        )
+        # Mark the SECOND attempt as persisted
+        mark_fill_persisted("ord-two-fills123", rec2["fill_attempt_id"], rec2["content_hash"])
+
+        recovered = project_fills_to_trades(pd.DataFrame())
+        # Must project the second attempt's trade_id, not the first
+        assert "trd-q2" in recovered["trade_id"].values
+        assert "trd-q1" not in recovered["trade_id"].values
+
+    def test_orphaned_persisted_marker_raises_in_project(self, tmp_path, monkeypatch):
+        """Persisted marker with fill_attempt_id that has no matching filling event → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted, project_fills_to_trades
+        import pandas as pd
+
+        rec = write_fill_event(
+            order_id="ord-orphan-test0", trade_id="trd-orphan",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07",
+            actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        # Write persisted marker with a DIFFERENT (non-existent) fill_attempt_id
+        mark_fill_persisted("ord-orphan-test0", "fa-doesnotexist0", rec["content_hash"])
+
+        with pytest.raises(RuntimeError, match="fail-closed"):
+            project_fills_to_trades(pd.DataFrame())
+
+
+class TestMandatoryContentHash:
+    """content_hash is mandatory for all fill events — no legacy path."""
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _append_raw(self, tmp_path, record: dict) -> None:
+        import json
+        fills_path = tmp_path / "fills.jsonl"
+        with open(fills_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def test_missing_content_hash_in_filling_event_fails_closed(self, tmp_path, monkeypatch):
+        """A filling event without content_hash must cause load_fill_events to fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import load_fill_events
+        self._append_raw(tmp_path, {
+            "fill_id": "fill-abc", "fill_attempt_id": "fa-abc",
+            "order_id": "ord-nohash0000", "trade_id": "trd-x",
+            "signal_id": None, "signal_run_id": "run-001",
+            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
+            "ticker": "AAPL", "action": "BUY",
+            "intended_execution_session": "2026-08-07",
+            "actual_execution_session": "2026-08-07",
+            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "cash_before": 10000.0, "cash_after": 9500.0,
+            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
+            # content_hash deliberately absent
+        })
+        with pytest.raises(RuntimeError, match="content_hash"):
+            load_fill_events()
+
+    def test_missing_content_hash_in_persisted_event_fails_closed(self, tmp_path, monkeypatch):
+        """A persisted event without content_hash must also cause load to fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, load_fill_events
+        import json
+        rec = write_fill_event(
+            order_id="ord-no-hash-pers", trade_id="trd-x",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07",
+            actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        fills_path = tmp_path / "fills.jsonl"
+        with open(fills_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "fill_id": rec["fill_id"], "fill_attempt_id": rec["fill_attempt_id"],
+                "filling_content_hash": rec["content_hash"],
+                "order_id": "ord-no-hash-pers",
+                "status": "persisted", "written_at": "2026-08-07T14:01:00Z",
+                # content_hash deliberately absent
+            }) + "\n")
+        with pytest.raises(RuntimeError, match="content_hash"):
+            load_fill_events()
+
+    def test_invalid_action_rejected(self, tmp_path, monkeypatch):
+        """action not in {BUY, SELL, PYRAMID_FILL} → fail-closed on load."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events
+        import json
+        rec = {
+            "fill_id": "fill-bad-action", "fill_attempt_id": "fa-bad",
+            "order_id": "ord-bad-action0", "trade_id": "trd-x",
+            "signal_id": None, "signal_run_id": "run-001",
+            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
+            "ticker": "AAPL", "action": "INVALID_ACTION",
+            "intended_execution_session": "2026-08-07",
+            "actual_execution_session": "2026-08-07",
+            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "cash_before": 10000.0, "cash_after": 9500.0,
+            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        fills_path = tmp_path / "fills.jsonl"
+        with open(fills_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        with pytest.raises(RuntimeError, match="action"):
+            load_fill_events()
+
+    def test_cash_direction_buy_rejected_if_cash_increases(self, tmp_path, monkeypatch):
+        """BUY with cash_after > cash_before → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events
+        import json
+        rec = {
+            "fill_id": "fill-bad-cash00", "fill_attempt_id": "fa-bc",
+            "order_id": "ord-bad-cash00", "trade_id": "trd-x",
+            "signal_id": None, "signal_run_id": "run-001",
+            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
+            "ticker": "AAPL", "action": "BUY",
+            "intended_execution_session": "2026-08-07",
+            "actual_execution_session": "2026-08-07",
+            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "cash_before": 9000.0, "cash_after": 9500.0,  # wrong direction!
+            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        fills_path = tmp_path / "fills.jsonl"
+        with open(fills_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        with pytest.raises(RuntimeError, match="cash"):
+            load_fill_events()
+
+
+class TestPyramidFillAction:
+    """PYRAMID_FILL action must be stored and projected correctly from order, not trade."""
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def test_pyramid_fill_action_stored_and_projected(self, tmp_path, monkeypatch):
+        """Writing action=PYRAMID_FILL → filling event has PYRAMID_FILL, project uses it."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted, project_fills_to_trades
+        import pandas as pd
+
+        rec = write_fill_event(
+            order_id="ord-pyr-test0000", trade_id="trd-pyr",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="PYRAMID_FILL",
+            intended_execution_session="2026-08-07",
+            actual_execution_session="2026-08-07",
+            shares=3.0, execution_price=100.0,
+            cash_before=10000.0, cash_after=9700.0,
+        )
+        assert rec["action"] == "PYRAMID_FILL"
+        mark_fill_persisted("ord-pyr-test0000", rec["fill_attempt_id"], rec["content_hash"])
+
+        recovered = project_fills_to_trades(pd.DataFrame())
+        row = recovered[recovered["trade_id"] == "trd-pyr"]
+        assert len(row) == 1
+        assert row.iloc[0]["action"] == "PYRAMID_FILL"
+
+
+class TestPortfolioStateHash:
+    """compute_portfolio_state_hash produces a stable, canonical hash of cash+positions."""
+
+    def test_hash_deterministic(self):
+        from modules.fills import compute_portfolio_state_hash
+        state = {"cash": 5000.0, "positions": {"AAPL": {"shares": 10.0, "avg_cost": 150.0}}}
+        a = compute_portfolio_state_hash(state)
+        b = compute_portfolio_state_hash(state)
+        assert a == b
+
+    def test_hash_changes_on_cash_change(self):
+        from modules.fills import compute_portfolio_state_hash
+        s1 = {"cash": 5000.0, "positions": {}}
+        s2 = {"cash": 5001.0, "positions": {}}
+        assert compute_portfolio_state_hash(s1) != compute_portfolio_state_hash(s2)
+
+    def test_hash_changes_on_position_change(self):
+        from modules.fills import compute_portfolio_state_hash
+        s1 = {"cash": 5000.0, "positions": {"AAPL": {"shares": 10.0, "avg_cost": 150.0}}}
+        s2 = {"cash": 5000.0, "positions": {"AAPL": {"shares": 11.0, "avg_cost": 150.0}}}
+        assert compute_portfolio_state_hash(s1) != compute_portfolio_state_hash(s2)
+
+    def test_hash_order_independent(self):
+        from modules.fills import compute_portfolio_state_hash
+        s1 = {"cash": 5000.0, "positions": {"AAPL": {"shares": 10.0, "avg_cost": 150.0},
+                                             "MSFT": {"shares": 5.0, "avg_cost": 300.0}}}
+        s2 = {"cash": 5000.0, "positions": {"MSFT": {"shares": 5.0, "avg_cost": 300.0},
+                                             "AAPL": {"shares": 10.0, "avg_cost": 150.0}}}
+        assert compute_portfolio_state_hash(s1) == compute_portfolio_state_hash(s2)
+
+
+class TestIdempotentRetrySignalId:
+    """get_signal_records_for_run returns all signal_records for a completed run."""
+
+    def test_get_signal_records_for_run(self, tmp_path, monkeypatch):
+        """Returns matching records for signal_run_id, skips others."""
+        import modules.ledger as ledger_mod
+        import json
+        # _jsonl_path("signal_record", "2026-08") → LEDGER_DIR / "2026-08_signal_records.jsonl"
+        jpath = tmp_path / "2026-08_signal_records.jsonl"
+        monkeypatch.setattr(ledger_mod, "LEDGER_DIR", tmp_path)
+
+        rec1 = {"signal_run_id": "run-target", "strategy_id": "s1",
+                "ticker": "AAPL", "signal_id": "sig-aapl0000001"}
+        rec2 = {"signal_run_id": "run-other", "strategy_id": "s1",
+                "ticker": "AAPL", "signal_id": "sig-other"}
+        rec3 = {"signal_run_id": "run-target", "strategy_id": "s2",
+                "ticker": "MSFT", "signal_id": "sig-msft0000001"}
+        with open(jpath, "w") as f:
+            for r in [rec1, rec2, rec3]:
+                f.write(json.dumps(r) + "\n")
+
+        from modules.ledger import get_signal_records_for_run
+        records = get_signal_records_for_run("run-target", "2026-08")
+        assert len(records) == 2
+        tickers = {r["ticker"] for r in records}
+        assert tickers == {"AAPL", "MSFT"}
+
+    def test_get_signal_records_returns_empty_for_missing_file(self, tmp_path, monkeypatch):
+        import modules.ledger as ledger_mod
+        monkeypatch.setattr(ledger_mod, "LEDGER_DIR", tmp_path)
+        from modules.ledger import get_signal_records_for_run
+        records = get_signal_records_for_run("run-nobody", "2026-08")
+        assert records == []

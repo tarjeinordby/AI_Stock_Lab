@@ -420,6 +420,23 @@ def run_signal():
     existing = get_signal_run_status(signal_run_id, year_month)
     if existing and existing.get("status") == "completed":
         print(f"Ledger: run {signal_run_id} allerede fullført (idempotent retry).")
+        # Blocker 1: embed ledger signal_ids into candidates on completed-run retry.
+        # Fail closed if any candidate lacks exactly one matching signal_record.
+        from modules.ledger import get_signal_records_for_run  # noqa: PLC0415
+        signal_records_retry = get_signal_records_for_run(signal_run_id, year_month)
+        sig_id_map_retry = {
+            (sr["strategy_id"], sr["ticker"]): sr["signal_id"]
+            for sr in signal_records_retry
+        }
+        for strat_name, strat_data in strategies_payload.items():
+            for c in strat_data.get("candidates", []):
+                sid = sig_id_map_retry.get((strat_name, c.get("ticker", "")))
+                if sid is None:
+                    raise RuntimeError(
+                        f"Idempotent retry: ingen signal_record for "
+                        f"{strat_name}/{c.get('ticker')} i run {signal_run_id} — fail-closed"
+                    )
+                c["signal_id"] = sid
     else:
         run_record = build_signal_run_record(
             signal_run_id=signal_run_id,
@@ -651,12 +668,16 @@ def run_ack_publication():
 
 
 def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
-                                cash_after: float, execution_version: str) -> None:
-    """Append a fill event to the WAL (fills.jsonl) before portfolio state is saved to disk."""
+                                cash_after: float, execution_version: str) -> dict:
+    """Append a fill event to the WAL and return the written record (including fill_attempt_id).
+
+    action is taken from order["action"] — the authoritative source. trade.get("action")
+    may be "BUY" even for a PYRAMID_FILL trade, so we must not use it.
+    """
     from modules.fills import write_fill_event  # noqa: PLC0415
     price = float(trade.get("price", 0))
     commission = float(trade.get("cost", 0))
-    write_fill_event(
+    return write_fill_event(
         order_id=order["order_id"],
         trade_id=make_trade_id(order["order_id"]),
         signal_id=order.get("signal_id"),
@@ -665,7 +686,7 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
         portfolio_version=order.get("portfolio_version", ""),
         strategy=order.get("strategy", ""),
         ticker=trade.get("ticker", ""),
-        action=trade.get("action", order.get("action", "")),
+        action=order["action"],  # authoritative: PYRAMID_FILL must not be overridden by trade
         intended_execution_session=order.get("intended_execution_session", ""),
         actual_execution_session=trade.get("execution_session", trade.get("date", "")),
         shares=float(trade.get("shares", 0)),
@@ -761,8 +782,8 @@ def run_strategy_execution(
     buy_orders_executed = 0
     sell_orders_created = 0
     sell_orders_executed = 0
-    # Tracks orders annotated as SETTLING in this run — finalized after portfolio save
-    settling_order_ids = []
+    # Tracks (order_id, fill_attempt_id, filling_content_hash) for each SETTLING fill
+    settling_fills: list[tuple[str, str, str]] = []
     portfolio_id = state.get("portfolio_id", strategy_name)
     portfolio_version = PORTFOLIO_VERSION  # schema version from versioning.py, not created_at
 
@@ -776,9 +797,9 @@ def run_strategy_execution(
                 execution_price_cache,
             )
             if trade:
-                _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
+                _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
-                settling_order_ids.append(order["order_id"])
+                settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 sells.append(trade)
                 orders_executed += 1
                 sell_orders_executed += 1
@@ -803,9 +824,9 @@ def run_strategy_execution(
                     pyramid_remaining=order.get("pyramid_remaining", 0.0),
                 )
                 if trade:
-                    _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
+                    _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
                     _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
-                    settling_order_ids.append(order["order_id"])
+                    settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                     buys.append(trade)
                     orders_executed += 1
                     buy_orders_executed += 1
@@ -850,9 +871,9 @@ def run_strategy_execution(
             state, trades_df, strategy_name, ticker, reason, execution_price_cache
         )
         if trade:
-            _write_fill_event_for_order(order, trade, cash_before, state2["cash"], execution_version)
+            _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state2["cash"], execution_version)
             _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
-            settling_order_ids.append(order["order_id"])
+            settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
             orders_executed += 1
             sell_orders_executed += 1
         else:
@@ -970,9 +991,9 @@ def run_strategy_execution(
                 state, trades_df, strategy_name, ticker, execution_price_cache
             )
             if fill:
-                _write_fill_event_for_order(pyr_order, fill, pyr_cash_before, state["cash"], execution_version)
+                _fill_rec = _write_fill_event_for_order(pyr_order, fill, pyr_cash_before, state["cash"], execution_version)
                 _annotate_trade(fill, pyr_order["order_id"], orders, signal_run_id, execution_version)
-                settling_order_ids.append(pyr_order["order_id"])
+                settling_fills.append((pyr_order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 pyramid_fills.append(fill)
                 orders_executed += 1
                 print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
@@ -1092,9 +1113,9 @@ def run_strategy_execution(
             )
 
             if trade:
-                _write_fill_event_for_order(order, trade, buy_cash_before, state["cash"], execution_version)
+                _fill_rec = _write_fill_event_for_order(order, trade, buy_cash_before, state["cash"], execution_version)
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
-                settling_order_ids.append(order["order_id"])
+                settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 buys.append(trade)
                 orders_executed += 1
                 buy_orders_executed += 1
@@ -1123,17 +1144,34 @@ def run_strategy_execution(
         total_after,
     )
     state["last_execution_date"] = today_str()
+
+    # Compute portfolio state hash before save — verified after atomic write
+    from modules.fills import compute_portfolio_state_hash, mark_fill_persisted  # noqa: PLC0415
+    pre_save_hash = compute_portfolio_state_hash(state)
+
     save_strategy_state(strategy_name, state)
 
-    # Mark fills as persisted in WAL + finalize SETTLING → EXECUTED (fail-closed per order)
-    # EXECUTED is only written if mark_fill_persisted succeeds.
+    # Verify: reload portfolio from disk and confirm hash matches in-memory state
+    post_save_state = load_strategy_state(strategy_name)
+    post_save_hash = compute_portfolio_state_hash(post_save_state)
+    if post_save_hash != pre_save_hash:
+        send_telegram(
+            f"⚠️ KRITISK: Portfolio state hash mismatch etter save for {strategy_name}: "
+            f"forventet {pre_save_hash!r}, faktisk {post_save_hash!r} — kjøring avbrutt"
+        )
+        raise RuntimeError(
+            f"Portfolio state hash mismatch for {strategy_name}: "
+            f"pre={pre_save_hash!r} post={post_save_hash!r}"
+        )
+
+    # Mark fills as persisted in WAL + finalize SETTLING → EXECUTED (fail-closed per fill)
+    # EXECUTED is only written if mark_fill_persisted succeeds and hash matches.
     # A WAL write failure leaves the order as SETTLING for reconcile_settling_orders on restart.
-    from modules.fills import mark_fill_persisted  # noqa: PLC0415
-    for oid in settling_order_ids:
+    for oid, fa_id, ch in settling_fills:
         if oid not in orders or orders[oid].get("status") != SETTLING:
             continue
         try:
-            mark_fill_persisted(oid)
+            mark_fill_persisted(oid, fa_id, ch, post_portfolio_state_hash=pre_save_hash)
         except RuntimeError as exc:
             send_telegram(
                 f"⚠️ KRITISK: Fill-WAL feilet for {oid}: {exc} "
@@ -1277,11 +1315,13 @@ def run_execute():
 
     # WAL trade recovery: project any persisted fill events into trades_df
     # Idempotent — skips trade_ids already present in trades.csv
+    # Fail-closed: any WAL failure stops execution before any state mutation.
     try:
         from modules.fills import project_fills_to_trades  # noqa: PLC0415
         trades_df = project_fills_to_trades(trades_df)
     except RuntimeError as exc:
-        send_telegram(f"⚠️ WAL-gjenoppbygging feilet (trades.csv kan mangle rader): {exc}")
+        send_telegram(f"⚠️ WAL-gjenoppbygging feilet — kjøring avbrutt: {exc}")
+        raise  # fail-closed: stop before any portfolio mutation
 
     # Macro filter (FRED 10Y/2Y yield spread, no API key)
     macro = get_macro_status()

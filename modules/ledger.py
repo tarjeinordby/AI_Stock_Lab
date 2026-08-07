@@ -655,6 +655,36 @@ def get_signal_run_record(signal_run_id: str, year_month: str) -> dict | None:
     return None
 
 
+def get_signal_records_for_run(signal_run_id: str, year_month: str) -> list[dict]:
+    """Return all signal_record entries for the given signal_run_id.
+
+    Used by run_signal() idempotent-retry path and signal_validator Layer 6.
+    Raises RuntimeError on OSError (fail-closed — caller must handle).
+    Returns empty list if file does not exist or no records match.
+    """
+    jpath = _jsonl_path("signal_record", year_month)
+    if not jpath.exists():
+        return []
+    records = []
+    try:
+        with open(jpath, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("signal_run_id") == signal_run_id:
+                        records.append(rec)
+                except json.JSONDecodeError:
+                    pass
+    except OSError as exc:
+        raise RuntimeError(
+            f"Kan ikke lese signal_record-ledger for {signal_run_id}: {exc}"
+        ) from exc
+    return records
+
+
 def record_id_exists(
     record_id: str, record_type: str, year_month: str
 ) -> bool:

@@ -79,19 +79,6 @@ def _make_legacy_order_id(signal_run_id: str, ticker: str, strategy: str,
     return "ord-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
-def make_candidate_signal_id(signal_run_id: str, strategy: str, ticker: str,
-                              action: str = "BUY") -> str:
-    """Deprecated: Do not use in new production code.
-
-    Use the signal_id embedded in the signal file candidate (from modules.ledger.make_signal_id)
-    instead.  This function produces a different hash than the ledger's signal_id and creates
-    a parallel ID system, which is forbidden by the design contract.
-
-    Kept here only to avoid breaking the import in tests that verify the old contract.
-    """
-    raw = f"{signal_run_id}|{strategy}|{ticker}|{action}"
-    return "sig-" + hashlib.sha256(raw.encode()).hexdigest()[:12]
-
 
 def make_trade_id(order_id: str, timestamp_iso: str = "") -> str:
     """Tie a trade fill back to its order.
@@ -397,10 +384,18 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
 
         # Fill event WAL (primary crash-recovery source)
         order_fill_events = fill_events_by_order.get(order_id, [])
-        has_filling = any(e.get("status") == "filling" for e in order_fill_events)
+        filling_ev = next((e for e in order_fill_events if e.get("status") == "filling"), None)
+        persisted_ev = next((e for e in order_fill_events if e.get("status") == "persisted"), None)
+        has_filling = filling_ev is not None
+        # Strict: persisted marker must reference the filling event's fill_attempt_id
         fill_persisted = (
-            has_filling
-            and any(e.get("status") == "persisted" for e in order_fill_events)
+            filling_ev is not None
+            and persisted_ev is not None
+            and (
+                not persisted_ev.get("fill_attempt_id")
+                or not filling_ev.get("fill_attempt_id")
+                or persisted_ev.get("fill_attempt_id") == filling_ev.get("fill_attempt_id")
+            )
         )
 
         if fill_persisted:
@@ -409,8 +404,15 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         elif order_fill_events and has_filling and portfolio_has_fill:
             # Fill event exists but not marked persisted — crash after portfolio save,
             # before mark_fill_persisted. Reconstruct: mark persisted now, EXECUTED.
+            # Use the last filling event (most recent attempt — the one that succeeded).
             # Raises RuntimeError if WAL write fails — propagates fail-closed.
-            mark_fill_persisted(order_id)
+            filling_events = [e for e in order_fill_events if e.get("status") == "filling"]
+            last_filling = filling_events[-1]
+            mark_fill_persisted(
+                order_id,
+                last_filling.get("fill_attempt_id", ""),
+                last_filling.get("content_hash", ""),
+            )
             updated = save_order(order, status=EXECUTED)
         elif not order_fill_events and portfolio_has_fill:
             # No fill events (legacy system before fills.jsonl) — portfolio is authoritative

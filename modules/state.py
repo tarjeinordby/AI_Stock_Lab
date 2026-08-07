@@ -103,17 +103,27 @@ def load_json(path, default=None):
 
 
 def read_csv_or_empty(path, columns):
-    if os.path.exists(path):
-        try:
-            return pd.read_csv(path)
-        except Exception:
-            pass
-    return pd.DataFrame(columns=columns)
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=columns)
+    try:
+        return pd.read_csv(path)
+    except Exception as exc:
+        raise RuntimeError(f"Kan ikke lese CSV {path}: {exc}") from exc
 
 
 def save_csv(df, path):
     ensure_dirs()
-    df.to_csv(path, index=False)
+    tmp = path + ".tmp"
+    df.to_csv(tmp, index=False)
+    with open(tmp, "rb") as f:
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    parent = os.path.dirname(os.path.abspath(path))
+    fd = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def safe_float(x, default=None):
@@ -215,7 +225,7 @@ def load_strategy_state(strategy_name):
 
 
 def save_strategy_state(strategy_name, state):
-    """Atomically save portfolio state: temp file → fsync → os.replace.
+    """Atomically save portfolio state: temp file → fsync → os.replace → fsync parent.
 
     Crash between write and os.replace leaves a .tmp file (harmless) but never
     produces a partially-written portfolio JSON at the canonical path.
@@ -228,6 +238,12 @@ def save_strategy_state(strategy_name, state):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, path)
+    parent = os.path.dirname(os.path.abspath(path))
+    fd = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def reset_week_if_needed(state):

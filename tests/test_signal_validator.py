@@ -2341,3 +2341,116 @@ class TestPoint10FinalIntegration:
         final_push_pos = content.find("id: final_push")
         assert always_pos != -1 and final_push_pos != -1
         assert always_pos < final_push_pos
+
+
+# ---------------------------------------------------------------------------
+# Layer 6: Per-candidate cross-validation against signal_records ledger
+# ---------------------------------------------------------------------------
+
+def _make_signal_with_candidates(strat="test_strategy", ticker="AAPL",
+                                  candidate_sig_id="sig-aapltest0001",
+                                  add_content_hash=True) -> dict:
+    """Helper: signal with one strategy and one candidate, all layers pre-satisfied."""
+    from modules.signal_validator import compute_signal_content_hash  # noqa: PLC0415
+    s = _make_signal()
+    s["strategies"] = {
+        strat: {
+            "candidates": [{"ticker": ticker, "rank": 1, "signal_id": candidate_sig_id}]
+        }
+    }
+    if add_content_hash:
+        s["signal_content_hash"] = compute_signal_content_hash(s)
+    return s
+
+
+def _validate_l6(signal, signal_records):
+    """Validate with all layers injected including Layer 6."""
+    return validate_signal(
+        signal, "/fake/path", SESSION,
+        _get_publication_fn=_pub_success,
+        _get_ledger_status_fn=_ledger_status_completed,
+        _get_ledger_record_fn=_ledger_record_ok,
+        _get_signal_records_fn=lambda run_id, ym: signal_records,
+    )
+
+
+class TestLayer6CandidateCrossValidation:
+    """Layer 6: candidate signal_id must match ledger signal_record."""
+
+    def test_matching_signal_id_passes(self):
+        """Candidate signal_id matches ledger signal_record → Layer 6 passes."""
+        sig_id = "sig-aapltest0001"
+        s = _make_signal_with_candidates(ticker="AAPL", candidate_sig_id=sig_id)
+        records = [{"signal_run_id": "run-2026-08-05-abc123456",
+                    "strategy_id": "test_strategy", "ticker": "AAPL",
+                    "signal_id": sig_id, "model_version": "quant_baseline_v1"}]
+        result = _validate_l6(s, records)
+        assert result.is_valid
+        assert result.failure_mode in ("ok", "data_quality_reduced")
+
+    def test_missing_signal_id_in_candidate_rejected(self):
+        """Candidate without signal_id → ledger_mismatch, no new buys."""
+        s = _make_signal()
+        s["strategies"] = {
+            "test_strategy": {
+                "candidates": [{"ticker": "AAPL", "rank": 1}]  # no signal_id
+            }
+        }
+        from modules.signal_validator import compute_signal_content_hash  # noqa: PLC0415
+        s["signal_content_hash"] = compute_signal_content_hash(s)
+        records = [{"signal_run_id": "run-2026-08-05-abc123456",
+                    "strategy_id": "test_strategy", "ticker": "AAPL",
+                    "signal_id": "sig-aapltest0001"}]
+        result = _validate_l6(s, records)
+        assert result.failure_mode == "ledger_mismatch"
+        assert not result.allow_new_buys
+        assert result.allow_protective_sells  # safety-sells always allowed
+
+    def test_wrong_signal_id_in_candidate_rejected(self):
+        """Candidate signal_id ≠ ledger signal_record signal_id → ledger_mismatch."""
+        s = _make_signal_with_candidates(ticker="AAPL", candidate_sig_id="sig-wrong0000001")
+        records = [{"signal_run_id": "run-2026-08-05-abc123456",
+                    "strategy_id": "test_strategy", "ticker": "AAPL",
+                    "signal_id": "sig-correct000001"}]
+        result = _validate_l6(s, records)
+        assert result.failure_mode == "ledger_mismatch"
+        assert not result.allow_new_buys
+
+    def test_no_ledger_record_for_ticker_rejected(self):
+        """Candidate ticker not found in signal_records → ledger_mismatch."""
+        s = _make_signal_with_candidates(ticker="AAPL", candidate_sig_id="sig-aapltest0001")
+        records = []  # empty — no records at all
+        result = _validate_l6(s, records)
+        assert result.failure_mode == "ledger_mismatch"
+
+    def test_duplicate_signal_records_rejected(self):
+        """Duplicate (strategy_id, ticker) in ledger signal_records → ledger_mismatch."""
+        sig_id = "sig-aapltest0001"
+        s = _make_signal_with_candidates(ticker="AAPL", candidate_sig_id=sig_id)
+        records = [
+            {"signal_run_id": "run-2026-08-05-abc123456", "strategy_id": "test_strategy",
+             "ticker": "AAPL", "signal_id": sig_id},
+            {"signal_run_id": "run-2026-08-05-abc123456", "strategy_id": "test_strategy",
+             "ticker": "AAPL", "signal_id": sig_id},  # duplicate
+        ]
+        result = _validate_l6(s, records)
+        assert result.failure_mode == "ledger_mismatch"
+
+    def test_no_candidates_in_signal_passes_layer6(self):
+        """Signal with no strategies/candidates → Layer 6 passes vacuously."""
+        s = _make_signal(add_content_hash=True)
+        # No strategies key — _validate already injects Layer 6 via _validate
+        result = _validate_l6(s, [])
+        assert result.is_valid
+
+    def test_protective_sells_still_allowed_on_layer6_failure(self):
+        """Layer 6 failure blocks buys/pyramid but never blocks protective sells."""
+        s = _make_signal_with_candidates(ticker="AAPL", candidate_sig_id="sig-wrong0000001")
+        records = [{"signal_run_id": "run-2026-08-05-abc123456",
+                    "strategy_id": "test_strategy", "ticker": "AAPL",
+                    "signal_id": "sig-right0000001"}]
+        result = _validate_l6(s, records)
+        assert result.failure_mode == "ledger_mismatch"
+        assert not result.allow_new_buys
+        assert not result.allow_pyramid
+        assert result.allow_protective_sells

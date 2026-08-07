@@ -17,6 +17,11 @@ Six validation layers (all must pass for full execution):
                         ImportError → rejected (fail-closed, not skipped)
   5. Content hash     — signal_content_hash present and matches recomputed hash
                         (missing or empty hash → rejected, no backward compat)
+  6. Candidate cross-validation — every candidate's signal_id in every strategy
+                        must match the ledger signal_record for that
+                        (strategy_id, ticker). Missing, duplicate, or mismatched
+                        signal_id → ledger_mismatch. Candidates without signal_id
+                        → invalid_signal. Protective safety-sells still allowed.
 
 Data quality tier is computed and reported but does NOT block execution.
 Data quality thresholds will be proposed and approved before being enforced.
@@ -162,21 +167,23 @@ def validate_signal(
     session_date: str,
     *,
     _now=None,
-    _get_publication_fn: Optional[Callable] = None,   # (signal_run_id) → dict|None
-    _get_ledger_status_fn: Optional[Callable] = None, # (signal_run_id, year_month) → dict|None
-    _get_ledger_record_fn: Optional[Callable] = None, # (signal_run_id, year_month) → dict|None
+    _get_publication_fn: Optional[Callable] = None,      # (signal_run_id) → dict|None
+    _get_ledger_status_fn: Optional[Callable] = None,    # (signal_run_id, year_month) → dict|None
+    _get_ledger_record_fn: Optional[Callable] = None,    # (signal_run_id, year_month) → dict|None
+    _get_signal_records_fn: Optional[Callable] = None,   # (signal_run_id, year_month) → list[dict]
 ) -> SignalValidationResult:
     """
-    Five-layer signal validation. Never raises — exceptions become failure modes.
+    Six-layer signal validation. Never raises — exceptions become failure modes.
 
     Args:
         signal:       Parsed signal JSON dict (finalized — must have publication fields).
         signal_path:  Path to the signal file (for audit; not used for date logic).
         session_date: Today's NYSE trading session (YYYY-MM-DD, from today_str()).
         _now:         Override UTC now — deterministic testing only.
-        _get_publication_fn:  Inject publication record lookup (tests).
-        _get_ledger_status_fn: Inject status-sidecar lookup (tests).
-        _get_ledger_record_fn: Inject JSONL signal_run record lookup (tests).
+        _get_publication_fn:     Inject publication record lookup (tests).
+        _get_ledger_status_fn:   Inject status-sidecar lookup (tests).
+        _get_ledger_record_fn:   Inject JSONL signal_run record lookup (tests).
+        _get_signal_records_fn:  Inject signal_record list lookup (tests).
     """
     signal_run_id     = signal.get("signal_run_id")
     generated_at      = signal.get("created_at_utc")
@@ -467,6 +474,67 @@ def validate_signal(
             )
     except Exception as exc:
         return _reject("hash_error", f"Content hash beregning feilet: {exc}")
+
+    # ------------------------------------------------------------------
+    # Layer 6: Per-candidate cross-validation against signal_records ledger
+    #   Every candidate's signal_id must match the ledger record for
+    #   (strategy_id, ticker). Missing/duplicate/mismatch → ledger_mismatch.
+    # ------------------------------------------------------------------
+    try:
+        if _get_signal_records_fn is not None:
+            signal_records = _get_signal_records_fn(signal_run_id, year_month)
+        else:
+            from modules.ledger import get_signal_records_for_run  # noqa: PLC0415
+            signal_records = get_signal_records_for_run(signal_run_id, year_month)
+
+        # Build map with duplicate detection
+        sig_rec_map: dict[tuple, dict] = {}
+        sig_rec_count: dict[tuple, int] = {}
+        for sr in signal_records:
+            key = (sr.get("strategy_id"), sr.get("ticker"))
+            sig_rec_map[key] = sr
+            sig_rec_count[key] = sig_rec_count.get(key, 0) + 1
+
+        duplicates = [k for k, cnt in sig_rec_count.items() if cnt > 1]
+        if duplicates:
+            return _reject(
+                "ledger_mismatch",
+                f"Duplikate signal_records i ledger for {signal_run_id}: {duplicates[:3]}",
+            )
+
+        strategies = signal.get("strategies", {})
+        for strat_name, strat_data in strategies.items():
+            candidates = strat_data.get("candidates", [])
+            for c in candidates:
+                ticker = c.get("ticker")
+                cand_sig_id = c.get("signal_id")
+
+                if not cand_sig_id:
+                    return _reject(
+                        "ledger_mismatch",
+                        f"Kandidat {strat_name}/{ticker} mangler signal_id — "
+                        "alle kandidater må ha ledger-validert signal_id",
+                    )
+
+                key = (strat_name, ticker)
+                sr = sig_rec_map.get(key)
+                if sr is None:
+                    return _reject(
+                        "ledger_mismatch",
+                        f"Ingen signal_record i ledger for {strat_name}/{ticker} "
+                        f"(signal_run_id={signal_run_id})",
+                    )
+
+                ledger_sig_id = sr.get("signal_id")
+                if cand_sig_id != ledger_sig_id:
+                    return _reject(
+                        "ledger_mismatch",
+                        f"signal_id mismatch for {strat_name}/{ticker}: "
+                        f"kandidat={cand_sig_id!r}, ledger={ledger_sig_id!r}",
+                    )
+
+    except Exception as exc:
+        return _reject("ledger_error", f"Layer 6 kandidat-kryssvalidering feilet: {exc}")
 
     # ------------------------------------------------------------------
     # All layers passed — data quality metrics are informational only

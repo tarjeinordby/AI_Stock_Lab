@@ -4,23 +4,30 @@ Write-ahead fill/trade event ledger for crash-consistent portfolio persistence.
 Sequence for every fill:
   1. execute_buy/sell/pyramid → trade data known (in-memory state mutated)
   2. write_fill_event(..., status="filling")  ← WAL entry BEFORE portfolio disk write
-  3. save_strategy_state_atomic(...)           ← portfolio persisted to disk
-  4. mark_fill_persisted(order_id)            ← append "persisted" event to WAL
-  5. save_order(EXECUTED)                     ← terminal status
+  3. compute_portfolio_state_hash(state)      ← canonical hash of cash+positions
+  4. save_strategy_state_atomic(...)           ← portfolio persisted to disk
+  5. verify: reload + hash must equal pre-save hash
+  6. mark_fill_persisted(order_id, fill_attempt_id, filling_content_hash,
+                         post_portfolio_state_hash) ← persisted event ties to exact filling
+  7. save_order(EXECUTED)                     ← terminal status
 
 Recovery via reconcile_settling_orders:
-  - fill_event "persisted" → portfolio on disk → EXECUTED
+  - fill_event "persisted" (with matching fill_attempt_id) → EXECUTED
   - fill_event "filling" + position in portfolio → crash after save, before mark → reconstruct
   - fill_event "filling" + no position in portfolio → crash before portfolio save → PENDING_PRICE retry
   - no fill_event + position in portfolio → legacy system (no WAL) → EXECUTED
   - no fill_event + no position → legacy crash before save → PENDING_PRICE retry
 
 Integrity:
-  - Every record includes a content_hash (SHA-256 of all fields except content_hash itself).
+  - Every record includes a mandatory content_hash (SHA-256 of all fields except content_hash).
+  - Missing or empty content_hash → fail-closed (no legacy path).
+  - action must be one of {BUY, SELL, PYRAMID_FILL}.
+  - Cash direction validated: BUY/PYRAMID_FILL cash_after ≤ cash_before; SELL cash_after ≥ cash_before.
   - Reads acquire LOCK_SH; writes acquire LOCK_EX + fsync.
   - Mid-file corruption is fail-closed (RuntimeError).
   - Corrupt last line is repaired under LOCK_EX with re-verification (no race).
-  - A "persisted" marker is only valid if a corresponding integrity-validated "filling" event exists.
+  - fill_attempt_id ties a persisted marker to exactly one filling event.
+  - project_fills_to_trades uses the fill_attempt_id from the persisted marker.
 """
 
 from __future__ import annotations
@@ -35,13 +42,15 @@ from pathlib import Path
 FILLS_FILE = Path("data_v4/ledger/fills.jsonl")
 _FILLS_LOCK_FILE = Path("data_v4/ledger/fills.jsonl.lock")
 
+_VALID_ACTIONS = frozenset({"BUY", "SELL", "PYRAMID_FILL"})
+
 # Required fields for "filling" events — validated on load
 _FILL_SCHEMA_FIELDS = frozenset({
     "fill_id", "order_id", "trade_id",
     "portfolio_id", "portfolio_version", "strategy", "ticker", "action",
     "intended_execution_session", "actual_execution_session",
     "shares", "execution_price", "execution_version",
-    "cash_before", "cash_after", "status", "written_at",
+    "cash_before", "cash_after", "fill_attempt_id", "status", "written_at",
 })
 
 
@@ -52,6 +61,29 @@ def _utc_now() -> str:
 def make_fill_id(order_id: str) -> str:
     """Deterministic fill ID — one fill per order, enables idempotent crash recovery."""
     return "fill-" + hashlib.sha256(order_id.encode()).hexdigest()[:12]
+
+
+def make_fill_attempt_id(order_id: str, execution_price: float, actual_session: str) -> str:
+    """Deterministic per (order, price, session) — different retry price → different attempt ID."""
+    key = f"{order_id}|{execution_price:.4f}|{actual_session}"
+    return "fa-" + hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def compute_portfolio_state_hash(state: dict) -> str:
+    """SHA-256[:16] of canonical cash + positions. Verified after save_strategy_state."""
+    canonical = {
+        "cash": round(float(state.get("cash", 0)), 2),
+        "positions": {
+            ticker: {
+                "avg_cost": round(float(pos.get("avg_cost", 0)), 4),
+                "shares": round(float(pos.get("shares", 0)), 6),
+            }
+            for ticker, pos in sorted(state.get("positions", {}).items())
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()[:16]
 
 
 def _make_content_hash(record: dict) -> str:
@@ -112,10 +144,11 @@ def write_fill_event(
 ) -> dict:
     """Write fill event to WAL before portfolio state is saved to disk.
 
-    status='filling' until mark_fill_persisted() is called after save_strategy_state().
-    All monetary fields are required to be present for full crash-recovery reconstruction.
+    Returns the record dict with content_hash set (same object appended to disk).
+    fill_attempt_id is deterministic: (order_id, price, session) → same ID on identical retry.
     """
     fill_id = make_fill_id(order_id)
+    fa_id = make_fill_attempt_id(order_id, float(execution_price), actual_execution_session)
     _shares = round(float(shares), 6)
     _price = round(float(execution_price), 4)
     _gross_price = round(float(gross_execution_price if gross_execution_price is not None else execution_price), 4)
@@ -126,6 +159,7 @@ def write_fill_event(
 
     record = {
         "fill_id": fill_id,
+        "fill_attempt_id": fa_id,
         "order_id": order_id,
         "trade_id": trade_id,
         "signal_id": signal_id,
@@ -161,15 +195,24 @@ def write_fill_event(
     return record
 
 
-def mark_fill_persisted(order_id: str) -> None:
-    """Append a 'persisted' status event after portfolio state is durably saved.
+def mark_fill_persisted(
+    order_id: str,
+    fill_attempt_id: str,
+    filling_content_hash: str,
+    post_portfolio_state_hash: str | None = None,
+) -> None:
+    """Append a 'persisted' marker after portfolio state is durably saved and verified.
 
+    References the exact filling attempt: fill_attempt_id + filling_content_hash.
     Raises RuntimeError if the WAL write fails — caller must NOT write EXECUTED on failure.
     """
     fill_id = make_fill_id(order_id)
     _append_record({
         "fill_id": fill_id,
+        "fill_attempt_id": fill_attempt_id,
+        "filling_content_hash": filling_content_hash,
         "order_id": order_id,
+        "post_portfolio_state_hash": post_portfolio_state_hash,
         "status": "persisted",
         "written_at": _utc_now(),
         "content_hash": "",  # filled by _append_record
@@ -177,12 +220,7 @@ def mark_fill_persisted(order_id: str) -> None:
 
 
 def _repair_fills_last_line() -> None:
-    """Truncate corrupt last line from fills.jsonl under LOCK_EX with re-verification.
-
-    Acquires LOCK_EX, re-reads the file to confirm the last line is still corrupt
-    (guards against another process having appended a valid record since our LOCK_SH read),
-    then truncates. This ensures detection + truncation are atomic under one exclusive lock.
-    """
+    """Truncate corrupt last line from fills.jsonl under LOCK_EX with re-verification."""
     _FILLS_LOCK_FILE.touch(exist_ok=True)
     try:
         with open(_FILLS_LOCK_FILE, "rb") as lf:
@@ -193,7 +231,6 @@ def _repair_fills_last_line() -> None:
                     if not content:
                         return
 
-                    # Find the last non-empty line under the exclusive lock
                     stripped = content.rstrip(b"\n")
                     last_nl = stripped.rfind(b"\n")
                     last_line = stripped[last_nl + 1:] if last_nl >= 0 else stripped
@@ -207,7 +244,6 @@ def _repair_fills_last_line() -> None:
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass  # Still corrupt — proceed
 
-                    # Truncate to end of last valid line
                     truncate_at = last_nl + 1 if last_nl >= 0 else 0
                     f.seek(truncate_at)
                     f.truncate()
@@ -223,11 +259,14 @@ def load_fill_events() -> dict[str, list[dict]]:
     """Return {order_id: [events_in_order]} from fills.jsonl.
 
     - Acquires LOCK_SH for reading.
-    - Validates content_hash for records that include it.
+    - content_hash is MANDATORY for all records — missing or empty → fail-closed.
+    - action must be in {BUY, SELL, PYRAMID_FILL} for filling events.
+    - Cash direction validated: BUY/PYRAMID cash_after ≤ cash_before; SELL cash_after ≥ cash_before.
+    - Positive shares and execution_price required for filling events.
     - Mid-file corruption raises RuntimeError (fail-closed).
     - Corrupt last line is repaired under LOCK_EX with re-verification.
     - OSError on open raises RuntimeError (no silent empty return).
-    - Validates required schema fields for 'filling' events.
+    - fill_attempt_id required for filling events.
     """
     result: dict[str, list[dict]] = {}
     if not FILLS_FILE.exists():
@@ -267,31 +306,72 @@ def load_fill_events() -> dict[str, list[dict]]:
                 f"{FILLS_FILE} — fail-closed: {exc}"
             ) from exc
 
-        # Content hash validation — only for records that carry the field
+        # content_hash MANDATORY — missing or empty is always fail-closed (no legacy path,
+        # no "corrupt last line" repair). Hash mismatch on last line is repairable.
         stored_hash = rec.get("content_hash", "")
-        if stored_hash:
-            computed = _make_content_hash(rec)
-            if stored_hash != computed:
-                if is_last:
-                    corrupt_last = True
-                    continue
-                raise RuntimeError(
-                    f"Fill-ledger integritets-feil (linje {i + 1}): "
-                    f"content_hash mismatch — forventet {computed[:8]}…, "
-                    f"lagret {stored_hash[:8]}… — fail-closed"
-                )
+        if not stored_hash:
+            raise RuntimeError(
+                f"Fill-ledger integritets-feil (linje {i + 1}): "
+                f"content_hash mangler eller er tom — fail-closed (ingen legacy-sti)"
+            )
+        computed = _make_content_hash(rec)
+        if stored_hash != computed:
+            if is_last:
+                corrupt_last = True
+                continue
+            raise RuntimeError(
+                f"Fill-ledger integritets-feil (linje {i + 1}): "
+                f"content_hash mismatch — forventet {computed[:8]}…, "
+                f"lagret {stored_hash[:8]}… — fail-closed"
+            )
 
-        # Schema validation for "filling" events
+        # Schema and semantic validation for "filling" events — all are fail-closed
+        # (these are integrity violations, not interrupted-write recoveries)
         if rec.get("status") == "filling":
             missing = [fld for fld in _FILL_SCHEMA_FIELDS if fld not in rec]
             if missing:
-                if is_last:
-                    corrupt_last = True
-                    continue
                 raise RuntimeError(
                     f"Fill-ledger skjema-feil (linje {i + 1}): "
                     f"mangler felt {missing} — fail-closed"
                 )
+
+            action = rec.get("action", "")
+            if action not in _VALID_ACTIONS:
+                raise RuntimeError(
+                    f"Fill-ledger ugyldig action '{action}' (linje {i + 1}): "
+                    f"må være ett av {sorted(_VALID_ACTIONS)} — fail-closed"
+                )
+
+            shares = rec.get("shares", 0)
+            price = rec.get("execution_price", 0)
+            if not (isinstance(shares, (int, float)) and shares > 0):
+                raise RuntimeError(
+                    f"Fill-ledger ugyldige shares={shares!r} (linje {i + 1}): "
+                    f"må være positiv numerisk — fail-closed"
+                )
+            if not (isinstance(price, (int, float)) and price > 0):
+                raise RuntimeError(
+                    f"Fill-ledger ugyldig execution_price={price!r} (linje {i + 1}): "
+                    f"må være positiv numerisk — fail-closed"
+                )
+
+            cash_before = float(rec.get("cash_before", 0))
+            cash_after = float(rec.get("cash_after", 0))
+            tolerance = 0.02
+            if action in ("BUY", "PYRAMID_FILL"):
+                if cash_after > cash_before + tolerance:
+                    raise RuntimeError(
+                        f"Fill-ledger cash-feil (linje {i + 1}): "
+                        f"{action} men cash_after ({cash_after}) > cash_before ({cash_before}) "
+                        f"— fail-closed"
+                    )
+            elif action == "SELL":
+                if cash_after < cash_before - tolerance:
+                    raise RuntimeError(
+                        f"Fill-ledger cash-feil (linje {i + 1}): "
+                        f"SELL men cash_after ({cash_after}) < cash_before ({cash_before}) "
+                        f"— fail-closed"
+                    )
 
         oid = rec.get("order_id")
         if oid:
@@ -311,24 +391,34 @@ def get_fill_events_for_order(order_id: str) -> list[dict]:
 def is_fill_persisted(order_id: str) -> bool:
     """Return True if the fill for this order was durably persisted.
 
-    Requires both:
-    - A valid, integrity-checked "filling" event (the authoritative trade record)
-    - A "persisted" marker appended after save_strategy_state()
+    Requires:
+    - A valid, integrity-checked "filling" event (the authoritative trade record).
+    - A "persisted" marker whose fill_attempt_id matches the filling event's fill_attempt_id.
+    - Orphaned markers (no filling event) or mismatched fill_attempt_id → False.
     """
     events = load_fill_events().get(order_id, [])
-    has_filling = any(e.get("status") == "filling" for e in events)
-    if not has_filling:
-        return False  # Orphaned persisted marker — not valid
-    return any(e.get("status") == "persisted" for e in events)
+    filling = next((e for e in events if e.get("status") == "filling"), None)
+    if filling is None:
+        return False
+    persisted = next((e for e in events if e.get("status") == "persisted"), None)
+    if persisted is None:
+        return False
+    # Cross-reference: fill_attempt_id must match
+    p_fa = persisted.get("fill_attempt_id")
+    f_fa = filling.get("fill_attempt_id")
+    if p_fa and f_fa and p_fa != f_fa:
+        return False
+    return True
 
 
 def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
     """Replay persisted fill events into trades_df — idempotent, deduplicated by trade_id.
 
-    Called at startup in run_execute() after load_trades() to recover any trade rows
-    that were lost when the process crashed after EXECUTED but before save_csv(trades_df).
-
-    Raises RuntimeError if the fill ledger is unreadable (caller should alert + decide).
+    Uses fill_attempt_id in the persisted marker to find the exact filling event.
+    Raises RuntimeError if:
+    - The fill ledger is unreadable.
+    - A persisted marker references a fill_attempt_id with no matching filling event.
+    - The filling_content_hash in the persisted marker does not match the filling event.
     """
     import pandas as pd  # noqa: PLC0415
 
@@ -339,16 +429,42 @@ def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
         existing_trade_ids = set(trades_df["trade_id"].dropna().astype(str))
 
     new_rows = []
-    for order_events in events_by_order.values():
-        filling = next((e for e in order_events if e.get("status") == "filling"), None)
-        if filling is None:
+    for order_id, order_events in events_by_order.items():
+        persisted = next((e for e in order_events if e.get("status") == "persisted"), None)
+        if persisted is None:
             continue
-        if not any(e.get("status") == "persisted" for e in order_events):
-            continue  # Only project fully-persisted fills
+
+        # Find the exact filling event referenced by this persisted marker
+        ref_fa_id = persisted.get("fill_attempt_id")
+        if not ref_fa_id:
+            raise RuntimeError(
+                f"Persisted marker for order {order_id} mangler fill_attempt_id — "
+                f"kan ikke projisere til trades — fail-closed"
+            )
+
+        filling = next(
+            (e for e in order_events
+             if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
+            None,
+        )
+        if filling is None:
+            raise RuntimeError(
+                f"Ingen filling-event for fill_attempt_id={ref_fa_id} (order {order_id}) — "
+                f"persisted marker er foreldreløs — fail-closed"
+            )
+
+        # Cross-verify the filling event's content hash if persisted marker has it
+        ref_hash = persisted.get("filling_content_hash")
+        if ref_hash and filling.get("content_hash") != ref_hash:
+            raise RuntimeError(
+                f"filling_content_hash mismatch for fill_attempt_id={ref_fa_id} "
+                f"(order {order_id}): forventet {ref_hash[:8]}…, "
+                f"faktisk {filling.get('content_hash', '')[:8]}… — fail-closed"
+            )
 
         trade_id = filling.get("trade_id")
         if not trade_id or trade_id in existing_trade_ids:
-            continue  # Already present in trades.csv
+            continue
 
         price = filling.get("execution_price", filling.get("price", 0.0))
         commission = filling.get("commission_amount", filling.get("cost", 0.0))
