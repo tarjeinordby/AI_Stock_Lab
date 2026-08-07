@@ -5,7 +5,7 @@
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10024.205996664914,
-  "last_execution_date": "2026-08-06",
+  "last_execution_date": "2026-08-07",
   "positions": {
     "TSM": {
       "avg_price": 462.2200012207031,
@@ -13,8 +13,8 @@
       "buy_score": 89.3,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 422.4601135253906,
-      "market_value": 2170.887807051902,
+      "last_price": 415.1408996582031,
+      "market_value": 2133.2767009787426,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 1583.47,
       "shares": 5.1386811146170555

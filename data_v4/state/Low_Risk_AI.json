@@ -2,8 +2,8 @@
   "cash": 7267.822619848487,
   "cooldowns": {},
   "created_at": "2026-06-11T08:42:29.093561+00:00",
-  "highest_portfolio_value": 10074.596505880825,
-  "last_execution_date": "2026-08-06",
+  "highest_portfolio_value": 10085.684244905939,
+  "last_execution_date": "2026-08-07",
   "positions": {
     "DDOG": {
       "avg_price": 222.77000427246094,
@@ -11,8 +11,8 @@
       "buy_score": 71.1,
       "highest_price": 239.6649932861328,
       "is_partial": false,
-      "last_price": 239.6649932861328,
-      "market_value": 541.8096227596291,
+      "last_price": 238.0,
+      "market_value": 538.0455795763181,
       "pyramid_min_price": 227.2254,
       "pyramid_remaining_value": 0.0,
       "shares": 2.2606957125055382
@@ -21,10 +21,10 @@
       "avg_price": 142.72029122308493,
       "buy_date": "2026-06-19",
       "buy_score": 70.7,
-      "highest_price": 150.19000244140625,
+      "highest_price": 152.22000122070312,
       "is_partial": false,
-      "last_price": 150.19000244140625,
-      "market_value": 1753.9003685029609,
+      "last_price": 152.22000122070312,
+      "market_value": 1777.6064444680262,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 11.677876955806106
@@ -35,8 +35,8 @@
       "buy_score": 89.4,
       "highest_price": 467.625,
       "is_partial": false,
-      "last_price": 422.4601135253906,
-      "market_value": 511.06389476974783,
+      "last_price": 415.1408996582031,
+      "market_value": 502.20960101310715,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 0.0,
       "shares": 1.2097328917160175
