@@ -344,19 +344,19 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
     """Reconcile SETTLING orders using fill event WAL + commit_intent + portfolio state.
 
     Primary recovery path (WAL-based orders with commit_intent):
-    - commit_intent found + current portfolio hash == intent hash:
-        - persisted event present → EXECUTED
-        - no persisted event → crash after portfolio save, before mark → reconstruct
-    - commit_intent found + hashes do NOT match → crash before portfolio save → PENDING_PRICE
-    - no commit_intent → legacy path (fill events + ticker-presence check)
+    - commit_intent found + current portfolio hash == post_hash:
+        - persisted marker present → validate full chain (expected_commit_id check) → EXECUTED
+        - no persisted marker → crash after portfolio save, before mark → reconstruct → EXECUTED
+    - commit_intent found + current hash == pre_hash → crash before save → PENDING_PRICE
+    - commit_intent found + matches neither → unknown state → FAILED_PRICE (fail-closed)
 
-    Legacy path (orders without commit_intent — pre-Round4 code):
-    - fill event present + portfolio reflects fill → crash after save → reconstruct
-    - fill event present + portfolio does NOT reflect fill → crash before save → PENDING_PRICE
-    - no fill event + portfolio reflects fill → very old code (no WAL) → EXECUTED
-    - no fill event + no portfolio fill → crash before save → PENDING_PRICE
+    No commit_intent path (versionless legacy or crash before commit_intent was written):
+    - Versionless records (no record_version) → terminal FAILED_PRICE + manual_review (Telegram)
+    - Any persisted marker without commit_intent → terminal FAILED_PRICE + manual_review
+    - Strict fill events only (record_version set), no persisted → PENDING_PRICE (retry)
 
     Raises RuntimeError if the fill ledger cannot be read (fail-closed — caller must alert).
+    Also raises if manual_review cases detected (_failed_recs non-empty).
     Returns the list of reconciled orders.
     """
     from modules.fills import (  # noqa: PLC0415
@@ -398,10 +398,6 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         action = order.get("action")
 
         order_fill_events = fill_events_by_order.get(order_id, [])
-        filling_ev = next((e for e in order_fill_events if e.get("status") == "filling"), None)
-        persisted_ev = next((e for e in order_fill_events if e.get("status") == "persisted"), None)
-        has_filling = filling_ev is not None
-
         commit_intent = order_to_intent.get(order_id)
 
         if commit_intent is not None:
@@ -414,56 +410,60 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
             commit_id = commit_intent.get("commit_id")
 
             if current_hash == post_hash:
-                # Portfolio hash matches post-fill intent → save completed successfully
-                if persisted_ev is not None:
-                    # Validate persisted marker is properly linked to this commit_intent
+                # Portfolio hash matches post-fill intent → save completed successfully.
+                # Use list comprehensions (not next()) to detect marker presence (Bug 4 fix).
+                _persisted_markers = [e for e in order_fill_events if e.get("status") == "persisted"]
+                if _persisted_markers:
+                    # Validate full chain; expected_commit_id ensures marker matches selected intent (Bug 3 fix).
                     try:
-                        resolve_fill(order_id, order_fill_events, commit_intents)
+                        resolve_fill(order_id, order_fill_events, commit_intents,
+                                     expected_commit_id=commit_id)
                     except RuntimeError as _re:
                         raise RuntimeError(
                             f"Reconcile: persisted-markør for ordre {order_id} er ikke gyldig "
                             f"— fail-closed: {_re}"
                         ) from _re
                     updated = save_order(order, status=EXECUTED)
-                elif has_filling:
-                    # Crash after portfolio save, before mark_fill_persisted → reconstruct.
-                    # Must use the fill_ref from commit_intent (Bug 2 fix).
-                    fill_ref = next(
-                        (f for f in commit_intent.get("fills", []) if f.get("order_id") == order_id),
-                        None,
-                    )
-                    if fill_ref is None:
-                        raise RuntimeError(
-                            f"Reconcile fail-closed: commit_intent {commit_id!r} mangler "
-                            f"fill-referanse for ordre {order_id} — fail-closed"
-                        )
-                    ref_fa_id = fill_ref.get("fill_attempt_id", "")
-                    matched_filling = next(
-                        (e for e in order_fill_events
-                         if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
-                        None,
-                    )
-                    if matched_filling is None:
-                        raise RuntimeError(
-                            f"Reconcile fail-closed: commit_intent {commit_id!r} refererer "
-                            f"filling-event {ref_fa_id!r} for ordre {order_id} som ikke finnes "
-                            f"— fail-closed"
-                        )
-                    mark_fill_persisted(
-                        order_id,
-                        matched_filling.get("fill_attempt_id", ""),
-                        matched_filling.get("content_hash", ""),
-                        commit_id=commit_id,
-                        post_portfolio_state_hash=post_hash,
-                    )
-                    updated = save_order(order, status=EXECUTED)
                 else:
-                    # post_hash matches but no filling event — data integrity violation
-                    raise RuntimeError(
-                        f"Reconcile fail-closed: ordre {order_id} har commit_intent med "
-                        f"post_hash-match men ingen filling-event — "
-                        f"dette er en data-integritets-feil, ikke en normal krasjscenario"
-                    )
+                    # No persisted marker → crash after portfolio save, before mark → reconstruct.
+                    _filling_markers = [e for e in order_fill_events if e.get("status") == "filling"]
+                    if _filling_markers:
+                        fill_ref = next(
+                            (f for f in commit_intent.get("fills", []) if f.get("order_id") == order_id),
+                            None,
+                        )
+                        if fill_ref is None:
+                            raise RuntimeError(
+                                f"Reconcile fail-closed: commit_intent {commit_id!r} mangler "
+                                f"fill-referanse for ordre {order_id} — fail-closed"
+                            )
+                        ref_fa_id = fill_ref.get("fill_attempt_id", "")
+                        matched_filling = next(
+                            (e for e in order_fill_events
+                             if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
+                            None,
+                        )
+                        if matched_filling is None:
+                            raise RuntimeError(
+                                f"Reconcile fail-closed: commit_intent {commit_id!r} refererer "
+                                f"filling-event {ref_fa_id!r} for ordre {order_id} som ikke finnes "
+                                f"— fail-closed"
+                            )
+                        mark_fill_persisted(
+                            order_id,
+                            matched_filling.get("fill_attempt_id", ""),
+                            matched_filling.get("content_hash", ""),
+                            commit_id=commit_id,
+                            post_portfolio_state_hash=post_hash,
+                        )
+                        updated = save_order(order, status=EXECUTED)
+                    else:
+                        # post_hash matches but no filling event — data integrity violation
+                        raise RuntimeError(
+                            f"Reconcile fail-closed: ordre {order_id} har commit_intent med "
+                            f"post_hash-match men ingen filling-event — "
+                            f"dette er en data-integritets-feil, ikke en normal krasjscenario"
+                        )
             elif pre_hash and current_hash == pre_hash:
                 # Portfolio is still in the pre-fill state → crash before save → retry
                 updated = save_order(
@@ -497,56 +497,37 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
 
         else:
             # ---------------------------------------------------------------
-            # Legacy path: no commit_intent — use fill events + portfolio state
-            # Isolated clearly from the new WAL path above.
+            # No commit_intent: versionless legacy records or strict fill events
+            # without a commit_intent chain.
+            #
+            # Versionless records (no record_version) → terminal manual_review.
+            # Any persisted marker without commit_intent → also manual_review.
+            # Strict fill events only, no persisted → crash before commit_intent → retry.
             # ---------------------------------------------------------------
-
-            # Portfolio state check (authoritative fallback for legacy orders)
-            if action == "BUY":
-                portfolio_has_fill = ticker in positions
-            elif action == "SELL":
-                portfolio_has_fill = ticker not in positions
-            elif action == "PYRAMID_FILL":
-                pos = positions.get(ticker, {})
-                portfolio_has_fill = bool(pos) and not pos.get("is_partial", True)
-            else:
-                portfolio_has_fill = False
-
-            # Strict: persisted marker must reference the filling event's fill_attempt_id
-            fill_persisted = (
-                filling_ev is not None
-                and persisted_ev is not None
-                and (
-                    not persisted_ev.get("fill_attempt_id")
-                    or not filling_ev.get("fill_attempt_id")
-                    or persisted_ev.get("fill_attempt_id") == filling_ev.get("fill_attempt_id")
-                )
+            _has_versionless = any(
+                e.get("record_version") is None
+                for e in order_fill_events
+                if e.get("status") in ("filling", "persisted")
             )
+            _has_persisted = any(e.get("status") == "persisted" for e in order_fill_events)
 
-            if fill_persisted:
-                # Fill WAL confirmed persisted → portfolio definitely on disk → EXECUTED
-                updated = save_order(order, status=EXECUTED)
-            elif order_fill_events and has_filling and portfolio_has_fill:
-                # Fill event exists but not marked persisted — crash after portfolio save,
-                # before mark_fill_persisted. Reconstruct: mark persisted now, EXECUTED.
-                filling_events = [e for e in order_fill_events if e.get("status") == "filling"]
-                last_filling = filling_events[-1]
-                mark_fill_persisted(
-                    order_id,
-                    last_filling.get("fill_attempt_id", ""),
-                    last_filling.get("content_hash", ""),
-                    post_portfolio_state_hash=current_hash,
-                    _legacy=True,
+            if _has_versionless or _has_persisted:
+                # Versionless records or any persisted marker without commit_intent:
+                # never auto-authorize EXECUTED — terminal manual_review (Telegram via _failed_recs).
+                _failed_recs.append(order_id)
+                updated = save_order(
+                    order, status=FAILED_PRICE,
+                    failure_reason=(
+                        "manual_review: versjonsløs SETTLING-ordre uten commit_intent "
+                        "— aldri auto-autoriser EXECUTED"
+                    ),
                 )
-                updated = save_order(order, status=EXECUTED)
-            elif not order_fill_events and portfolio_has_fill:
-                # No fill events (legacy system before fills.jsonl) — portfolio is authoritative
-                updated = save_order(order, status=EXECUTED)
             else:
-                # Portfolio does not reflect fill → crash before portfolio save → retry
+                # Strict fill events only, no persisted marker, no commit_intent:
+                # crash occurred before commit_intent was written → retry is safe.
                 updated = save_order(
                     order, status=PENDING_PRICE,
-                    failure_reason="crash-recovery: fill not persisted to portfolio, queued for retry",
+                    failure_reason="crash-recovery: filling uten commit_intent — queued for retry",
                 )
 
         orders[order_id] = updated
@@ -554,8 +535,8 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
 
     if _failed_recs:
         raise RuntimeError(
-            f"Reconcile failed_reconciliation for ordre {_failed_recs}: "
-            f"portfolio hash matcher verken pre eller post — fail-closed (Telegram required)"
+            f"Reconcile failed_reconciliation/manual_review for ordre {_failed_recs}: "
+            f"hash-mismatch eller versjonsløs legacy-ordre — fail-closed (Telegram required)"
         )
 
     return reconciled

@@ -74,10 +74,24 @@ _PERSISTED_SCHEMA_FIELDS = frozenset({
     "order_id", "commit_id", "post_portfolio_state_hash", "status", "written_at",
 })
 
-# Required fields for "commit_intent" events — validated on load
-_COMMIT_INTENT_SCHEMA_FIELDS = frozenset({
+# Record version written to all new fill/persisted/commit_intent records (Round 8).
+# Records without this field are legacy (written by code prior to Round 8).
+# Legacy records can be read for audit but must never auto-authorize EXECUTED,
+# trade-projection, new fill, or PENDING_PRICE/retry.
+_FILL_RECORD_VERSION = 2
+
+# Required fields for legacy "commit_intent" events (no record_version on disk).
+_COMMIT_INTENT_LEGACY_SCHEMA_FIELDS = frozenset({
     "commit_id", "strategy", "portfolio_id", "portfolio_version",
     "post_portfolio_state_hash", "fills", "status", "written_at",
+})
+
+# Required fields for strict "commit_intent" events (record_version=2).
+# Adds mandatory record_version and pre_portfolio_state_hash.
+_COMMIT_INTENT_SCHEMA_FIELDS = frozenset({
+    "commit_id", "strategy", "portfolio_id", "portfolio_version",
+    "record_version", "pre_portfolio_state_hash", "post_portfolio_state_hash",
+    "fills", "status", "written_at",
 })
 
 
@@ -226,6 +240,7 @@ def write_fill_event(
         "execution_version": execution_version,
         "cash_before": round(float(cash_before), 2),
         "cash_after": round(float(cash_after), 2),
+        "record_version": _FILL_RECORD_VERSION,
         "status": status,
         "written_at": _utc_now(),
         "content_hash": "",  # filled by _append_record
@@ -260,6 +275,7 @@ def write_commit_intent(
         "strategy": strategy,
         "portfolio_id": portfolio_id,
         "portfolio_version": portfolio_version,
+        "record_version": _FILL_RECORD_VERSION,
         "pre_portfolio_state_hash": pre_portfolio_state_hash,
         "post_portfolio_state_hash": post_portfolio_state_hash,
         "fills": fills,
@@ -291,7 +307,7 @@ def mark_fill_persisted(
             f"(ordre {order_id}) — bruk _legacy=True kun for pre-WAL gjenoppretting"
         )
     fill_id = make_fill_id(order_id)
-    _append_record({
+    _rec = {
         "fill_id": fill_id,
         "fill_attempt_id": fill_attempt_id,
         "filling_content_hash": filling_content_hash,
@@ -301,7 +317,10 @@ def mark_fill_persisted(
         "status": "persisted",
         "written_at": _utc_now(),
         "content_hash": "",  # filled by _append_record
-    })
+    }
+    if not _legacy:
+        _rec["record_version"] = _FILL_RECORD_VERSION
+    _append_record(_rec)
 
 
 def _repair_fills_last_line() -> None:
@@ -430,14 +449,20 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
 
         # commit_intent events — collect separately (no order_id)
         if status == "commit_intent":
-            missing_ci = [fld for fld in _COMMIT_INTENT_SCHEMA_FIELDS if fld not in rec]
+            _rec_ver = rec.get("record_version")
+            if _rec_ver is not None:
+                # Strict record: validate against full schema (record_version + pre_hash required)
+                missing_ci = [fld for fld in _COMMIT_INTENT_SCHEMA_FIELDS if fld not in rec]
+            else:
+                # Legacy record: validate against base schema (no record_version or pre_hash)
+                missing_ci = [fld for fld in _COMMIT_INTENT_LEGACY_SCHEMA_FIELDS if fld not in rec]
             if missing_ci:
                 raise RuntimeError(
                     f"Fill-ledger skjema-feil commit_intent (linje {i + 1}): "
                     f"mangler felt {missing_ci} — fail-closed"
                 )
             _validate_sha256(rec.get("post_portfolio_state_hash"), "post_portfolio_state_hash", i + 1)
-            # Validate pre_portfolio_state_hash if present (optional field for backward compat)
+            # Validate pre_portfolio_state_hash: mandatory for strict records, optional for legacy
             _pre = rec.get("pre_portfolio_state_hash")
             if _pre:
                 _validate_sha256(_pre, "pre_portfolio_state_hash", i + 1)
@@ -684,6 +709,12 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"Fill-ledger persisted fill_id-feil (linje {i + 1}): "
                     f"forventet {_p_expected_fill_id!r}, faktisk {rec.get('fill_id')!r} — fail-closed"
                 )
+            # Strict persisted records (record_version set) must have a non-empty commit_id
+            if rec.get("record_version") is not None and not rec.get("commit_id"):
+                raise RuntimeError(
+                    f"Fill-ledger persisted (strict, linje {i + 1}): "
+                    f"commit_id er tom/null — fail-closed"
+                )
 
         oid = rec.get("order_id")
         if oid:
@@ -839,11 +870,15 @@ def resolve_fill(
     order_id: str,
     order_events: list[dict],
     commit_intents: list[dict],
+    expected_commit_id: str | None = None,
 ) -> tuple[dict, dict, dict]:
     """Shared resolver: validates the filling → persisted → commit_intent chain.
 
     Returns (filling_event, persisted_event, commit_intent).
     commit_intent is {} for legacy records (persisted marker without commit_id).
+
+    expected_commit_id: when provided, the resolved commit_intent must have this commit_id.
+    This lets reconcile verify the persisted marker matches the selected commit_intent.
 
     Raises RuntimeError (fail-closed) when:
     - No persisted marker found
@@ -852,6 +887,7 @@ def resolve_fill(
     - commit_id in persisted marker points to a non-existent commit_intent
     - post_portfolio_state_hash in persisted marker does not match commit_intent
     - commit_intent does not contain a fill_ref for this order/fill_attempt_id
+    - expected_commit_id is set and resolved commit_intent's commit_id differs (chain mismatch)
     """
     persisted_markers = [e for e in order_events if e.get("status") == "persisted"]
     if not persisted_markers:
@@ -914,6 +950,15 @@ def resolve_fill(
         raise RuntimeError(
             f"Commit_intent {ref_commit_id!r} mangler fill_ref for "
             f"ordre={order_id}, fa_id={ref_fa_id!r} — fail-closed"
+        )
+
+    # Verify the resolved commit_intent matches the one reconcile selected (Bug 3 fix).
+    # Prevents: reconcile selects commit_intent B, but persisted marker references A.
+    if expected_commit_id is not None and commit_intent.get("commit_id") != expected_commit_id:
+        raise RuntimeError(
+            f"Resolver: persisted-markør for ordre {order_id} refererer commit_id "
+            f"{ref_commit_id!r} men reconcile-valgt commit_intent er "
+            f"{expected_commit_id!r} — kjede-mismatch — fail-closed"
         )
 
     return filling, persisted, commit_intent

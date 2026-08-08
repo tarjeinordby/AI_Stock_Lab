@@ -700,6 +700,12 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
     try:
         open_ts = session_open_utc(intended_session)
         execution_price_timestamp = open_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except CalendarUnavailableError as exc:
+        send_telegram(
+            f"⚠️ KRITISK: NYSE-kalender utilgjengelig — fill avvist for session "
+            f"{intended_session!r}: {exc}"
+        )
+        raise
     except Exception as exc:
         raise RuntimeError(
             f"Kan ikke bestemme execution_price_timestamp for session {intended_session!r}: {exc} "

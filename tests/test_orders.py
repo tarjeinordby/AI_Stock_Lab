@@ -556,7 +556,11 @@ class TestPyramidFillIdempotency:
 # ---------------------------------------------------------------------------
 
 class TestCrashReconciliation:
-    """_reconcile_settling_orders uses portfolio state to classify SETTLING orders."""
+    """reconcile_settling_orders uses fill WAL + commit_intent to classify SETTLING orders.
+
+    Without a commit_intent chain, all SETTLING orders are queued for retry (PENDING_PRICE).
+    Portfolio state alone is never trusted to authorize EXECUTED.
+    """
 
     def _make_orders_with_settling(self, tmp_path, monkeypatch, action="BUY", ticker="AAPL"):
         _with_file(tmp_path, monkeypatch)
@@ -572,16 +576,16 @@ class TestCrashReconciliation:
         orders[order["order_id"]] = s
         return orders, order["order_id"]
 
-    def test_reconcile_buy_with_position_marks_executed(self, tmp_path, monkeypatch):
-        """SETTLING BUY + ticker in portfolio → crash after save → EXECUTED."""
+    def test_reconcile_buy_with_position_marks_pending_price(self, tmp_path, monkeypatch):
+        """SETTLING BUY + no commit_intent → PENDING_PRICE (portfolio not trusted without commit chain)."""
         orders, oid = self._make_orders_with_settling(tmp_path, monkeypatch, "BUY", "AAPL")
         state = {"positions": {"AAPL": {"shares": 10}}, "cash": 5000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
-        assert orders[oid]["status"] == EXECUTED
+        assert orders[oid]["status"] == PENDING_PRICE
 
     def test_reconcile_buy_without_position_marks_pending_price(self, tmp_path, monkeypatch):
-        """SETTLING BUY + ticker NOT in portfolio → crash before save → PENDING_PRICE retry."""
+        """SETTLING BUY + no commit_intent → PENDING_PRICE retry."""
         orders, oid = self._make_orders_with_settling(tmp_path, monkeypatch, "BUY", "AAPL")
         state = {"positions": {}, "cash": 10000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
@@ -589,26 +593,26 @@ class TestCrashReconciliation:
         assert orders[oid]["status"] == PENDING_PRICE
         assert "crash-recovery" in orders[oid]["failure_reason"]
 
-    def test_reconcile_sell_without_position_marks_executed(self, tmp_path, monkeypatch):
-        """SETTLING SELL + ticker NOT in portfolio → crash after save → EXECUTED."""
+    def test_reconcile_sell_without_position_marks_pending_price(self, tmp_path, monkeypatch):
+        """SETTLING SELL + no commit_intent → PENDING_PRICE (cannot trust portfolio without commit chain)."""
         orders, oid = self._make_orders_with_settling(tmp_path, monkeypatch, "SELL", "AAPL")
         state = {"positions": {}, "cash": 15000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
-        assert orders[oid]["status"] == EXECUTED
+        assert orders[oid]["status"] == PENDING_PRICE
 
     def test_reconcile_sell_with_position_marks_pending_price(self, tmp_path, monkeypatch):
-        """SETTLING SELL + ticker still in portfolio → crash before save → PENDING_PRICE retry."""
+        """SETTLING SELL + no commit_intent → PENDING_PRICE retry."""
         orders, oid = self._make_orders_with_settling(tmp_path, monkeypatch, "SELL", "AAPL")
         state = {"positions": {"AAPL": {"shares": 10}}, "cash": 10000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert orders[oid]["status"] == PENDING_PRICE
 
-    def test_reconcile_pyramid_fill_not_partial_marks_executed(self, tmp_path, monkeypatch):
-        """SETTLING PYRAMID_FILL + is_partial=False → fill succeeded → EXECUTED."""
+    def test_reconcile_pyramid_fill_no_commit_intent_marks_pending(self, tmp_path, monkeypatch):
+        """SETTLING PYRAMID_FILL + no commit_intent → PENDING_PRICE (no WAL to authorize)."""
         orders, oid = self._make_orders_with_settling(tmp_path, monkeypatch, "PYRAMID_FILL", "AAPL")
         state = {"positions": {"AAPL": {"shares": 15, "is_partial": False, "pyramid_remaining_value": 0.0}}}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
-        assert orders[oid]["status"] == EXECUTED
+        assert orders[oid]["status"] == PENDING_PRICE
 
     def test_reconcile_only_targets_matching_strategy(self, tmp_path, monkeypatch):
         """Reconciliation does not touch SETTLING orders for other strategies."""
@@ -887,7 +891,7 @@ class TestFillEventWAL:
         assert a.startswith("fill-")
 
     def test_reconcile_uses_fill_event_persisted(self, tmp_path, monkeypatch):
-        """SETTLING + fill_event 'persisted' → EXECUTED regardless of portfolio state."""
+        """SETTLING + versionless persisted marker (no commit_intent) → manual_review + RuntimeError."""
         self._patch_fills(tmp_path, monkeypatch)
         _with_file(tmp_path, monkeypatch)
 
@@ -906,14 +910,15 @@ class TestFillEventWAL:
         rec = self._write_fill(order["order_id"], trade_id="trd-crash",
                                shares=5.0, execution_price=100.0,
                                cash_before=10000.0, cash_after=9500.0)
+        # Legacy persisted marker: no record_version, no commit_id
         mark_fill_persisted(order["order_id"], rec["fill_attempt_id"], rec["content_hash"],
                             post_portfolio_state_hash="a" * 64, _legacy=True)
 
-        # Portfolio does NOT have position (fill WAL should take precedence via legacy path)
+        # Versionless persisted marker without commit_intent → manual_review (never EXECUTED)
         state = {"positions": {}, "cash": 10000.0}
-        reconciled = reconcile_settling_orders(orders, STRATEGY, state)
-        assert len(reconciled) == 1
-        assert orders[order["order_id"]]["status"] == EXECUTED
+        with pytest.raises(RuntimeError, match="manual_review"):
+            reconcile_settling_orders(orders, STRATEGY, state)
+        assert orders[order["order_id"]]["status"] == FAILED_PRICE
 
     def test_reconcile_crash_before_portfolio_gives_pending_retry(self, tmp_path, monkeypatch):
         """SETTLING + fill_event 'filling' (not persisted) + no position → PENDING_PRICE."""
@@ -943,11 +948,10 @@ class TestFillEventWAL:
         assert orders[order["order_id"]]["status"] == PENDING_PRICE
 
     def test_reconcile_crash_after_portfolio_save_reconstructs(self, tmp_path, monkeypatch):
-        """SETTLING + fill_event 'filling' + position in portfolio → mark persisted + EXECUTED."""
+        """SETTLING + strict fill event + no commit_intent → PENDING_PRICE (retry; no commit_intent to trust)."""
         self._patch_fills(tmp_path, monkeypatch)
         _with_file(tmp_path, monkeypatch)
 
-        from modules.fills import is_fill_persisted
         orders = {}
         order, _ = get_or_create_order(
             orders=orders, signal_run_id="run-001", ticker=TICKER,
@@ -959,23 +963,16 @@ class TestFillEventWAL:
         s = save_order(s, status="settling", trade_id="trd-y")
         orders[order["order_id"]] = s
 
-        # WAL entry exists but not marked persisted (crash after portfolio save, before mark)
+        # Strict fill event written (record_version=2), but no commit_intent → crash before CI
         self._write_fill(order["order_id"], trade_id="trd-y",
                          shares=5.0, execution_price=100.0,
                          cash_before=10000.0, cash_after=9500.0)
 
-        # Portfolio HAS position (portfolio save completed before crash)
+        # Portfolio state is irrelevant: without commit_intent we cannot authorize EXECUTED
         state = {"positions": {TICKER: {"shares": 5}}, "cash": 9500.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
-        assert orders[order["order_id"]]["status"] == EXECUTED
-        # Legacy reconcile writes a persisted marker without commit_id (_legacy=True)
-        # is_fill_persisted() returns False for legacy markers by design (no commit_id → no auth)
-        # Verify the persisted WAL entry exists directly
-        from modules.fills import load_fill_events
-        events_by_order, _ = load_fill_events()
-        order_events = events_by_order.get(order["order_id"], [])
-        assert any(e.get("status") == "persisted" for e in order_events)
+        assert orders[order["order_id"]]["status"] == PENDING_PRICE
 
     def test_reconcile_raises_on_corrupt_fills_ledger(self, tmp_path, monkeypatch):
         """If fills.jsonl is mid-file corrupt, reconcile raises RuntimeError (fail-closed)."""
@@ -3367,3 +3364,360 @@ class TestRound7Regressions:
         # Must not raise — truly idempotent
         events, _ = load_fill_events()
         assert oid in events
+
+
+# ---------------------------------------------------------------------------
+# Round 8 regressions — record_version, pre_hash mandatory, chain-mismatch,
+#                        no next()-based resolver, Telegram on CalendarError
+# ---------------------------------------------------------------------------
+
+class TestRound8Regressions:
+    """Regression tests for the 5 reproduction-confirmed bugs fixed in Round 8.
+
+    Bugs fixed:
+    1. null_commit_id_accepted_by_strict_persisted — strict record with no commit_id accepted
+    2. legacy_marker_authorized_executed — versionless persisted marker gave EXECUTED
+    3. commit_intent_without_pre_hash_accepted — strict commit_intent without pre_hash accepted
+    4. mismatched_chain_authorized_executed — persisted from A + selected intent B → EXECUTED
+    5. calendar_error_no_telegram — CalendarUnavailableError in write_fill didn't send Telegram
+    """
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _append_raw(self, tmp_path, record: dict) -> None:
+        fills_path = tmp_path / "fills.jsonl"
+        with open(fills_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    # --- Bug 1: strict persisted with null commit_id must be rejected ---
+
+    def test_strict_persisted_null_commit_id_rejected(self, tmp_path, monkeypatch):
+        """Bug 1: strict persisted record (record_version=2) with null commit_id → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        import hashlib as _hl
+        from modules.fills import _make_content_hash, load_fill_events
+
+        oid = "ord-r8-nullci000"
+        fill_id = "fill-" + _hl.sha256(oid.encode()).hexdigest()[:12]
+        rec = {
+            "fill_id": fill_id,
+            "fill_attempt_id": "fa-" + "b" * 32,
+            "filling_content_hash": "c" * 64,
+            "order_id": oid,
+            "commit_id": None,  # strict record must have non-empty commit_id
+            "post_portfolio_state_hash": "a" * 64,
+            "record_version": 2,
+            "status": "persisted",
+            "written_at": "2026-08-08T13:30:00Z",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        self._append_raw(tmp_path, rec)
+
+        with pytest.raises(RuntimeError, match="commit_id.*strict|strict.*commit_id"):
+            load_fill_events()
+
+    # --- Bug 2: versionless persisted marker must never give EXECUTED ---
+
+    def test_versionless_persisted_never_authorized_executed(self, tmp_path, monkeypatch):
+        """Bug 2: versionless persisted marker (no record_version) → manual_review, never EXECUTED."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted
+
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r8b", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id="trd-r8b"
+        )
+
+        rec = write_fill_event(
+            order_id=order["order_id"], trade_id="trd-r8b",
+            signal_id=None, signal_run_id="run-r8b",
+            portfolio_id="", portfolio_version="",
+            strategy=STRATEGY, ticker=TICKER, action="BUY",
+            intended_execution_session=SESSION, actual_execution_session=SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-06T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        # Versionless persisted marker: no record_version, no commit_id
+        mark_fill_persisted(
+            order["order_id"], rec["fill_attempt_id"], rec["content_hash"],
+            post_portfolio_state_hash="a" * 64, _legacy=True,
+        )
+
+        state = {"positions": {TICKER: {"shares": 5}}, "cash": 9500.0}
+        with pytest.raises(RuntimeError, match="manual_review"):
+            reconcile_settling_orders(orders, STRATEGY, state)
+        assert orders[order["order_id"]]["status"] == FAILED_PRICE, (
+            "versionless persisted marker must produce FAILED_PRICE, never EXECUTED"
+        )
+
+    # --- Bug 3: strict commit_intent without pre_portfolio_state_hash must be rejected ---
+
+    def test_strict_commit_intent_without_pre_hash_rejected(self, tmp_path, monkeypatch):
+        """Bug 3: strict commit_intent (record_version=2) without pre_portfolio_state_hash → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import _make_content_hash, load_fill_events, write_fill_event
+
+        oid = "ord-r8-nopre0000"
+        fill_rec = write_fill_event(
+            order_id=oid, trade_id="trd-r8-np",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        # Strict commit_intent (record_version=2) but WITHOUT pre_portfolio_state_hash
+        ci_rec = {
+            "commit_id": "ci-r8nopre" + "0" * 23,
+            "strategy": "s1",
+            "portfolio_id": "", "portfolio_version": "",
+            "record_version": 2,
+            # pre_portfolio_state_hash intentionally absent
+            "post_portfolio_state_hash": "a" * 64,
+            "fills": [{"order_id": oid, "fill_attempt_id": fill_rec["fill_attempt_id"],
+                        "filling_content_hash": fill_rec["content_hash"]}],
+            "status": "commit_intent",
+            "written_at": "2026-08-08T13:30:00Z",
+        }
+        ci_rec["content_hash"] = _make_content_hash(ci_rec)
+        self._append_raw(tmp_path, ci_rec)
+
+        with pytest.raises(RuntimeError, match="pre_portfolio_state_hash|skjema"):
+            load_fill_events()
+
+    # --- Bug 4: persisted from attempt A + selected intent B → never EXECUTED ---
+
+    def test_persisted_from_a_selected_intent_b_never_executed(self, tmp_path, monkeypatch):
+        """Bug 4: reconcile selects commit_intent B, persisted marker references A → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, write_commit_intent, mark_fill_persisted,
+            compute_portfolio_state_hash,
+        )
+
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r8d", ticker=TICKER,
+            strategy=STRATEGY, session_date=SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id="trd-r8d"
+        )
+
+        fill_rec = write_fill_event(
+            order_id=order["order_id"], trade_id="trd-r8d",
+            signal_id=None, signal_run_id="run-r8d",
+            portfolio_id="", portfolio_version="",
+            strategy=STRATEGY, ticker=TICKER, action="BUY",
+            intended_execution_session=SESSION, actual_execution_session=SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-06T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        pre_hash = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        state_a = {"cash": 9500.0, "positions": {TICKER: _make_position(5.0, 100.0)}}
+        state_b = {"cash": 9400.0, "positions": {TICKER: _make_position(6.0, 100.0)}}
+        post_hash_a = compute_portfolio_state_hash(state_a)
+        post_hash_b = compute_portfolio_state_hash(state_b)
+
+        # Both commit_intents reference the SAME fill event (two commit attempts)
+        ci_a = write_commit_intent(
+            strategy=STRATEGY, portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_hash, post_portfolio_state_hash=post_hash_a,
+            fills=[{"order_id": order["order_id"],
+                    "fill_attempt_id": fill_rec["fill_attempt_id"],
+                    "filling_content_hash": fill_rec["content_hash"]}],
+        )
+        ci_b = write_commit_intent(
+            strategy=STRATEGY, portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_hash, post_portfolio_state_hash=post_hash_b,
+            fills=[{"order_id": order["order_id"],
+                    "fill_attempt_id": fill_rec["fill_attempt_id"],
+                    "filling_content_hash": fill_rec["content_hash"]}],
+        )
+
+        # Persisted marker references CI A (wrong — the selected intent will be B)
+        mark_fill_persisted(
+            order["order_id"], fill_rec["fill_attempt_id"], fill_rec["content_hash"],
+            post_portfolio_state_hash=post_hash_a, commit_id=ci_a["commit_id"],
+        )
+
+        # Portfolio matches post_hash_b → reconcile selects CI B (last wins)
+        # But persisted marker has CI A's commit_id → chain mismatch → fail-closed
+        with pytest.raises(RuntimeError, match="kjede-mismatch|persisted"):
+            reconcile_settling_orders(orders, STRATEGY, state_b)
+
+    # --- Bug 4 continued: resolver path is exclusive (no next()-based preselection) ---
+
+    def test_no_next_based_preselection_in_reconcile(self):
+        """Bug 4: reconcile must not pre-select persisted_ev or filling_ev via next()."""
+        with open("modules/orders.py") as f:
+            src = f.read()
+        fn_start = src.find("def reconcile_settling_orders(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+        assert "persisted_ev = next(" not in fn_body, (
+            "reconcile must not pre-select persisted_ev via next() — use resolver (Bug 4)"
+        )
+        assert "filling_ev = next(" not in fn_body, (
+            "reconcile must not pre-select filling_ev via next() — use resolver (Bug 4)"
+        )
+
+    # --- Bug 5: CalendarUnavailableError → Telegram + raise ---
+
+    def test_calendar_unavailable_sends_telegram_source_check(self):
+        """Bug 5: _write_fill_event_for_order must catch CalendarUnavailableError, send Telegram, re-raise."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def _write_fill_event_for_order(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        assert "except CalendarUnavailableError" in fn_body, (
+            "_write_fill_event_for_order must have a dedicated CalendarUnavailableError handler (Bug 5)"
+        )
+        # send_telegram must be called inside the CalendarUnavailableError handler
+        ce_idx = fn_body.index("except CalendarUnavailableError")
+        next_except_idx = fn_body.find("except ", ce_idx + 1)
+        if next_except_idx == -1:
+            ce_handler = fn_body[ce_idx:]
+        else:
+            ce_handler = fn_body[ce_idx:next_except_idx]
+        assert "send_telegram" in ce_handler, (
+            "send_telegram must be called inside the CalendarUnavailableError handler (Bug 5)"
+        )
+        assert "raise" in ce_handler, (
+            "CalendarUnavailableError must be re-raised after sending Telegram (Bug 5)"
+        )
+        # No WAL-write or portfolio save should happen — calendar error exits before any write
+        assert "write_fill_event" not in ce_handler, (
+            "No fill event must be written after CalendarUnavailableError"
+        )
+
+    # --- record_version is written to new records ---
+
+    def test_write_fill_event_includes_record_version(self, tmp_path, monkeypatch):
+        """New fill events must have record_version=2."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, _FILL_RECORD_VERSION
+
+        rec = write_fill_event(
+            order_id="ord-r8-rv00001", trade_id="trd-r8-rv",
+            signal_id=None, signal_run_id="run-r8-rv",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        assert rec.get("record_version") == _FILL_RECORD_VERSION, (
+            "write_fill_event must include record_version in the written record"
+        )
+
+    def test_write_commit_intent_includes_record_version(self, tmp_path, monkeypatch):
+        """New commit_intents must have record_version=2."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, write_commit_intent, compute_portfolio_state_hash, _FILL_RECORD_VERSION
+
+        fill_rec = write_fill_event(
+            order_id="ord-r8-rv00002", trade_id="trd-r8-rv2",
+            signal_id=None, signal_run_id="run-r8-rv2",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        ci = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash="b" * 64,
+            fills=[{"order_id": "ord-r8-rv00002",
+                    "fill_attempt_id": fill_rec["fill_attempt_id"],
+                    "filling_content_hash": fill_rec["content_hash"]}],
+        )
+        assert ci.get("record_version") == _FILL_RECORD_VERSION, (
+            "write_commit_intent must include record_version"
+        )
+
+    def test_mark_fill_persisted_includes_record_version(self, tmp_path, monkeypatch):
+        """New persisted markers must have record_version=2 (non-legacy calls)."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, write_commit_intent, mark_fill_persisted, load_fill_events,
+            compute_portfolio_state_hash, _FILL_RECORD_VERSION,
+        )
+
+        oid = "ord-r8-rv00003"
+        fill_rec = write_fill_event(
+            order_id=oid, trade_id="trd-r8-rv3",
+            signal_id=None, signal_run_id="run-r8-rv3",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        ci = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash="d" * 64,
+            fills=[{"order_id": oid, "fill_attempt_id": fill_rec["fill_attempt_id"],
+                    "filling_content_hash": fill_rec["content_hash"]}],
+        )
+        mark_fill_persisted(oid, fill_rec["fill_attempt_id"], fill_rec["content_hash"],
+                            post_portfolio_state_hash="d" * 64, commit_id=ci["commit_id"])
+
+        events, _ = load_fill_events()
+        persisted_events = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+        assert persisted_events, "must have at least one persisted marker"
+        assert persisted_events[0].get("record_version") == _FILL_RECORD_VERSION, (
+            "mark_fill_persisted (non-legacy) must include record_version"
+        )
+
+    def test_legacy_mark_fill_persisted_has_no_record_version(self, tmp_path, monkeypatch):
+        """Legacy mark_fill_persisted (_legacy=True) must NOT include record_version."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted, load_fill_events
+
+        oid = "ord-r8-rv00004"
+        fill_rec = write_fill_event(
+            order_id=oid, trade_id="trd-r8-rv4",
+            signal_id=None, signal_run_id="run-r8-rv4",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        mark_fill_persisted(oid, fill_rec["fill_attempt_id"], fill_rec["content_hash"],
+                            post_portfolio_state_hash="e" * 64, _legacy=True)
+
+        events, _ = load_fill_events()
+        persisted_events = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+        assert persisted_events, "must have at least one persisted marker"
+        assert persisted_events[0].get("record_version") is None, (
+            "legacy mark_fill_persisted must NOT include record_version"
+        )
