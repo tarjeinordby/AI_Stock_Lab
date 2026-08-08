@@ -674,22 +674,35 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
     action is taken from order["action"] — the authoritative source. trade.get("action")
     may be "BUY" even for a PYRAMID_FILL trade, so we must not use it.
 
-    execution_price_timestamp is set to the NYSE session open (09:30 ET) for the actual
-    execution session — not the runner processing time (trade["timestamp_utc"]).
+    order["intended_execution_session"] is the authority for session. trade["execution_session"]
+    must equal it — any mismatch is fail-closed (session integrity guard).
+
+    execution_price_timestamp is set to the NYSE session open (09:30 ET) for the intended
+    execution session — not the runner processing time.
     """
     from modules.fills import write_fill_event  # noqa: PLC0415
     price = float(trade.get("price", 0))
     commission = float(trade.get("cost", 0))
+
+    # order.intended_execution_session is the authority — validate trade session matches
+    intended_session = order.get("intended_execution_session", "")
     actual_session = trade.get("execution_session", trade.get("date", ""))
+    if actual_session != intended_session:
+        raise RuntimeError(
+            f"Session-mismatch for ordre {order.get('order_id')}: "
+            f"intended={intended_session!r} ≠ trade_session={actual_session!r} "
+            "— fyll-event avvist fail-closed"
+        )
 
     # Fail-closed: calendar must be available; no fallback to runner timestamp (Bug 7 fix).
+    # Use intended_session (authoritative) for the timestamp lookup.
     from modules.exchange_calendar import session_open_utc  # noqa: PLC0415
     try:
-        open_ts = session_open_utc(actual_session)
+        open_ts = session_open_utc(intended_session)
         execution_price_timestamp = open_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception as exc:
         raise RuntimeError(
-            f"Kan ikke bestemme execution_price_timestamp for session {actual_session!r}: {exc} "
+            f"Kan ikke bestemme execution_price_timestamp for session {intended_session!r}: {exc} "
             "— fyll-event avvist fail-closed"
         ) from exc
 
@@ -703,7 +716,7 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
         strategy=order.get("strategy", ""),
         ticker=trade.get("ticker", ""),
         action=order["action"],  # authoritative: PYRAMID_FILL must not be overridden by trade
-        intended_execution_session=order.get("intended_execution_session", ""),
+        intended_execution_session=intended_session,
         actual_execution_session=actual_session,
         shares=float(trade.get("shares", 0)),
         execution_price=price,
@@ -800,6 +813,9 @@ def run_strategy_execution(
     sell_orders_executed = 0
     # Tracks (order_id, fill_attempt_id, filling_content_hash) for each SETTLING fill
     settling_fills: list[tuple[str, str, str]] = []
+    # Capture pre-fill hash (before any trades mutate state) for commit_intent pre/post recovery
+    from modules.fills import compute_portfolio_state_hash as _compute_hash  # noqa: PLC0415
+    _pre_fill_hash = _compute_hash(state)
     portfolio_id = state.get("portfolio_id", strategy_name)
     portfolio_version = PORTFOLIO_VERSION  # schema version from versioning.py, not created_at
 
@@ -1184,6 +1200,7 @@ def run_strategy_execution(
                 strategy=strategy_name,
                 portfolio_id=portfolio_id,
                 portfolio_version=portfolio_version,
+                pre_portfolio_state_hash=_pre_fill_hash,
                 post_portfolio_state_hash=pre_save_hash,
                 fills=fills_for_intent,
             )

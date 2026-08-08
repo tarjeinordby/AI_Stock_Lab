@@ -41,7 +41,9 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -178,8 +180,8 @@ def write_fill_event(
     net_cash_effect fallback is action-aware: negative for BUY/PYRAMID_FILL, positive for SELL.
     """
     fill_id = make_fill_id(order_id)
-    # UUID per write — unique even if retrying at same price and session
-    fa_id = "fa-" + uuid.uuid4().hex[:12]
+    # Full UUID per write — unique even if retrying at same price and session
+    fa_id = "fa-" + uuid.uuid4().hex
     _shares = round(float(shares), 6)
     _price = round(float(execution_price), 4)
     _gross_price = round(float(gross_execution_price if gross_execution_price is not None else execution_price), 4)
@@ -190,9 +192,9 @@ def write_fill_event(
     if net_cash_effect is not None:
         _net = round(float(net_cash_effect), 2)
     elif action in ("BUY", "PYRAMID_FILL"):
-        _net = round(-(_gross_value + _commission), 2)
+        _net = round(-(_gross_value + _total_cost), 2)
     else:  # SELL
-        _net = round(_gross_value - _commission, 2)
+        _net = round(_gross_value - _total_cost, 2)
 
     record = {
         "fill_id": fill_id,
@@ -239,22 +241,26 @@ def write_commit_intent(
     portfolio_version: str,
     post_portfolio_state_hash: str,
     fills: list[dict],
+    pre_portfolio_state_hash: str = "",
 ) -> dict:
     """Write a commit_intent event before the portfolio save.
 
     The commit_intent proves what we INTENDED to persist. On recovery:
     - If current portfolio hash matches post_portfolio_state_hash → save completed.
-    - If not → crash before save → retry fills as PENDING_PRICE.
+    - If current portfolio hash matches pre_portfolio_state_hash → crash before save → retry.
+    - If neither matches → unknown state → fail-closed.
 
     fills: list of {order_id, fill_attempt_id, filling_content_hash} dicts.
+    pre_portfolio_state_hash: hash of portfolio state BEFORE any fills were applied.
     Returns the written record dict with commit_id and content_hash set.
     """
-    commit_id = "ci-" + uuid.uuid4().hex[:12]
+    commit_id = "ci-" + uuid.uuid4().hex
     record = {
         "commit_id": commit_id,
         "strategy": strategy,
         "portfolio_id": portfolio_id,
         "portfolio_version": portfolio_version,
+        "pre_portfolio_state_hash": pre_portfolio_state_hash,
         "post_portfolio_state_hash": post_portfolio_state_hash,
         "fills": fills,
         "status": "commit_intent",
@@ -328,6 +334,18 @@ def _repair_fills_last_line() -> None:
         raise RuntimeError(f"Kunne ikke reparere fills.jsonl: {exc}") from exc
 
 
+_ISO8601_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_sha256(value: object, field_name: str, line_num: int) -> None:
+    if not isinstance(value, str) or not _SHA256_RE.match(value):
+        raise RuntimeError(
+            f"Fill-ledger {field_name} ugyldig (linje {line_num}): "
+            f"må være 64-tegns hex SHA-256, fikk {value!r} — fail-closed"
+        )
+
+
 def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
     """Return (events_by_order, commit_intents) from fills.jsonl.
 
@@ -336,10 +354,10 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
 
     Integrity checks:
     - content_hash MANDATORY for all records — missing or empty → fail-closed.
-    - filling events: full schema validation, action/cash/arithmetic checks.
-    - persisted events: schema validation, filling_content_hash must be non-empty.
-    - fill_id validated: must equal make_fill_id(order_id) for filling events.
-    - Cash arithmetic: cash_after ≈ cash_before + net_cash_effect (±$0.02).
+    - filling events: full schema + NaN/inf + cost decomposition + session + timestamp checks.
+    - persisted events: schema, hash length, fill_id, multiple-marker ambiguity.
+    - commit_intent: hash length, non-empty fills, fill-ref completeness, no dup refs, unique id.
+    - cross-ref: each commit_intent fill_ref must match exactly one filling event.
     - Mid-file corruption raises RuntimeError (fail-closed).
     - Corrupt last line is repaired under LOCK_EX with re-verification.
     - OSError on open raises RuntimeError (no silent empty return).
@@ -412,11 +430,37 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"Fill-ledger skjema-feil commit_intent (linje {i + 1}): "
                     f"mangler felt {missing_ci} — fail-closed"
                 )
-            if not rec.get("post_portfolio_state_hash"):
+            _validate_sha256(rec.get("post_portfolio_state_hash"), "post_portfolio_state_hash", i + 1)
+            # Validate pre_portfolio_state_hash if present (optional field for backward compat)
+            _pre = rec.get("pre_portfolio_state_hash")
+            if _pre:
+                _validate_sha256(_pre, "pre_portfolio_state_hash", i + 1)
+
+            # fills must be a non-empty list
+            _fills = rec.get("fills", [])
+            if not isinstance(_fills, list) or not _fills:
                 raise RuntimeError(
                     f"Fill-ledger commit_intent (linje {i + 1}): "
-                    f"post_portfolio_state_hash mangler/tom — fail-closed"
+                    f"fills er tom eller ikke en liste — fail-closed"
                 )
+            # Each fill-ref must have all required keys; no duplicate (order_id, fill_attempt_id)
+            _seen_fill_refs: set[tuple[str, str]] = set()
+            for fill_ref in _fills:
+                for req_fld in ("order_id", "fill_attempt_id", "filling_content_hash"):
+                    if not fill_ref.get(req_fld):
+                        raise RuntimeError(
+                            f"Fill-ledger commit_intent (linje {i + 1}): "
+                            f"fill_ref mangler '{req_fld}' — fail-closed"
+                        )
+                _ref_key = (fill_ref["order_id"], fill_ref["fill_attempt_id"])
+                if _ref_key in _seen_fill_refs:
+                    raise RuntimeError(
+                        f"Fill-ledger commit_intent (linje {i + 1}): "
+                        f"duplikat fill_ref (order_id={fill_ref['order_id']!r}, "
+                        f"fill_attempt_id={fill_ref['fill_attempt_id']!r}) — fail-closed"
+                    )
+                _seen_fill_refs.add(_ref_key)
+
             commit_intents.append(rec)
             continue
 
@@ -458,9 +502,33 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"må være positiv numerisk — fail-closed"
                 )
 
+            # NaN/inf check on all economically-relevant numeric fields
+            _numeric_check_fields = (
+                "shares", "execution_price", "gross_execution_price", "slippage_amount",
+                "commission_amount", "gross_execution_value", "total_execution_cost",
+                "net_cash_effect", "cash_before", "cash_after",
+            )
+            for _nf in _numeric_check_fields:
+                _nv = rec.get(_nf, 0)
+                try:
+                    _nv_f = float(_nv)
+                except (TypeError, ValueError):
+                    _nv_f = float("nan")
+                if not math.isfinite(_nv_f):
+                    raise RuntimeError(
+                        f"Fill-ledger numerisk-feil (linje {i + 1}): "
+                        f"{_nf}={_nv!r} er NaN eller uendelig — fail-closed"
+                    )
+
             cash_before = float(rec.get("cash_before", 0))
             cash_after = float(rec.get("cash_after", 0))
             net_cash_effect = float(rec.get("net_cash_effect", 0))
+            _gross_value = float(rec.get("gross_execution_value", 0))
+            _commission = float(rec.get("commission_amount", 0))
+            _slippage = float(rec.get("slippage_amount", 0))
+            _total_cost = float(rec.get("total_execution_cost", 0))
+            _shares_f = float(shares)
+            _price_f = float(price)
             tolerance = 0.02
 
             # Cash direction check
@@ -502,14 +570,60 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"Fill-ledger execution_price_timestamp mangler/null (linje {i + 1}) — fail-closed"
                 )
 
+            # execution_price_timestamp: must be valid ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ)
+            _ts = rec.get("execution_price_timestamp", "")
+            if not _ISO8601_UTC_RE.match(str(_ts)):
+                raise RuntimeError(
+                    f"Fill-ledger execution_price_timestamp ugyldig ISO 8601 UTC (linje {i + 1}): "
+                    f"{_ts!r} — forventet YYYY-MM-DDTHH:MM:SSZ — fail-closed"
+                )
+
             # Bug 6: total_execution_cost must be >= commission_amount
-            _ev_total = float(rec.get("total_execution_cost", 0))
-            _ev_comm = float(rec.get("commission_amount", 0))
-            if _ev_total < _ev_comm - 0.001:
+            if _total_cost < _commission - 0.001:
                 raise RuntimeError(
                     f"Fill-ledger cost-feil (linje {i + 1}): "
-                    f"total_execution_cost ({_ev_total}) < commission_amount ({_ev_comm}) — fail-closed"
+                    f"total_execution_cost ({_total_cost}) < commission_amount ({_commission}) — fail-closed"
                 )
+
+            # gross_execution_value ≈ shares × execution_price
+            _expected_gross = round(_shares_f * _price_f, 2)
+            if abs(_gross_value - _expected_gross) > tolerance:
+                raise RuntimeError(
+                    f"Fill-ledger gross-feil (linje {i + 1}): "
+                    f"gross_execution_value ({_gross_value}) ≠ shares ({_shares_f}) × price ({_price_f}) "
+                    f"= {_expected_gross} — fail-closed"
+                )
+
+            # total_execution_cost ≈ commission_amount + slippage_amount
+            _expected_total = round(_commission + _slippage, 4)
+            if abs(_total_cost - _expected_total) > 0.001:
+                raise RuntimeError(
+                    f"Fill-ledger total_execution_cost-feil (linje {i + 1}): "
+                    f"total_execution_cost ({_total_cost}) ≠ commission ({_commission}) "
+                    f"+ slippage ({_slippage}) = {_expected_total} — fail-closed"
+                )
+
+            # net_cash_effect decomposition check
+            if action in ("BUY", "PYRAMID_FILL"):
+                _expected_net = round(-(_gross_value + _total_cost), 2)
+            else:
+                _expected_net = round(_gross_value - _total_cost, 2)
+            if abs(net_cash_effect - _expected_net) > tolerance:
+                raise RuntimeError(
+                    f"Fill-ledger net_cash_effect-feil (linje {i + 1}): "
+                    f"net_cash_effect ({net_cash_effect}) ≠ forventet {_expected_net} "
+                    f"(action={action}, gross={_gross_value}, total_cost={_total_cost}) — fail-closed"
+                )
+
+            # next_session_daily_open_v1: slippage must be exactly zero
+            if rec.get("execution_price_source") == "next_session_daily_open_v1":
+                if int(rec.get("slippage_bps", 0)) != 0 or _slippage != 0.0:
+                    raise RuntimeError(
+                        f"Fill-ledger slippage-feil (linje {i + 1}): "
+                        f"next_session_daily_open_v1 krever slippage_bps=0 og slippage_amount=0, "
+                        f"fikk slippage_bps={rec.get('slippage_bps')}, slippage_amount={_slippage} "
+                        f"— fail-closed"
+                    )
 
         # Schema validation for "persisted" events
         elif status == "persisted":
@@ -524,16 +638,30 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"Fill-ledger integritets-feil (linje {i + 1}): "
                     f"filling_content_hash mangler/tom — fail-closed"
                 )
-            # Bug 3: post_portfolio_state_hash must be non-empty
-            if not rec.get("post_portfolio_state_hash"):
+            # post_portfolio_state_hash must be non-empty and valid 64-char SHA-256
+            _psh = rec.get("post_portfolio_state_hash")
+            if not _psh:
                 raise RuntimeError(
                     f"Fill-ledger integritets-feil (linje {i + 1}): "
                     f"post_portfolio_state_hash mangler/tom — fail-closed"
+                )
+            _validate_sha256(_psh, "post_portfolio_state_hash", i + 1)
+            # fill_id must equal make_fill_id(order_id) for persisted events too
+            _p_oid = rec.get("order_id", "")
+            _p_expected_fill_id = make_fill_id(_p_oid)
+            if rec.get("fill_id") != _p_expected_fill_id:
+                raise RuntimeError(
+                    f"Fill-ledger persisted fill_id-feil (linje {i + 1}): "
+                    f"forventet {_p_expected_fill_id!r}, faktisk {rec.get('fill_id')!r} — fail-closed"
                 )
 
         oid = rec.get("order_id")
         if oid:
             result.setdefault(oid, []).append(rec)
+
+    # -----------------------------------------------------------------------
+    # Post-processing integrity checks (after all records loaded)
+    # -----------------------------------------------------------------------
 
     # Duplicate fill_attempt_id with different content → tamper detected
     fa_id_to_hash: dict[str, str] = {}
@@ -549,6 +677,50 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     )
                 if fa_id:
                     fa_id_to_hash[fa_id] = ch
+
+    # Multiple persisted markers for same order: all must reference same fill_attempt_id
+    for oid, events in result.items():
+        _p_markers = [e for e in events if e.get("status") == "persisted"]
+        if len(_p_markers) > 1:
+            _p_fa_ids = {e.get("fill_attempt_id") for e in _p_markers}
+            if len(_p_fa_ids) > 1:
+                raise RuntimeError(
+                    f"Fill-ledger: ordre {oid} har {len(_p_markers)} persisted-markører "
+                    f"med ulike fill_attempt_ids {_p_fa_ids} — tvetydig — fail-closed"
+                )
+
+    # commit_id must be unique across all commit_intents
+    _ci_ids = [ci.get("commit_id") for ci in commit_intents]
+    if len(_ci_ids) != len(set(_ci_ids)):
+        from collections import Counter  # noqa: PLC0415
+        _dups = [cid for cid, cnt in Counter(_ci_ids).items() if cnt > 1]
+        raise RuntimeError(
+            f"Fill-ledger: duplicate commit_id(s) {_dups} — fail-closed"
+        )
+
+    # Cross-reference: each commit_intent fill_ref must match exactly one filling event
+    for ci in commit_intents:
+        _ci_id = ci.get("commit_id", "?")
+        for fill_ref in ci.get("fills", []):
+            _ref_oid = fill_ref.get("order_id", "")
+            _ref_fa_id = fill_ref.get("fill_attempt_id", "")
+            _ref_hash = fill_ref.get("filling_content_hash", "")
+            _order_events = result.get(_ref_oid, [])
+            _matching = [
+                e for e in _order_events
+                if e.get("status") == "filling" and e.get("fill_attempt_id") == _ref_fa_id
+            ]
+            if len(_matching) != 1:
+                raise RuntimeError(
+                    f"Fill-ledger commit_intent {_ci_id}: fill_ref "
+                    f"(order={_ref_oid!r}, fa_id={_ref_fa_id!r}) "
+                    f"peker på {len(_matching)} filling-event(er) (forventet nøyaktig 1) — fail-closed"
+                )
+            if _matching[0].get("content_hash") != _ref_hash:
+                raise RuntimeError(
+                    f"Fill-ledger commit_intent {_ci_id}: filling_content_hash mismatch "
+                    f"for fill_ref (order={_ref_oid!r}, fa_id={_ref_fa_id!r}) — fail-closed"
+                )
 
     if corrupt_last:
         _repair_fills_last_line()

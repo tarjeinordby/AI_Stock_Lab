@@ -384,6 +384,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
     positions = state.get("positions", {})
 
     reconciled = []
+    _failed_recs: list[str] = []  # order_ids where hash matched neither pre nor post
 
     for order in list(orders.values()):
         if order.get("status") != SETTLING:
@@ -404,37 +405,30 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
 
         if commit_intent is not None:
             # ---------------------------------------------------------------
-            # New WAL-based path: commit_intent proves intended state
+            # New WAL-based path: commit_intent proves intended state.
+            # Use pre/post hash to classify crash precisely.
             # ---------------------------------------------------------------
-            intent_hash = commit_intent.get("post_portfolio_state_hash", "")
+            post_hash = commit_intent.get("post_portfolio_state_hash", "")
+            pre_hash = commit_intent.get("pre_portfolio_state_hash", "")
             commit_id = commit_intent.get("commit_id")
 
-            if current_hash != intent_hash:
-                # Portfolio hash doesn't match intent — crash happened before portfolio save
-                updated = save_order(
-                    order, status=PENDING_PRICE,
-                    failure_reason=(
-                        "crash-recovery: commit_intent hash mismatch — "
-                        "portfolio not saved, queued for retry"
-                    ),
-                )
-            elif persisted_ev is not None:
-                # Portfolio matches + persisted event exists → fully committed → EXECUTED
-                updated = save_order(order, status=EXECUTED)
-            elif has_filling:
-                # Portfolio matches intent but persisted marker missing — crash after save,
-                # before mark_fill_persisted. Reconstruct using the commit_intent's fill reference
-                # (Bug 2 fix: must not blindly use the FIRST filling event).
-                fill_ref = next(
-                    (f for f in commit_intent.get("fills", []) if f.get("order_id") == order_id),
-                    None,
-                )
-                if fill_ref is None:
-                    updated = save_order(
-                        order, status=PENDING_PRICE,
-                        failure_reason="commit_intent mangler fill-referanse for ordre — retry",
+            if current_hash == post_hash:
+                # Portfolio hash matches post-fill intent → save completed successfully
+                if persisted_ev is not None:
+                    # Already fully committed → EXECUTED
+                    updated = save_order(order, status=EXECUTED)
+                elif has_filling:
+                    # Crash after portfolio save, before mark_fill_persisted → reconstruct.
+                    # Must use the fill_ref from commit_intent (Bug 2 fix).
+                    fill_ref = next(
+                        (f for f in commit_intent.get("fills", []) if f.get("order_id") == order_id),
+                        None,
                     )
-                else:
+                    if fill_ref is None:
+                        raise RuntimeError(
+                            f"Reconcile fail-closed: commit_intent {commit_id!r} mangler "
+                            f"fill-referanse for ordre {order_id} — fail-closed"
+                        )
                     ref_fa_id = fill_ref.get("fill_attempt_id", "")
                     matched_filling = next(
                         (e for e in order_fill_events
@@ -442,25 +436,55 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                         None,
                     )
                     if matched_filling is None:
-                        updated = save_order(
-                            order, status=PENDING_PRICE,
-                            failure_reason="commit_intent-referert filling-event ikke funnet — retry",
+                        raise RuntimeError(
+                            f"Reconcile fail-closed: commit_intent {commit_id!r} refererer "
+                            f"filling-event {ref_fa_id!r} for ordre {order_id} som ikke finnes "
+                            f"— fail-closed"
                         )
-                    else:
-                        mark_fill_persisted(
-                            order_id,
-                            matched_filling.get("fill_attempt_id", ""),
-                            matched_filling.get("content_hash", ""),
-                            commit_id=commit_id,
-                            post_portfolio_state_hash=intent_hash,
-                        )
-                        updated = save_order(order, status=EXECUTED)
-            else:
-                # commit_intent exists but no filling event — should not happen in normal flow
+                    mark_fill_persisted(
+                        order_id,
+                        matched_filling.get("fill_attempt_id", ""),
+                        matched_filling.get("content_hash", ""),
+                        commit_id=commit_id,
+                        post_portfolio_state_hash=post_hash,
+                    )
+                    updated = save_order(order, status=EXECUTED)
+                else:
+                    # commit_intent + post_hash match but no filling event — not normal flow
+                    updated = save_order(
+                        order, status=PENDING_PRICE,
+                        failure_reason=(
+                            "crash-recovery: commit_intent utan filling-event — queued for retry"
+                        ),
+                    )
+            elif pre_hash and current_hash == pre_hash:
+                # Portfolio is still in the pre-fill state → crash before save → retry
                 updated = save_order(
                     order, status=PENDING_PRICE,
                     failure_reason=(
-                        "crash-recovery: commit_intent utan filling-event — queued for retry"
+                        "crash-recovery: portfolio i pre-fill tilstand (current==pre) — "
+                        "queued for retry"
+                    ),
+                )
+            elif not pre_hash and current_hash != post_hash:
+                # No pre_hash stored (old commit_intent) — fall back to original logic
+                updated = save_order(
+                    order, status=PENDING_PRICE,
+                    failure_reason=(
+                        "crash-recovery: commit_intent hash mismatch — "
+                        "portfolio not saved, queued for retry"
+                    ),
+                )
+            else:
+                # current matches neither pre nor post → unknown state → fail-closed
+                _failed_recs.append(order_id)
+                updated = save_order(
+                    order, status=FAILED_PRICE,
+                    failure_reason=(
+                        f"failed_reconciliation: portfolio hash matcher verken "
+                        f"pre ({pre_hash[:8] if pre_hash else '?'}…) "
+                        f"eller post ({post_hash[:8] if post_hash else '?'}…) "
+                        f"— fail-closed"
                     ),
                 )
 
@@ -519,6 +543,12 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
 
         orders[order_id] = updated
         reconciled.append(updated)
+
+    if _failed_recs:
+        raise RuntimeError(
+            f"Reconcile failed_reconciliation for ordre {_failed_recs}: "
+            f"portfolio hash matcher verken pre eller post — fail-closed (Telegram required)"
+        )
 
     return reconciled
 
