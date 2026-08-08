@@ -71,7 +71,7 @@ _FILL_SCHEMA_FIELDS = frozenset({
 # Required fields for "persisted" events — validated on load
 _PERSISTED_SCHEMA_FIELDS = frozenset({
     "fill_id", "fill_attempt_id", "filling_content_hash",
-    "order_id", "post_portfolio_state_hash", "status", "written_at",
+    "order_id", "commit_id", "post_portfolio_state_hash", "status", "written_at",
 })
 
 # Required fields for "commit_intent" events — validated on load
@@ -239,9 +239,9 @@ def write_commit_intent(
     strategy: str,
     portfolio_id: str,
     portfolio_version: str,
+    pre_portfolio_state_hash: str,
     post_portfolio_state_hash: str,
     fills: list[dict],
-    pre_portfolio_state_hash: str = "",
 ) -> dict:
     """Write a commit_intent event before the portfolio save.
 
@@ -277,13 +277,19 @@ def mark_fill_persisted(
     filling_content_hash: str,
     post_portfolio_state_hash: str | None = None,
     commit_id: str | None = None,
+    _legacy: bool = False,
 ) -> None:
     """Append a 'persisted' marker after portfolio state is durably saved and verified.
 
     References the exact filling attempt by fill_attempt_id + filling_content_hash.
-    References the commit_intent by commit_id (if provided).
+    commit_id is required for new records; pass _legacy=True only for pre-WAL crash recovery.
     Raises RuntimeError if the WAL write fails — caller must NOT write EXECUTED on failure.
     """
+    if not _legacy and not commit_id:
+        raise RuntimeError(
+            f"mark_fill_persisted: commit_id er påkrevd for nye records "
+            f"(ordre {order_id}) — bruk _legacy=True kun for pre-WAL gjenoppretting"
+        )
     fill_id = make_fill_id(order_id)
     _append_record({
         "fill_id": fill_id,
@@ -578,6 +584,30 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"{_ts!r} — forventet YYYY-MM-DDTHH:MM:SSZ — fail-closed"
                 )
 
+            # Validate timestamp equals NYSE open for the intended session
+            _intended_sess = rec.get("intended_execution_session", "")
+            try:
+                from modules.exchange_calendar import (  # noqa: PLC0415
+                    CalendarUnavailableError as _CE,
+                    session_open_utc as _SOU,
+                )
+                _exp_ts = _SOU(_intended_sess).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except ImportError as _ie:
+                raise RuntimeError(
+                    f"Fill-ledger: exchange_calendar import feilet (linje {i + 1}) "
+                    f"— fail-closed: {_ie}"
+                ) from _ie
+            except _CE as _ce:
+                raise RuntimeError(
+                    f"Fill-ledger: kalender utilgjengelig for timestamp-validering "
+                    f"(linje {i + 1}, session={_intended_sess!r}) — fail-closed: {_ce}"
+                ) from _ce
+            if _ts != _exp_ts:
+                raise RuntimeError(
+                    f"Fill-ledger execution_price_timestamp feil (linje {i + 1}): "
+                    f"{_ts!r} ≠ session_open_utc({_intended_sess!r})={_exp_ts!r} — fail-closed"
+                )
+
             # Bug 6: total_execution_cost must be >= commission_amount
             if _total_cost < _commission - 0.001:
                 raise RuntimeError(
@@ -678,7 +708,7 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                 if fa_id:
                     fa_id_to_hash[fa_id] = ch
 
-    # Multiple persisted markers for same order: all must reference same fill_attempt_id
+    # Multiple persisted markers for same order: must be truly idempotent
     for oid, events in result.items():
         _p_markers = [e for e in events if e.get("status") == "persisted"]
         if len(_p_markers) > 1:
@@ -688,6 +718,16 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"Fill-ledger: ordre {oid} har {len(_p_markers)} persisted-markører "
                     f"med ulike fill_attempt_ids {_p_fa_ids} — tvetydig — fail-closed"
                 )
+            # Same fill_attempt_id: verify key identity fields to detect non-identical duplicates
+            _ref_pm = _p_markers[0]
+            for _pm in _p_markers[1:]:
+                for _idf in ("commit_id", "post_portfolio_state_hash", "filling_content_hash"):
+                    if _pm.get(_idf) != _ref_pm.get(_idf):
+                        raise RuntimeError(
+                            f"Fill-ledger: ordre {oid} har persisted-markører med "
+                            f"samme fill_attempt_id men ulikt {_idf} "
+                            f"— tvetydig (commit_id/post_hash endret?) — fail-closed"
+                        )
 
     # commit_id must be unique across all commit_intents
     _ci_ids = [ci.get("commit_id") for ci in commit_intents]
@@ -721,6 +761,16 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"Fill-ledger commit_intent {_ci_id}: filling_content_hash mismatch "
                     f"for fill_ref (order={_ref_oid!r}, fa_id={_ref_fa_id!r}) — fail-closed"
                 )
+            # Cross-validate strategy/portfolio_id/portfolio_version
+            for _xf in ("strategy", "portfolio_id", "portfolio_version"):
+                _ci_xval = ci.get(_xf, "")
+                _fill_xval = _matching[0].get(_xf, "")
+                if _ci_xval != _fill_xval:
+                    raise RuntimeError(
+                        f"Fill-ledger commit_intent {_ci_id}: {_xf} mismatch "
+                        f"(commit_intent={_ci_xval!r}, filling={_fill_xval!r}) "
+                        f"for fill_ref (order={_ref_oid!r}) — fail-closed"
+                    )
 
     if corrupt_last:
         _repair_fills_last_line()
@@ -735,32 +785,26 @@ def get_fill_events_for_order(order_id: str) -> list[dict]:
 
 
 def is_fill_persisted(order_id: str) -> bool:
-    """Return True if the fill for this order was durably persisted.
+    """Return True if the fill for this order was durably persisted with a valid commit_intent chain.
 
-    Strict resolver:
-    - Finds the persisted marker first.
-    - Uses the persisted marker's fill_attempt_id to find the exact filling event.
-    - Orphaned markers (no matching filling event) or hash mismatches → False.
+    Uses resolve_fill() to validate the full filling → persisted → commit_intent chain.
+    Returns False if:
+    - No persisted marker exists
+    - Persisted marker has no commit_id (legacy records cannot authorize via this function)
+    - Any part of the chain is invalid
     """
-    events_by_order, _ = load_fill_events()
-    events = events_by_order.get(order_id, [])
-    persisted = next((e for e in events if e.get("status") == "persisted"), None)
+    events_by_order, commit_intents = load_fill_events()
+    order_events = events_by_order.get(order_id, [])
+    persisted = next((e for e in order_events if e.get("status") == "persisted"), None)
     if persisted is None:
         return False
-    ref_fa_id = persisted.get("fill_attempt_id")
-    if not ref_fa_id:
+    if not persisted.get("commit_id"):
+        return False  # Legacy records (no commit_id) cannot authorize via is_fill_persisted
+    try:
+        resolve_fill(order_id, order_events, commit_intents)
+        return True
+    except RuntimeError:
         return False
-    # Find the filling event that matches the persisted marker's fill_attempt_id (Bug 1 fix)
-    filling = next(
-        (e for e in events if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
-        None,
-    )
-    if filling is None:
-        return False
-    ref_hash = persisted.get("filling_content_hash")
-    if ref_hash and filling.get("content_hash") != ref_hash:
-        return False
-    return True
 
 
 def _find_filling_by_attempt_id(
@@ -791,6 +835,90 @@ def _find_filling_by_attempt_id(
     return matching[0]
 
 
+def resolve_fill(
+    order_id: str,
+    order_events: list[dict],
+    commit_intents: list[dict],
+) -> tuple[dict, dict, dict]:
+    """Shared resolver: validates the filling → persisted → commit_intent chain.
+
+    Returns (filling_event, persisted_event, commit_intent).
+    commit_intent is {} for legacy records (persisted marker without commit_id).
+
+    Raises RuntimeError (fail-closed) when:
+    - No persisted marker found
+    - Persisted marker references a fill_attempt_id with no matching filling event (orphaned)
+    - filling_content_hash mismatch between persisted marker and filling event
+    - commit_id in persisted marker points to a non-existent commit_intent
+    - post_portfolio_state_hash in persisted marker does not match commit_intent
+    - commit_intent does not contain a fill_ref for this order/fill_attempt_id
+    """
+    persisted_markers = [e for e in order_events if e.get("status") == "persisted"]
+    if not persisted_markers:
+        raise RuntimeError(f"Ingen persisted-markør for ordre {order_id}")
+
+    persisted = persisted_markers[0]
+    ref_fa_id = persisted.get("fill_attempt_id")
+    if not ref_fa_id:
+        raise RuntimeError(f"Persisted-markør for ordre {order_id} mangler fill_attempt_id")
+
+    ref_hash = persisted.get("filling_content_hash")
+    ref_commit_id = persisted.get("commit_id")
+    ref_psh = persisted.get("post_portfolio_state_hash")
+
+    # Find the filling event (always required, even for legacy records)
+    filling = next(
+        (e for e in order_events
+         if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
+        None,
+    )
+    if filling is None:
+        raise RuntimeError(
+            f"Persisted-markør for ordre {order_id} refererer fill_attempt_id={ref_fa_id!r} "
+            f"som ikke finnes — foreldreløs markør — fail-closed"
+        )
+    if ref_hash and filling.get("content_hash") != ref_hash:
+        raise RuntimeError(
+            f"filling_content_hash mismatch for ordre {order_id} (fa_id={ref_fa_id!r}) "
+            f"— fail-closed"
+        )
+
+    if not ref_commit_id:
+        # Legacy record — no commit_intent chain required
+        return filling, persisted, {}
+
+    # Locate the commit_intent by commit_id
+    matching_ci = [ci for ci in commit_intents if ci.get("commit_id") == ref_commit_id]
+    if not matching_ci:
+        raise RuntimeError(
+            f"Persisted-markør for ordre {order_id} refererer commit_id={ref_commit_id!r} "
+            f"som ikke finnes i commit_intents — fail-closed"
+        )
+    commit_intent = matching_ci[0]
+
+    # Validate post_portfolio_state_hash consistency
+    if ref_psh and commit_intent.get("post_portfolio_state_hash") != ref_psh:
+        raise RuntimeError(
+            f"Persisted post_portfolio_state_hash for ordre {order_id} matcher ikke "
+            f"commit_intent {ref_commit_id!r} — fail-closed"
+        )
+
+    # Confirm commit_intent references this exact filling attempt
+    fill_refs = commit_intent.get("fills", [])
+    matching_ref = next(
+        (fr for fr in fill_refs
+         if fr.get("order_id") == order_id and fr.get("fill_attempt_id") == ref_fa_id),
+        None,
+    )
+    if matching_ref is None:
+        raise RuntimeError(
+            f"Commit_intent {ref_commit_id!r} mangler fill_ref for "
+            f"ordre={order_id}, fa_id={ref_fa_id!r} — fail-closed"
+        )
+
+    return filling, persisted, commit_intent
+
+
 def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
     """Replay persisted fill events into trades_df — idempotent, deduplicated by trade_id.
 
@@ -803,7 +931,7 @@ def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
     """
     import pandas as pd  # noqa: PLC0415
 
-    events_by_order, _ = load_fill_events()  # Raises RuntimeError if ledger is corrupt
+    events_by_order, commit_intents = load_fill_events()  # Raises RuntimeError if ledger is corrupt
 
     existing_trade_ids: set[str] = set()
     if not trades_df.empty and "trade_id" in trades_df.columns:
@@ -815,24 +943,12 @@ def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
         if persisted is None:
             continue
 
-        # Find the exact filling event referenced by this persisted marker
-        ref_fa_id = persisted.get("fill_attempt_id")
-        if not ref_fa_id:
-            raise RuntimeError(
-                f"Persisted marker for order {order_id} mangler fill_attempt_id — "
-                f"kan ikke projisere til trades — fail-closed"
-            )
+        # Resolve the fill chain — raises for orphaned markers or invalid chains
+        filling, persisted, commit_intent = resolve_fill(order_id, order_events, commit_intents)
 
-        filling = _find_filling_by_attempt_id(order_events, ref_fa_id, order_id)
-
-        # Cross-verify the filling event's content hash if persisted marker has it
-        ref_hash = persisted.get("filling_content_hash")
-        if ref_hash and filling.get("content_hash") != ref_hash:
-            raise RuntimeError(
-                f"filling_content_hash mismatch for fill_attempt_id={ref_fa_id} "
-                f"(order {order_id}): forventet {ref_hash[:8]}…, "
-                f"faktisk {filling.get('content_hash', '')[:8]}… — fail-closed"
-            )
+        # Legacy records (no commit_id) cannot authorize trade projection
+        if not persisted.get("commit_id"):
+            continue
 
         trade_id = filling.get("trade_id")
         if not trade_id or trade_id in existing_trade_ids:

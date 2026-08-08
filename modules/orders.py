@@ -363,6 +363,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         compute_portfolio_state_hash,
         load_fill_events,
         mark_fill_persisted,
+        resolve_fill,
     )
 
     # Raises RuntimeError on ledger read failure — do not catch; let it propagate fail-closed
@@ -415,7 +416,14 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
             if current_hash == post_hash:
                 # Portfolio hash matches post-fill intent → save completed successfully
                 if persisted_ev is not None:
-                    # Already fully committed → EXECUTED
+                    # Validate persisted marker is properly linked to this commit_intent
+                    try:
+                        resolve_fill(order_id, order_fill_events, commit_intents)
+                    except RuntimeError as _re:
+                        raise RuntimeError(
+                            f"Reconcile: persisted-markør for ordre {order_id} er ikke gyldig "
+                            f"— fail-closed: {_re}"
+                        ) from _re
                     updated = save_order(order, status=EXECUTED)
                 elif has_filling:
                     # Crash after portfolio save, before mark_fill_persisted → reconstruct.
@@ -450,12 +458,11 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                     )
                     updated = save_order(order, status=EXECUTED)
                 else:
-                    # commit_intent + post_hash match but no filling event — not normal flow
-                    updated = save_order(
-                        order, status=PENDING_PRICE,
-                        failure_reason=(
-                            "crash-recovery: commit_intent utan filling-event — queued for retry"
-                        ),
+                    # post_hash matches but no filling event — data integrity violation
+                    raise RuntimeError(
+                        f"Reconcile fail-closed: ordre {order_id} har commit_intent med "
+                        f"post_hash-match men ingen filling-event — "
+                        f"dette er en data-integritets-feil, ikke en normal krasjscenario"
                     )
             elif pre_hash and current_hash == pre_hash:
                 # Portfolio is still in the pre-fill state → crash before save → retry
@@ -529,6 +536,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                     last_filling.get("fill_attempt_id", ""),
                     last_filling.get("content_hash", ""),
                     post_portfolio_state_hash=current_hash,
+                    _legacy=True,
                 )
                 updated = save_order(order, status=EXECUTED)
             elif not order_fill_events and portfolio_has_fill:

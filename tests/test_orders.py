@@ -851,12 +851,23 @@ class TestFillEventWAL:
         assert not is_fill_persisted(oid)
 
     def test_is_fill_persisted_true_after_mark(self, tmp_path, monkeypatch):
-        from modules.fills import mark_fill_persisted, is_fill_persisted
+        from modules.fills import (
+            mark_fill_persisted, is_fill_persisted, write_commit_intent,
+            compute_portfolio_state_hash,
+        )
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-abc123456789"
         rec = self._write_fill(oid)
+        pre_h = compute_portfolio_state_hash({"cash": 1000.0, "positions": {}})
+        post_h = "a" * 64
+        ci = write_commit_intent(
+            strategy=STRATEGY, portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid, "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
         mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
-                            post_portfolio_state_hash="a" * 64)
+                            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"])
         assert is_fill_persisted(oid)
 
     def test_persisted_without_filling_event_is_not_valid(self, tmp_path, monkeypatch):
@@ -865,7 +876,7 @@ class TestFillEventWAL:
         self._patch_fills(tmp_path, monkeypatch)
         oid = "ord-orphan-persisted"
         mark_fill_persisted(oid, "fa-dummy000000", "hash-dummy",
-                            post_portfolio_state_hash="a" * 64)  # no prior filling event
+                            post_portfolio_state_hash="a" * 64, _legacy=True)
         assert not is_fill_persisted(oid)
 
     def test_make_fill_id_deterministic(self):
@@ -896,9 +907,9 @@ class TestFillEventWAL:
                                shares=5.0, execution_price=100.0,
                                cash_before=10000.0, cash_after=9500.0)
         mark_fill_persisted(order["order_id"], rec["fill_attempt_id"], rec["content_hash"],
-                            post_portfolio_state_hash="a" * 64)
+                            post_portfolio_state_hash="a" * 64, _legacy=True)
 
-        # Portfolio does NOT have position (fill WAL should take precedence)
+        # Portfolio does NOT have position (fill WAL should take precedence via legacy path)
         state = {"positions": {}, "cash": 10000.0}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
@@ -958,7 +969,13 @@ class TestFillEventWAL:
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
         assert orders[order["order_id"]]["status"] == EXECUTED
-        assert is_fill_persisted(order["order_id"])
+        # Legacy reconcile writes a persisted marker without commit_id (_legacy=True)
+        # is_fill_persisted() returns False for legacy markers by design (no commit_id → no auth)
+        # Verify the persisted WAL entry exists directly
+        from modules.fills import load_fill_events
+        events_by_order, _ = load_fill_events()
+        order_events = events_by_order.get(order["order_id"], [])
+        assert any(e.get("status") == "persisted" for e in order_events)
 
     def test_reconcile_raises_on_corrupt_fills_ledger(self, tmp_path, monkeypatch):
         """If fills.jsonl is mid-file corrupt, reconcile raises RuntimeError (fail-closed)."""
@@ -1272,7 +1289,10 @@ class TestProjectFillsToTrades:
     def _write_fill(self, order_id, trade_id, *, ticker="AAPL", strategy="s1",
                     execution_price=100.0, shares=5.0, commission=0.0,
                     session="2026-08-07"):
-        from modules.fills import write_fill_event, mark_fill_persisted
+        from modules.fills import (
+            write_fill_event, mark_fill_persisted, write_commit_intent,
+            compute_portfolio_state_hash,
+        )
         rec = write_fill_event(
             order_id=order_id, trade_id=trade_id, signal_id=None,
             signal_run_id="run-001", portfolio_id="", portfolio_version="",
@@ -1284,8 +1304,16 @@ class TestProjectFillsToTrades:
             reason="test", execution_version="v1",
             cash_before=10000.0, cash_after=9500.0,
         )
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = "a" * 64
+        ci = write_commit_intent(
+            strategy=strategy, portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": order_id, "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
         mark_fill_persisted(order_id, rec["fill_attempt_id"], rec["content_hash"],
-                            post_portfolio_state_hash="a" * 64)
+                            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"])
 
     def test_missing_trade_recovered_from_wal(self, tmp_path, monkeypatch):
         """Trade row absent from trades_df is added when fills.jsonl has a persisted event."""
@@ -1539,7 +1567,10 @@ class TestFillAttemptId:
     def test_persisted_marker_tied_to_exact_fill_attempt(self, tmp_path, monkeypatch):
         """Persisted marker references fill_attempt_id; project uses that to find the right filling."""
         self._patch_fills(tmp_path, monkeypatch)
-        from modules.fills import write_fill_event, mark_fill_persisted, project_fills_to_trades
+        from modules.fills import (
+            write_fill_event, mark_fill_persisted, project_fills_to_trades,
+            write_commit_intent, compute_portfolio_state_hash,
+        )
         import pandas as pd
 
         # Two filling events for the same order (crash + retry with different price)
@@ -1565,9 +1596,18 @@ class TestFillAttemptId:
             execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9490.0,
         )
-        # Mark the SECOND attempt as persisted
+        # Write commit_intent referencing the SECOND attempt
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = "a" * 64
+        ci = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": "ord-two-fills123", "fill_attempt_id": rec2["fill_attempt_id"],
+                    "filling_content_hash": rec2["content_hash"]}],
+        )
+        # Mark the SECOND attempt as persisted with commit_id
         mark_fill_persisted("ord-two-fills123", rec2["fill_attempt_id"], rec2["content_hash"],
-                            post_portfolio_state_hash="a" * 64)
+                            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"])
 
         recovered = project_fills_to_trades(pd.DataFrame())
         # Must project the second attempt's trade_id, not the first
@@ -1593,7 +1633,7 @@ class TestFillAttemptId:
         )
         # Write persisted marker with a DIFFERENT (non-existent) fill_attempt_id
         mark_fill_persisted("ord-orphan-test0", "fa-doesnotexist0", rec["content_hash"],
-                            post_portfolio_state_hash="a" * 64)
+                            post_portfolio_state_hash="a" * 64, _legacy=True)
 
         with pytest.raises(RuntimeError, match="fail-closed"):
             project_fills_to_trades(pd.DataFrame())
@@ -1735,7 +1775,10 @@ class TestPyramidFillAction:
     def test_pyramid_fill_action_stored_and_projected(self, tmp_path, monkeypatch):
         """Writing action=PYRAMID_FILL → filling event has PYRAMID_FILL, project uses it."""
         self._patch_fills(tmp_path, monkeypatch)
-        from modules.fills import write_fill_event, mark_fill_persisted, project_fills_to_trades
+        from modules.fills import (
+            write_fill_event, mark_fill_persisted, project_fills_to_trades,
+            write_commit_intent, compute_portfolio_state_hash,
+        )
         import pandas as pd
 
         rec = write_fill_event(
@@ -1750,8 +1793,16 @@ class TestPyramidFillAction:
             cash_before=10000.0, cash_after=9700.0,
         )
         assert rec["action"] == "PYRAMID_FILL"
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = "a" * 64
+        ci = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": "ord-pyr-test0000", "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
         mark_fill_persisted("ord-pyr-test0000", rec["fill_attempt_id"], rec["content_hash"],
-                            post_portfolio_state_hash="a" * 64)
+                            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"])
 
         recovered = project_fills_to_trades(pd.DataFrame())
         row = recovered[recovered["trade_id"] == "trd-pyr"]
@@ -1937,8 +1988,8 @@ class TestCommitIntent:
         )
         ci = write_commit_intent(
             strategy="s1",
-            portfolio_id="port-a",
-            portfolio_version="v1",
+            portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash="ef" * 32,
             post_portfolio_state_hash="abcd1234" * 8,
             fills=[{"order_id": "ord-ci-test00001",
                     "fill_attempt_id": rec["fill_attempt_id"],
@@ -1966,9 +2017,9 @@ class TestCommitIntent:
         )
         write_commit_intent(
             strategy="s1",
-            portfolio_id="p",
-            portfolio_version="v1",
-            post_portfolio_state_hash="a" * 64,
+            portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash="a" * 64,
+            post_portfolio_state_hash="b" * 64,
             fills=[{"order_id": "ord-ci-load00001",
                     "fill_attempt_id": rec["fill_attempt_id"],
                     "filling_content_hash": rec["content_hash"]}],
@@ -2015,9 +2066,11 @@ class TestCommitIntent:
         }
         intent_hash = compute_portfolio_state_hash(state)
 
+        pre_state_hash = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
         write_commit_intent(
             strategy=STRATEGY,
             portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_state_hash,
             post_portfolio_state_hash=intent_hash,
             fills=[{"order_id": order["order_id"],
                     "fill_attempt_id": fill_rec["fill_attempt_id"],
@@ -2057,17 +2110,20 @@ class TestCommitIntent:
             cash_before=10000.0, cash_after=9500.0,
         )
 
-        # Commit intent says one hash…
+        # Commit intent: pre_hash matches current state (pre-fill), post_hash is different
+        pre_state_for_mismatch = {"cash": 10000.0, "positions": {}}
+        pre_mismatch_hash = compute_portfolio_state_hash(pre_state_for_mismatch)
         write_commit_intent(
             strategy=STRATEGY,
             portfolio_id="", portfolio_version="",
-            post_portfolio_state_hash="aaa" + "0" * 61,  # intentionally wrong hash
+            pre_portfolio_state_hash=pre_mismatch_hash,  # matches current (pre-fill)
+            post_portfolio_state_hash="aaa" + "0" * 61,  # intentionally wrong post hash
             fills=[{"order_id": order["order_id"],
                     "fill_attempt_id": fill_rec["fill_attempt_id"],
                     "filling_content_hash": fill_rec["content_hash"]}],
         )
 
-        # …but current portfolio state is EMPTY (crash before save)
+        # Current portfolio is still pre-fill state (current == pre_hash → PENDING_PRICE)
         state = {"cash": 10000.0, "positions": {}}
         reconciled = reconcile_settling_orders(orders, STRATEGY, state)
         assert len(reconciled) == 1
@@ -2142,7 +2198,10 @@ class TestRound5Regressions:
     def test_is_fill_persisted_uses_persisted_marker_fa_id(self, tmp_path, monkeypatch):
         """Bug 1: is_fill_persisted must return True when attempt B is persisted, A is first."""
         self._patch_fills(tmp_path, monkeypatch)
-        from modules.fills import write_fill_event, mark_fill_persisted, is_fill_persisted
+        from modules.fills import (
+            write_fill_event, mark_fill_persisted, is_fill_persisted,
+            write_commit_intent, compute_portfolio_state_hash,
+        )
 
         oid = "ord-b1-regression00"
 
@@ -2166,9 +2225,19 @@ class TestRound5Regressions:
         )
         assert fill_a["fill_attempt_id"] != fill_b["fill_attempt_id"]
 
-        # Persist attempt B (not A)
+        # Write commit_intent for attempt B
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = "a" * 64
+        ci = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid, "fill_attempt_id": fill_b["fill_attempt_id"],
+                    "filling_content_hash": fill_b["content_hash"]}],
+        )
+
+        # Persist attempt B (not A) — with commit_id
         mark_fill_persisted(oid, fill_b["fill_attempt_id"], fill_b["content_hash"],
-                            post_portfolio_state_hash="a" * 64)
+                            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"])
 
         # Bug 1 (old code): picks first filling (A) → fill_attempt_id mismatch → False
         # Fixed code: finds persisted marker first → looks for B → True
@@ -2227,9 +2296,11 @@ class TestRound5Regressions:
         intent_hash = compute_portfolio_state_hash(state)
 
         # commit_intent references attempt B, not A
+        pre_intent_hash = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
         write_commit_intent(
             strategy=STRATEGY,
             portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_intent_hash,
             post_portfolio_state_hash=intent_hash,
             fills=[{"order_id": order["order_id"],
                     "fill_attempt_id": fill_b["fill_attempt_id"],
@@ -2477,9 +2548,9 @@ class TestRound6Regressions:
         )
         # Write same persisted marker twice (idempotent re-write scenario)
         mark_fill_persisted("ord-r6-idem0000", rec["fill_attempt_id"], rec["content_hash"],
-                            post_portfolio_state_hash="b" * 64)
+                            post_portfolio_state_hash="b" * 64, _legacy=True)
         mark_fill_persisted("ord-r6-idem0000", rec["fill_attempt_id"], rec["content_hash"],
-                            post_portfolio_state_hash="b" * 64)
+                            post_portfolio_state_hash="b" * 64, _legacy=True)
 
         # Should NOT raise — same fill_attempt_id is idempotent
         events_by_order, _ = load_fill_events()
@@ -2513,9 +2584,9 @@ class TestRound6Regressions:
         assert rec_a["fill_attempt_id"] != rec_b["fill_attempt_id"]
         # Mark BOTH as persisted (different attempts) — this is ambiguous
         mark_fill_persisted("ord-r6-amb00000", rec_a["fill_attempt_id"], rec_a["content_hash"],
-                            post_portfolio_state_hash="c" * 64)
+                            post_portfolio_state_hash="c" * 64, _legacy=True)
         mark_fill_persisted("ord-r6-amb00000", rec_b["fill_attempt_id"], rec_b["content_hash"],
-                            post_portfolio_state_hash="c" * 64)
+                            post_portfolio_state_hash="c" * 64, _legacy=True)
 
         with pytest.raises(RuntimeError, match="tvetydig"):
             load_fill_events()
@@ -3026,3 +3097,273 @@ class TestRound6Regressions:
         self._append_raw(tmp_path, rec)
         with pytest.raises(RuntimeError, match="post_portfolio_state_hash"):
             load_fill_events()
+
+
+# ---------------------------------------------------------------------------
+# Round 7 regressions — fixes for 4 reproduction-confirmed bugs in 09291e2
+# ---------------------------------------------------------------------------
+
+class TestRound7Regressions:
+    """Regression tests for the 4 reproduction-confirmed bugs fixed in Round 7.
+
+    Bugs fixed:
+    1. wrong_open_timestamp_accepted — 14:00:00Z accepted for session 2026-08-07
+    2. persisted_without_commit_id_accepted — is_fill_persisted returns True with no commit_id
+    3. commit_intent_wrong_strategy_portfolio_accepted — strategy mismatch not caught
+    4. non_identical_duplicate_persisted_markers_accepted — same fa_id, different commit_id
+    """
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _append_raw(self, tmp_path, record: dict) -> None:
+        fills_path = tmp_path / "fills.jsonl"
+        with open(fills_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _valid_filling_rec(self, order_id, **overrides):
+        """Build a content-hash-valid filling record for the given order_id."""
+        import hashlib as _hl
+        rec = {
+            "fill_id": "fill-" + _hl.sha256(order_id.encode()).hexdigest()[:12],
+            "fill_attempt_id": "fa-" + "a" * 32,
+            "order_id": order_id, "trade_id": "trd-r7",
+            "signal_id": None, "signal_run_id": "run-001",
+            "portfolio_id": "", "portfolio_version": "", "strategy": "s1",
+            "ticker": "AAPL", "action": "BUY",
+            "intended_execution_session": "2026-08-07",
+            "actual_execution_session": "2026-08-07",
+            "shares": 5.0, "execution_price": 100.0, "execution_version": "v1",
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": "2026-08-07T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "slippage_bps": 0, "slippage_amount": 0.0, "commission_amount": 0.0,
+            "gross_execution_value": 500.0, "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,
+            "reason": "", "cash_before": 10000.0, "cash_after": 9500.0,
+            "status": "filling", "written_at": "2026-08-07T14:00:00Z",
+        }
+        rec.update(overrides)
+        from modules.fills import _make_content_hash
+        rec["content_hash"] = _make_content_hash(rec)
+        return rec
+
+    # --- Bug 1: wrong_open_timestamp_accepted ---
+
+    def test_wrong_open_timestamp_rejected(self, tmp_path, monkeypatch):
+        """Bug 1: 14:00:00Z is ISO 8601 valid but NOT NYSE open — must be rejected."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import load_fill_events
+        rec = self._valid_filling_rec(
+            "ord-r7-ts-wrong0",
+            execution_price_timestamp="2026-08-07T14:00:00Z",  # wrong: 13:30:00Z required
+        )
+        self._append_raw(tmp_path, rec)
+        with pytest.raises(RuntimeError, match="session_open_utc|execution_price_timestamp"):
+            load_fill_events()
+
+    def test_correct_open_timestamp_accepted(self, tmp_path, monkeypatch):
+        """Bug 1 counterpart: 13:30:00Z for 2026-08-07 must be accepted."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import load_fill_events
+        rec = self._valid_filling_rec(
+            "ord-r7-ts-right0",
+            execution_price_timestamp="2026-08-07T13:30:00Z",  # correct
+        )
+        self._append_raw(tmp_path, rec)
+        events, _ = load_fill_events()
+        assert "ord-r7-ts-right0" in events
+
+    # --- Bug 2: persisted_without_commit_id_accepted ---
+
+    def test_persisted_without_commit_id_not_authorized(self, tmp_path, monkeypatch):
+        """Bug 2: is_fill_persisted must return False for markers without commit_id."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted, is_fill_persisted
+
+        oid = "ord-r7-nocommit0"
+        rec = write_fill_event(
+            order_id=oid, trade_id="trd-r7-nc",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        # Write legacy persisted marker (no commit_id)
+        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="a" * 64, _legacy=True)
+
+        # Bug 2 (old code): returns True — must now return False (no commit_id)
+        assert not is_fill_persisted(oid), (
+            "is_fill_persisted must return False for persisted markers without commit_id"
+        )
+
+    def test_new_mark_without_commit_id_raises(self, tmp_path, monkeypatch):
+        """Bug 2: mark_fill_persisted without commit_id and without _legacy=True must raise."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import write_fill_event, mark_fill_persisted
+
+        oid = "ord-r7-nocommit1"
+        rec = write_fill_event(
+            order_id=oid, trade_id="trd-r7-nc1",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        with pytest.raises(RuntimeError, match="commit_id"):
+            mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
+                                post_portfolio_state_hash="a" * 64)  # no commit_id, no _legacy
+
+    # --- Bug 3: commit_intent_wrong_strategy_portfolio_accepted ---
+
+    def test_commit_intent_wrong_strategy_rejected(self, tmp_path, monkeypatch):
+        """Bug 3: commit_intent with strategy differing from filling event must be rejected."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, write_commit_intent, load_fill_events,
+            compute_portfolio_state_hash,
+        )
+        oid = "ord-r7-strat0000"
+        rec = write_fill_event(
+            order_id=oid, trade_id="trd-r7-str",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="strat-right",
+            ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        write_commit_intent(
+            strategy="strat-wrong",  # Bug 3: different strategy from filling event
+            portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash="a" * 64,
+            fills=[{"order_id": oid, "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
+        with pytest.raises(RuntimeError, match="strategy"):
+            load_fill_events()
+
+    def test_commit_intent_matching_strategy_accepted(self, tmp_path, monkeypatch):
+        """Bug 3 counterpart: commit_intent with matching strategy/portfolio must load OK."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, write_commit_intent, load_fill_events,
+            compute_portfolio_state_hash,
+        )
+        oid = "ord-r7-strat0001"
+        rec = write_fill_event(
+            order_id=oid, trade_id="trd-r7-str2",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="port-x", portfolio_version="v1",
+            strategy="strat-right",
+            ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        write_commit_intent(
+            strategy="strat-right",  # matches filling
+            portfolio_id="port-x", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash="b" * 64,
+            fills=[{"order_id": oid, "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
+        events, commit_intents = load_fill_events()
+        assert oid in events
+        assert len(commit_intents) == 1
+
+    # --- Bug 4: non_identical_duplicate_persisted_markers_accepted ---
+
+    def test_same_fa_id_different_commit_id_ambiguous(self, tmp_path, monkeypatch):
+        """Bug 4: same fill_attempt_id but different commit_id → ambiguous → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, mark_fill_persisted, write_commit_intent,
+            load_fill_events, compute_portfolio_state_hash,
+        )
+        oid = "ord-r7-dupmark0"
+        rec = write_fill_event(
+            order_id=oid, trade_id="trd-r7-dup",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        ci1 = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash="a" * 64,
+            fills=[{"order_id": oid, "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
+        ci2 = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash="b" * 64,
+            fills=[{"order_id": oid, "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
+        assert ci1["commit_id"] != ci2["commit_id"]
+
+        # Mark persisted twice with SAME fill_attempt_id but DIFFERENT commit_ids
+        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="a" * 64, commit_id=ci1["commit_id"])
+        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="b" * 64, commit_id=ci2["commit_id"])
+
+        # Bug 4 (old code): accepted as "idempotent" (same fill_attempt_id)
+        # Fixed: different commit_id detected → tvetydig → fail-closed
+        with pytest.raises(RuntimeError, match="tvetydig"):
+            load_fill_events()
+
+    def test_truly_identical_duplicate_persisted_accepted(self, tmp_path, monkeypatch):
+        """Bug 4 counterpart: truly identical persisted markers (same all key fields) → OK."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, mark_fill_persisted, write_commit_intent,
+            load_fill_events, compute_portfolio_state_hash,
+        )
+        oid = "ord-r7-idem00001"
+        rec = write_fill_event(
+            order_id=oid, trade_id="trd-r7-idem",
+            signal_id=None, signal_run_id="run-001",
+            portfolio_id="", portfolio_version="",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-07", actual_execution_session="2026-08-07",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-07T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        ci = write_commit_intent(
+            strategy="s1", portfolio_id="", portfolio_version="",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash="c" * 64,
+            fills=[{"order_id": oid, "fill_attempt_id": rec["fill_attempt_id"],
+                    "filling_content_hash": rec["content_hash"]}],
+        )
+        # Same marker written twice (same fill_attempt_id, same commit_id, same post_hash)
+        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="c" * 64, commit_id=ci["commit_id"])
+        mark_fill_persisted(oid, rec["fill_attempt_id"], rec["content_hash"],
+                            post_portfolio_state_hash="c" * 64, commit_id=ci["commit_id"])
+
+        # Must not raise — truly idempotent
+        events, _ = load_fill_events()
+        assert oid in events
