@@ -10,7 +10,7 @@ from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
 from modules.exchange_calendar import CalendarUnavailableError, intended_execution_session
 from modules.orders import (
-    EXECUTED, EXPIRED, FAILED_PRICE, PENDING_PRICE, SETTLING, TERMINAL,  # noqa: F401 (FAILED_PRICE used in legacy print)
+    EXECUTED, EXPIRED, FAILED_PRICE, FAILED_RECONCILIATION, PENDING_PRICE, SETTLING, TERMINAL,  # noqa: F401
     expire_stale_orders,
     get_or_create_order,
     get_pending_for_session,
@@ -785,7 +785,18 @@ def run_strategy_execution(
     state = reset_week_if_needed(state)
 
     # Reconcile SETTLING orders — raises RuntimeError if fill ledger is unreadable (fail-closed)
-    reconciled = reconcile_settling_orders(orders, strategy_name, state)
+    # Also raises if manual_review cases are detected (hash-mismatch or versionless legacy records).
+    try:
+        reconciled = reconcile_settling_orders(orders, strategy_name, state)
+    except RuntimeError as _rec_err:
+        _portfolio_id = state.get("portfolio_id", strategy_name)
+        send_telegram(
+            f"⚠️ RECONCILE FEILET — manual_review påkrevd\n"
+            f"Strategi: {strategy_name}\n"
+            f"Portfolio: {_portfolio_id}\n"
+            f"Årsak: {_rec_err}"
+        )
+        raise
     if reconciled:
         ex = sum(1 for r in reconciled if r["status"] == EXECUTED)
         pp = sum(1 for r in reconciled if r["status"] == PENDING_PRICE)

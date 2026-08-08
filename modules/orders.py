@@ -44,9 +44,10 @@ SETTLING = "settling"       # in-flight: trade filled, portfolio not yet persist
 EXECUTED = "executed"
 EXPIRED = "expired"
 FAILED_PRICE = "failed_price"
+FAILED_RECONCILIATION = "failed_reconciliation"  # terminal: hash-mismatch / versionless legacy
 CANCELLED = "cancelled"
 
-TERMINAL = frozenset([EXECUTED, EXPIRED, FAILED_PRICE, CANCELLED])
+TERMINAL = frozenset([EXECUTED, EXPIRED, FAILED_PRICE, FAILED_RECONCILIATION, CANCELLED])
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +406,25 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
             # New WAL-based path: commit_intent proves intended state.
             # Use pre/post hash to classify crash precisely.
             # ---------------------------------------------------------------
+            from modules.fills import _FILL_RECORD_VERSION as _FRV  # noqa: PLC0415
+
+            # Entire chain must be strict (record_version == 2) before authorising anything.
+            # A versionless commit_intent (legacy) cannot authorize EXECUTED or reconstruction.
+            _ci_rv = commit_intent.get("record_version")
+            if not (type(_ci_rv) is int and _ci_rv == _FRV):
+                _failed_recs.append(order_id)
+                updated = save_order(
+                    order, status=FAILED_RECONCILIATION,
+                    failure_reason=(
+                        f"failed_reconciliation: commit_intent for ordre {order_id} har "
+                        f"record_version={_ci_rv!r} — krever nøyaktig {_FRV} "
+                        f"— versjonsløs commit_intent kan ikke autorisere EXECUTED — fail-closed"
+                    ),
+                )
+                orders[order_id] = updated
+                reconciled.append(updated)
+                continue
+
             post_hash = commit_intent.get("post_portfolio_state_hash", "")
             pre_hash = commit_intent.get("pre_portfolio_state_hash", "")
             commit_id = commit_intent.get("commit_id")
@@ -414,10 +434,11 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                 # Use list comprehensions (not next()) to detect marker presence (Bug 4 fix).
                 _persisted_markers = [e for e in order_fill_events if e.get("status") == "persisted"]
                 if _persisted_markers:
-                    # Validate full chain; expected_commit_id ensures marker matches selected intent (Bug 3 fix).
+                    # Validate full chain with strict version checks; expected_commit_id ensures
+                    # marker matches selected intent.
                     try:
                         resolve_fill(order_id, order_fill_events, commit_intents,
-                                     expected_commit_id=commit_id)
+                                     expected_commit_id=commit_id, strict=True)
                     except RuntimeError as _re:
                         raise RuntimeError(
                             f"Reconcile: persisted-markør for ordre {order_id} er ikke gyldig "
@@ -426,29 +447,32 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                     updated = save_order(order, status=EXECUTED)
                 else:
                     # No persisted marker → crash after portfolio save, before mark → reconstruct.
+                    # Loader guarantees at most one fill_ref per order_id, so this is exact.
                     _filling_markers = [e for e in order_fill_events if e.get("status") == "filling"]
                     if _filling_markers:
-                        fill_ref = next(
-                            (f for f in commit_intent.get("fills", []) if f.get("order_id") == order_id),
-                            None,
-                        )
-                        if fill_ref is None:
+                        _refs_for_order = [
+                            f for f in commit_intent.get("fills", [])
+                            if f.get("order_id") == order_id
+                        ]
+                        if len(_refs_for_order) != 1:
                             raise RuntimeError(
-                                f"Reconcile fail-closed: commit_intent {commit_id!r} mangler "
-                                f"fill-referanse for ordre {order_id} — fail-closed"
+                                f"Reconcile fail-closed: commit_intent {commit_id!r} har "
+                                f"{len(_refs_for_order)} fill_ref(s) for ordre {order_id} "
+                                f"— forventet nøyaktig 1 — fail-closed"
                             )
+                        fill_ref = _refs_for_order[0]
                         ref_fa_id = fill_ref.get("fill_attempt_id", "")
-                        matched_filling = next(
-                            (e for e in order_fill_events
-                             if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id),
-                            None,
-                        )
-                        if matched_filling is None:
+                        _matched_fillings = [
+                            e for e in order_fill_events
+                            if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id
+                        ]
+                        if len(_matched_fillings) != 1:
                             raise RuntimeError(
                                 f"Reconcile fail-closed: commit_intent {commit_id!r} refererer "
-                                f"filling-event {ref_fa_id!r} for ordre {order_id} som ikke finnes "
-                                f"— fail-closed"
+                                f"filling-event {ref_fa_id!r} for ordre {order_id} — "
+                                f"fant {len(_matched_fillings)} (forventet nøyaktig 1) — fail-closed"
                             )
+                        matched_filling = _matched_fillings[0]
                         mark_fill_persisted(
                             order_id,
                             matched_filling.get("fill_attempt_id", ""),
@@ -486,7 +510,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                 # current matches neither pre nor post → unknown state → fail-closed
                 _failed_recs.append(order_id)
                 updated = save_order(
-                    order, status=FAILED_PRICE,
+                    order, status=FAILED_RECONCILIATION,
                     failure_reason=(
                         f"failed_reconciliation: portfolio hash matcher verken "
                         f"pre ({pre_hash[:8] if pre_hash else '?'}…) "
@@ -516,7 +540,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                 # never auto-authorize EXECUTED — terminal manual_review (Telegram via _failed_recs).
                 _failed_recs.append(order_id)
                 updated = save_order(
-                    order, status=FAILED_PRICE,
+                    order, status=FAILED_RECONCILIATION,
                     failure_reason=(
                         "manual_review: versjonsløs SETTLING-ordre uten commit_intent "
                         "— aldri auto-autoriser EXECUTED"

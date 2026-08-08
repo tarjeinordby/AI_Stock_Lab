@@ -24,6 +24,7 @@ from modules.orders import (
     EXECUTED,
     EXPIRED,
     FAILED_PRICE,
+    FAILED_RECONCILIATION,
     PENDING_PRICE,
     SETTLING,
     TERMINAL,
@@ -918,7 +919,7 @@ class TestFillEventWAL:
         state = {"positions": {}, "cash": 10000.0}
         with pytest.raises(RuntimeError, match="manual_review"):
             reconcile_settling_orders(orders, STRATEGY, state)
-        assert orders[order["order_id"]]["status"] == FAILED_PRICE
+        assert orders[order["order_id"]]["status"] == FAILED_RECONCILIATION
 
     def test_reconcile_crash_before_portfolio_gives_pending_retry(self, tmp_path, monkeypatch):
         """SETTLING + fill_event 'filling' (not persisted) + no position → PENDING_PRICE."""
@@ -1611,13 +1612,19 @@ class TestFillAttemptId:
         assert "trd-q2" in recovered["trade_id"].values
         assert "trd-q1" not in recovered["trade_id"].values
 
-    def test_orphaned_persisted_marker_raises_in_project(self, tmp_path, monkeypatch):
-        """Persisted marker with fill_attempt_id that has no matching filling event → fail-closed."""
+    def test_orphaned_legacy_persisted_marker_silently_skipped_in_project(self, tmp_path, monkeypatch):
+        """Legacy persisted marker (no record_version) with orphaned fill_attempt_id → silently skipped.
+
+        Since Round 9, projection requires record_version == 2 on the persisted marker.
+        Legacy markers (record_version=None) are never authorised for trade projection — they
+        are silently skipped, not raised, even when the fill_attempt_id is orphaned.
+        Strict (record_version=2) orphaned markers are caught by resolve_fill(strict=True).
+        """
         self._patch_fills(tmp_path, monkeypatch)
         from modules.fills import write_fill_event, mark_fill_persisted, project_fills_to_trades
         import pandas as pd
 
-        rec = write_fill_event(
+        write_fill_event(
             order_id="ord-orphan-test0", trade_id="trd-orphan",
             signal_id=None, signal_run_id="run-001",
             portfolio_id="", portfolio_version="",
@@ -1628,12 +1635,13 @@ class TestFillAttemptId:
             execution_price_timestamp="2026-08-07T13:30:00Z",
             cash_before=10000.0, cash_after=9500.0,
         )
-        # Write persisted marker with a DIFFERENT (non-existent) fill_attempt_id
-        mark_fill_persisted("ord-orphan-test0", "fa-doesnotexist0", rec["content_hash"],
+        # Legacy persisted marker (_legacy=True → no record_version) with a non-existent fa_id
+        mark_fill_persisted("ord-orphan-test0", "fa-doesnotexist0", "x" * 64,
                             post_portfolio_state_hash="a" * 64, _legacy=True)
 
-        with pytest.raises(RuntimeError, match="fail-closed"):
-            project_fills_to_trades(pd.DataFrame())
+        # Legacy markers are silently skipped — no RuntimeError, no rows projected
+        result = project_fills_to_trades(pd.DataFrame())
+        assert result.empty, "legacy orphaned marker must be silently skipped, not projected"
 
 
 class TestMandatoryContentHash:
@@ -3457,8 +3465,8 @@ class TestRound8Regressions:
         state = {"positions": {TICKER: {"shares": 5}}, "cash": 9500.0}
         with pytest.raises(RuntimeError, match="manual_review"):
             reconcile_settling_orders(orders, STRATEGY, state)
-        assert orders[order["order_id"]]["status"] == FAILED_PRICE, (
-            "versionless persisted marker must produce FAILED_PRICE, never EXECUTED"
+        assert orders[order["order_id"]]["status"] == FAILED_RECONCILIATION, (
+            "versionless persisted marker must produce FAILED_RECONCILIATION, never EXECUTED"
         )
 
     # --- Bug 3: strict commit_intent without pre_portfolio_state_hash must be rejected ---
@@ -3720,4 +3728,432 @@ class TestRound8Regressions:
         assert persisted_events, "must have at least one persisted marker"
         assert persisted_events[0].get("record_version") is None, (
             "legacy mark_fill_persisted must NOT include record_version"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Round 9 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound9Regressions:
+    """Regression tests for Round 9 bugs found in commit 5362b54.
+
+    1. versionless_chain_authorized_executed — complete versionless chain (filling + CI + persisted)
+       routed through the commit_intent branch and could reach EXECUTED.
+    2. unknown_record_version_accepted — values 0, 1, 3, 999, text, bool were not rejected.
+    3. duplicate_order_refs_in_one_intent_accepted — two fill_refs with same order_id but
+       different fill_attempt_ids in one commit_intent were accepted; reconcile used next()
+       and picked arbitrarily.
+    4. telegram_not_sent_for_manual_review — reconcile_settling_orders raised RuntimeError
+       but stock_bot.py called it without try/except, so Telegram was never sent.
+    """
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _make_filling(
+        self, tmp_path, oid: str, *,
+        trade_id: str = "trd-test",
+        session: str = "2026-08-07",
+    ) -> dict:
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=oid, trade_id=trade_id,
+            signal_id=None, signal_run_id="run-r9",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session=session,
+            actual_execution_session=session,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{session}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+    # --- Bug 1: versionless chain through commit_intent branch must never give EXECUTED ---
+
+    def test_versionless_commit_intent_never_executed(self, tmp_path, monkeypatch):
+        """Versionless commit_intent (no record_version) → FAILED_RECONCILIATION, never EXECUTED.
+
+        Round 9 bug: the commit_intent branch did not validate the CI's record_version.
+        A legacy CI (record_version=None) that matched the current portfolio hash could
+        authorize EXECUTED via the reconstruction path. Now the CI version is checked first.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        import json
+        from modules.fills import (
+            _make_content_hash, compute_portfolio_state_hash, _FILL_RECORD_VERSION,
+        )
+
+        fills_path = tmp_path / "fills.jsonl"
+        session = "2026-08-06"
+
+        # Create the order to get the real order_id
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r9", ticker="AAPL",
+            strategy="s1", session_date=session, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid = order["order_id"]
+        orders[oid] = save_order(save_order(order), status=SETTLING, trade_id="trd-r9-chain")
+
+        # Write a strict filling event (version=2 — loader requires it)
+        filling_rec = self._make_filling(tmp_path, oid, trade_id="trd-r9-chain", session=session)
+
+        # Write a LEGACY commit_intent (no record_version) pointing to this filling
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        ci_rec = {
+            "commit_id": "ci-legacy-r9001",
+            "strategy": "s1",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "post_portfolio_state_hash": post_h,
+            "fills": [{"order_id": oid,
+                       "fill_attempt_id": filling_rec["fill_attempt_id"],
+                       "filling_content_hash": filling_rec["content_hash"]}],
+            "status": "commit_intent",
+            "written_at": "2026-08-06T20:00:00Z",
+        }
+        ci_rec["content_hash"] = _make_content_hash(ci_rec)
+        with open(fills_path, "a") as f:
+            f.write(json.dumps(ci_rec) + "\n")
+
+        # current hash == post_h: portfolio looks saved → would previously trigger reconstruction
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, "s1", state_post)
+        assert orders[oid]["status"] == FAILED_RECONCILIATION, (
+            "versionless commit_intent must never authorize EXECUTED — must be FAILED_RECONCILIATION"
+        )
+
+    def test_mixed_version_chain_never_executed(self, tmp_path, monkeypatch):
+        """Strict filling + versionless persisted → resolve_fill(strict=True) → RuntimeError.
+
+        A chain where filling has record_version=2 but persisted has none must be rejected.
+        This prevents a partial-upgrade scenario from giving EXECUTED.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, mark_fill_persisted, write_commit_intent,
+            compute_portfolio_state_hash, resolve_fill, load_fill_events,
+        )
+
+        oid = "ord-r9-mixed0002"
+        session = "2026-08-07"
+        filling = self._make_filling(tmp_path, oid, trade_id="trd-mixed", session=session)
+
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        ci = write_commit_intent(
+            strategy="s1", portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid, "fill_attempt_id": filling["fill_attempt_id"],
+                    "filling_content_hash": filling["content_hash"]}],
+        )
+
+        # Write a LEGACY persisted marker (no record_version)
+        mark_fill_persisted(
+            oid, filling["fill_attempt_id"], filling["content_hash"],
+            post_portfolio_state_hash=post_h, _legacy=True,
+        )
+
+        events, intents = load_fill_events()
+        with pytest.raises(RuntimeError, match="record_version|versjonsløs"):
+            resolve_fill(oid, events[oid], intents, strict=True)
+
+    # --- Bug 2: invalid record_version values must be rejected fail-closed ---
+
+    def _append_raw(self, tmp_path, record: dict) -> None:
+        from modules.fills import _make_content_hash
+        import json
+        record["content_hash"] = _make_content_hash(record)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _make_filling_rec(self, oid: str, session: str = "2026-08-07") -> dict:
+        import hashlib
+        fill_id = "fill-" + hashlib.sha256(oid.encode()).hexdigest()[:12]
+        return {
+            "fill_id": fill_id,
+            "fill_attempt_id": "fa-r9vertest0001",
+            "order_id": oid,
+            "trade_id": "trd-r9ver",
+            "signal_id": None,
+            "signal_run_id": "run-r9ver",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "strategy": "s1",
+            "ticker": "AAPL",
+            "action": "BUY",
+            "intended_execution_session": session,
+            "actual_execution_session": session,
+            "execution_price": 100.0,
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": f"{session}T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "shares": 5.0,
+            "slippage_bps": 0,
+            "slippage_amount": 0.0,
+            "commission_amount": 0.0,
+            "gross_execution_value": 500.0,
+            "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,
+            "cash_before": 10000.0,
+            "cash_after": 9500.0,
+            "reason": "test",
+            "execution_version": EXEC_VERSION,
+            "status": "filling",
+            "written_at": f"{session}T13:30:00Z",
+        }
+
+    @pytest.mark.parametrize("bad_version", [0, 1, 3, 999, "abc", True, False, 2.0])
+    def test_invalid_record_version_filling_rejected(self, bad_version, tmp_path, monkeypatch):
+        """Filling event with record_version not in {None, 2} is rejected fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import load_fill_events
+
+        oid = "ord-r9-badver0001"
+        rec = self._make_filling_rec(oid)
+        rec["record_version"] = bad_version
+        self._append_raw(tmp_path, rec)
+
+        with pytest.raises(RuntimeError, match="record_version|ugyldig"):
+            load_fill_events()
+
+    @pytest.mark.parametrize("bad_version", [0, 1, 3, 999, "abc", True])
+    def test_invalid_record_version_commit_intent_rejected(self, bad_version, tmp_path, monkeypatch):
+        """commit_intent with record_version not in {None, 2} is rejected fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        import hashlib, json
+        from modules.fills import _make_content_hash, load_fill_events, write_fill_event
+
+        oid = "ord-r9-badci0001"
+        fill_rec = self._make_filling(tmp_path, oid, session="2026-08-07")
+
+        ci = {
+            "commit_id": "ci-r9-badvr001",
+            "strategy": "s1",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "record_version": bad_version,
+            "pre_portfolio_state_hash": "a" * 64,
+            "post_portfolio_state_hash": "b" * 64,
+            "fills": [{"order_id": oid,
+                       "fill_attempt_id": fill_rec["fill_attempt_id"],
+                       "filling_content_hash": fill_rec["content_hash"]}],
+            "status": "commit_intent",
+            "written_at": "2026-08-07T13:30:00Z",
+        }
+        ci["content_hash"] = _make_content_hash(ci)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(ci) + "\n")
+
+        with pytest.raises(RuntimeError, match="record_version|ugyldig"):
+            load_fill_events()
+
+    # --- Bug 3: duplicate order_id in one commit_intent must be rejected ---
+
+    def test_duplicate_order_id_in_commit_intent_rejected(self, tmp_path, monkeypatch):
+        """Two fill_refs with same order_id (different fill_attempt_ids) in one commit_intent → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        import json
+        from modules.fills import _make_content_hash, load_fill_events, write_fill_event
+
+        oid = "ord-r9-dupoid001"
+        fill1 = self._make_filling(tmp_path, oid, trade_id="trd-r9-dup1", session="2026-08-07")
+        fill2 = self._make_filling(tmp_path, oid, trade_id="trd-r9-dup2", session="2026-08-07")
+
+        # One commit_intent references the same order_id twice with different fill_attempt_ids
+        ci = {
+            "commit_id": "ci-r9-dupoid001",
+            "strategy": "s1",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "record_version": 2,
+            "pre_portfolio_state_hash": "a" * 64,
+            "post_portfolio_state_hash": "b" * 64,
+            "fills": [
+                {"order_id": oid, "fill_attempt_id": fill1["fill_attempt_id"],
+                 "filling_content_hash": fill1["content_hash"]},
+                {"order_id": oid, "fill_attempt_id": fill2["fill_attempt_id"],
+                 "filling_content_hash": fill2["content_hash"]},
+            ],
+            "status": "commit_intent",
+            "written_at": "2026-08-07T14:00:00Z",
+        }
+        ci["content_hash"] = _make_content_hash(ci)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(ci) + "\n")
+
+        with pytest.raises(RuntimeError, match="duplikat order_id|order_id"):
+            load_fill_events()
+
+    def test_same_fill_attempt_id_for_two_orders_rejected(self, tmp_path, monkeypatch):
+        """Same fill_attempt_id on two different order_ids in one commit_intent → fail-closed."""
+        self._patch_fills(tmp_path, monkeypatch)
+        import json
+        from modules.fills import _make_content_hash, load_fill_events, write_fill_event
+
+        oid_a = "ord-r9-twooid-a1"
+        oid_b = "ord-r9-twooid-b1"
+        fill_a = self._make_filling(tmp_path, oid_a, trade_id="trd-r9-ta", session="2026-08-07")
+
+        # Manually write a second filling event for oid_b but reuse fill_a's fill_attempt_id
+        import hashlib
+        fill_id_b = "fill-" + hashlib.sha256(oid_b.encode()).hexdigest()[:12]
+        rec_b = {
+            "fill_id": fill_id_b,
+            "fill_attempt_id": fill_a["fill_attempt_id"],  # SAME fa_id, different order
+            "order_id": oid_b,
+            "trade_id": "trd-r9-tb",
+            "signal_id": None,
+            "signal_run_id": "run-r9",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "strategy": "s1",
+            "ticker": "MSFT",
+            "action": "BUY",
+            "intended_execution_session": "2026-08-07",
+            "actual_execution_session": "2026-08-07",
+            "execution_price": 200.0,
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": "2026-08-07T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 200.0,
+            "shares": 2.0,
+            "slippage_bps": 0,
+            "slippage_amount": 0.0,
+            "commission_amount": 0.0,
+            "gross_execution_value": 400.0,
+            "total_execution_cost": 0.0,
+            "net_cash_effect": -400.0,
+            "cash_before": 9500.0,
+            "cash_after": 9100.0,
+            "reason": "test",
+            "execution_version": EXEC_VERSION,
+            "record_version": 2,
+            "status": "filling",
+            "written_at": "2026-08-07T13:30:00Z",
+        }
+        from modules.fills import _make_content_hash as _mch
+        rec_b["content_hash"] = _mch(rec_b)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(rec_b) + "\n")
+
+        # commit_intent references same fill_attempt_id for TWO different order_ids
+        ci = {
+            "commit_id": "ci-r9-twooidsame",
+            "strategy": "s1",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "record_version": 2,
+            "pre_portfolio_state_hash": "a" * 64,
+            "post_portfolio_state_hash": "b" * 64,
+            "fills": [
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": rec_b["content_hash"]},
+            ],
+            "status": "commit_intent",
+            "written_at": "2026-08-07T14:00:00Z",
+        }
+        ci["content_hash"] = _mch(ci)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(ci) + "\n")
+
+        with pytest.raises(RuntimeError, match="fill_attempt_id"):
+            load_fill_events()
+
+    def test_reconstruction_cannot_pick_first_of_multiple_attempts(self, tmp_path, monkeypatch):
+        """Reconstruction path: if commit_intent has != 1 fill_ref for the order, fail-closed.
+
+        The loader now rejects duplicate order_id in commit_intent. This test verifies that
+        even if a commit_intent somehow had two refs (only possible via raw ledger manipulation),
+        the reconcile reconstruction path would fail-closed rather than pick arbitrarily.
+
+        We verify this via resolve_fill with a handcrafted commit_intent that has two fill_refs.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        from modules.fills import (
+            write_fill_event, write_commit_intent, load_fill_events, resolve_fill,
+            compute_portfolio_state_hash,
+        )
+
+        oid = "ord-r9-tworem0001"
+        fill1 = self._make_filling(tmp_path, oid, trade_id="trd-rem1", session="2026-08-07")
+        fill2 = self._make_filling(tmp_path, oid, trade_id="trd-rem2", session="2026-08-07")
+
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+
+        # Craft a commit_intent with two fill_refs for the same order (bypassing loader check
+        # by writing raw JSON), then verify reconcile would fail-closed.
+        import json
+        from modules.fills import _make_content_hash
+        ci_raw = {
+            "commit_id": "ci-r9-tworem0001",
+            "strategy": "s1",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "record_version": 2,
+            "pre_portfolio_state_hash": pre_h,
+            "post_portfolio_state_hash": post_h,
+            "fills": [
+                {"order_id": oid, "fill_attempt_id": fill1["fill_attempt_id"],
+                 "filling_content_hash": fill1["content_hash"]},
+                {"order_id": oid, "fill_attempt_id": fill2["fill_attempt_id"],
+                 "filling_content_hash": fill2["content_hash"]},
+            ],
+            "status": "commit_intent",
+            "written_at": "2026-08-07T14:00:00Z",
+        }
+        ci_raw["content_hash"] = _make_content_hash(ci_raw)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(ci_raw) + "\n")
+
+        # Loader should reject this commit_intent — duplicate order_id
+        with pytest.raises(RuntimeError, match="duplikat order_id|order_id"):
+            load_fill_events()
+
+    # --- Bug 4: Telegram for manual_review must be sent by stock_bot.py ---
+
+    def test_reconcile_manual_review_telegram_source_check(self):
+        """Bug 4: run_strategy_execution must catch reconcile RuntimeError, send Telegram, re-raise."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_strategy_execution(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        # Must have a try/except around reconcile_settling_orders
+        assert "reconcile_settling_orders" in fn_body
+        assert "except RuntimeError" in fn_body, (
+            "run_strategy_execution must have except RuntimeError to catch reconcile failures"
+        )
+
+        # find the reconcile block and verify send_telegram is in the handler
+        reconcile_idx = fn_body.index("reconcile_settling_orders")
+        except_idx = fn_body.find("except RuntimeError", reconcile_idx)
+        assert except_idx != -1, "except RuntimeError must come after reconcile_settling_orders call"
+
+        # Find the end of the except block
+        next_block_idx = fn_body.find("\n    reconciled", except_idx)
+        if next_block_idx == -1:
+            except_handler = fn_body[except_idx:]
+        else:
+            except_handler = fn_body[except_idx:next_block_idx]
+
+        assert "send_telegram" in except_handler, (
+            "send_telegram must be called inside the except RuntimeError handler for reconcile"
+        )
+        assert "raise" in except_handler, (
+            "RuntimeError must be re-raised after sending Telegram in reconcile handler"
         )

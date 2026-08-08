@@ -451,6 +451,12 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
         if status == "commit_intent":
             _rec_ver = rec.get("record_version")
             if _rec_ver is not None:
+                if not (type(_rec_ver) is int and _rec_ver == _FILL_RECORD_VERSION):
+                    raise RuntimeError(
+                        f"Fill-ledger commit_intent (linje {i + 1}): "
+                        f"ugyldig record_version={_rec_ver!r} (type {type(_rec_ver).__name__!r}) — "
+                        f"kun int {_FILL_RECORD_VERSION} er gyldig, None=legacy — fail-closed"
+                    )
                 # Strict record: validate against full schema (record_version + pre_hash required)
                 missing_ci = [fld for fld in _COMMIT_INTENT_SCHEMA_FIELDS if fld not in rec]
             else:
@@ -474,8 +480,9 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                     f"Fill-ledger commit_intent (linje {i + 1}): "
                     f"fills er tom eller ikke en liste — fail-closed"
                 )
-            # Each fill-ref must have all required keys; no duplicate (order_id, fill_attempt_id)
-            _seen_fill_refs: set[tuple[str, str]] = set()
+            # Each fill-ref: required keys, at most one ref per order_id, at most one per fa_id
+            _seen_order_ids: set[str] = set()
+            _seen_fa_ids: dict[str, str] = {}  # fa_id → order_id
             for fill_ref in _fills:
                 for req_fld in ("order_id", "fill_attempt_id", "filling_content_hash"):
                     if not fill_ref.get(req_fld):
@@ -483,20 +490,35 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
                             f"Fill-ledger commit_intent (linje {i + 1}): "
                             f"fill_ref mangler '{req_fld}' — fail-closed"
                         )
-                _ref_key = (fill_ref["order_id"], fill_ref["fill_attempt_id"])
-                if _ref_key in _seen_fill_refs:
+                _ref_oid = fill_ref["order_id"]
+                _ref_faid = fill_ref["fill_attempt_id"]
+                if _ref_oid in _seen_order_ids:
                     raise RuntimeError(
                         f"Fill-ledger commit_intent (linje {i + 1}): "
-                        f"duplikat fill_ref (order_id={fill_ref['order_id']!r}, "
-                        f"fill_attempt_id={fill_ref['fill_attempt_id']!r}) — fail-closed"
+                        f"duplikat order_id={_ref_oid!r} i fills-listen "
+                        f"— maks én fill_ref per order_id — fail-closed"
                     )
-                _seen_fill_refs.add(_ref_key)
+                if _ref_faid in _seen_fa_ids:
+                    raise RuntimeError(
+                        f"Fill-ledger commit_intent (linje {i + 1}): "
+                        f"fill_attempt_id={_ref_faid!r} brukes av to order_id-er "
+                        f"({_seen_fa_ids[_ref_faid]!r} og {_ref_oid!r}) — fail-closed"
+                    )
+                _seen_order_ids.add(_ref_oid)
+                _seen_fa_ids[_ref_faid] = _ref_oid
 
             commit_intents.append(rec)
             continue
 
         # Schema and semantic validation for "filling" events — all are fail-closed
         if status == "filling":
+            _fv = rec.get("record_version")
+            if _fv is not None and not (type(_fv) is int and _fv == _FILL_RECORD_VERSION):
+                raise RuntimeError(
+                    f"Fill-ledger filling (linje {i + 1}): "
+                    f"ugyldig record_version={_fv!r} (type {type(_fv).__name__!r}) — "
+                    f"kun int {_FILL_RECORD_VERSION} er gyldig, None=legacy — fail-closed"
+                )
             missing = [fld for fld in _FILL_SCHEMA_FIELDS if fld not in rec]
             if missing:
                 raise RuntimeError(
@@ -682,6 +704,13 @@ def load_fill_events() -> tuple[dict[str, list[dict]], list[dict]]:
 
         # Schema validation for "persisted" events
         elif status == "persisted":
+            _pv = rec.get("record_version")
+            if _pv is not None and not (type(_pv) is int and _pv == _FILL_RECORD_VERSION):
+                raise RuntimeError(
+                    f"Fill-ledger persisted (linje {i + 1}): "
+                    f"ugyldig record_version={_pv!r} (type {type(_pv).__name__!r}) — "
+                    f"kun int {_FILL_RECORD_VERSION} er gyldig, None=legacy — fail-closed"
+                )
             missing_p = [fld for fld in _PERSISTED_SCHEMA_FIELDS if fld not in rec]
             if missing_p:
                 raise RuntimeError(
@@ -829,10 +858,12 @@ def is_fill_persisted(order_id: str) -> bool:
     persisted = next((e for e in order_events if e.get("status") == "persisted"), None)
     if persisted is None:
         return False
+    if persisted.get("record_version") != _FILL_RECORD_VERSION:
+        return False  # Legacy or invalid-version records cannot authorize via is_fill_persisted
     if not persisted.get("commit_id"):
-        return False  # Legacy records (no commit_id) cannot authorize via is_fill_persisted
+        return False
     try:
-        resolve_fill(order_id, order_events, commit_intents)
+        resolve_fill(order_id, order_events, commit_intents, strict=True)
         return True
     except RuntimeError:
         return False
@@ -871,11 +902,15 @@ def resolve_fill(
     order_events: list[dict],
     commit_intents: list[dict],
     expected_commit_id: str | None = None,
+    strict: bool = True,
 ) -> tuple[dict, dict, dict]:
     """Shared resolver: validates the filling → persisted → commit_intent chain.
 
     Returns (filling_event, persisted_event, commit_intent).
     commit_intent is {} for legacy records (persisted marker without commit_id).
+
+    strict=True (default): all three chain links must have record_version == _FILL_RECORD_VERSION.
+    Any link with a missing or wrong version → RuntimeError. Versionless records are rejected.
 
     expected_commit_id: when provided, the resolved commit_intent must have this commit_id.
     This lets reconcile verify the persisted marker matches the selected commit_intent.
@@ -888,6 +923,7 @@ def resolve_fill(
     - post_portfolio_state_hash in persisted marker does not match commit_intent
     - commit_intent does not contain a fill_ref for this order/fill_attempt_id
     - expected_commit_id is set and resolved commit_intent's commit_id differs (chain mismatch)
+    - strict=True and any chain link has missing or wrong record_version
     """
     persisted_markers = [e for e in order_events if e.get("status") == "persisted"]
     if not persisted_markers:
@@ -919,6 +955,18 @@ def resolve_fill(
             f"— fail-closed"
         )
 
+    if strict:
+        # All three chain links must have exactly record_version == _FILL_RECORD_VERSION (int 2).
+        # Versionless (None), wrong value, or wrong type → fail-closed.
+        for _link, _link_rec in (("filling", filling), ("persisted", persisted)):
+            _lv = _link_rec.get("record_version")
+            if not (type(_lv) is int and _lv == _FILL_RECORD_VERSION):
+                raise RuntimeError(
+                    f"resolve_fill (strict): {_link} for ordre {order_id} har "
+                    f"record_version={_lv!r} — krever nøyaktig int {_FILL_RECORD_VERSION} "
+                    f"— versjonsløse records kan ikke autorisere EXECUTED — fail-closed"
+                )
+
     if not ref_commit_id:
         # Legacy record — no commit_intent chain required
         return filling, persisted, {}
@@ -931,6 +979,15 @@ def resolve_fill(
             f"som ikke finnes i commit_intents — fail-closed"
         )
     commit_intent = matching_ci[0]
+
+    if strict:
+        _civ = commit_intent.get("record_version")
+        if not (type(_civ) is int and _civ == _FILL_RECORD_VERSION):
+            raise RuntimeError(
+                f"resolve_fill (strict): commit_intent {ref_commit_id!r} for ordre {order_id} "
+                f"har record_version={_civ!r} — krever nøyaktig int {_FILL_RECORD_VERSION} "
+                f"— versjonsløse records kan ikke autorisere EXECUTED — fail-closed"
+            )
 
     # Validate post_portfolio_state_hash consistency
     if ref_psh and commit_intent.get("post_portfolio_state_hash") != ref_psh:
@@ -988,10 +1045,14 @@ def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
         if persisted is None:
             continue
 
-        # Resolve the fill chain — raises for orphaned markers or invalid chains
-        filling, persisted, commit_intent = resolve_fill(order_id, order_events, commit_intents)
+        # Legacy records (no record_version == 2) cannot authorize trade projection — skip silently
+        if persisted.get("record_version") != _FILL_RECORD_VERSION:
+            continue
 
-        # Legacy records (no commit_id) cannot authorize trade projection
+        # Resolve the full chain with strict version checks on all three links
+        filling, persisted, commit_intent = resolve_fill(order_id, order_events, commit_intents, strict=True)
+
+        # Verify commit_intent is present (double-check after strict resolve)
         if not persisted.get("commit_id"):
             continue
 
