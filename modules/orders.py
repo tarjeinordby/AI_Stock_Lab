@@ -400,25 +400,36 @@ def _resolve_ci_filling_strict(
 def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> list:
     """Reconcile SETTLING orders using fill event WAL + commit_intent + portfolio state.
 
-    Primary recovery path (WAL-based orders with commit_intent):
-    - commit_intent.record_version != 2 → FAILED_RECONCILIATION (mixed-version, fail-closed)
-    - filling.record_version != 2 (via _resolve_ci_filling_strict) → FAILED_RECONCILIATION
-    - commit_intent found + current portfolio hash == post_hash:
-        - persisted marker present → validate full chain (expected_commit_id check) → EXECUTED
-        - no persisted marker → crash after portfolio save, before mark → reconstruct → EXECUTED
-    - commit_intent found + current hash == pre_hash → crash before save → PENDING_PRICE
-    - commit_intent found + matches neither → unknown state → FAILED_RECONCILIATION (fail-closed)
+    Batch-atomic two-phase model:
+    A commit_intent represents a single portfolio save covering ALL its fill_refs.
+    SETTLING orders are grouped by their commit_intent. If any fill_ref in a batch
+    fails validation, the entire batch is fail-closed (no partial reconciliation).
 
-    No commit_intent path (versionless legacy or crash before commit_intent was written):
-    - Versionless records (no record_version) → terminal FAILED_RECONCILIATION + manual_review
-    - Any persisted marker without commit_intent → terminal FAILED_RECONCILIATION + manual_review
-    - Strict fill events only (record_version set), no persisted → PENDING_PRICE (retry)
+    PHASE 1 — preflight (read/validate only, no writes):
+    - Group SETTLING orders by commit_id
+    - Validate commit_intent version for the batch
+    - Validate filling version and content_hash for every fill_ref in the batch
+    - Validate existing persisted chains (resolve_fill strict) where present
+    - Classify batch hash: post / pre / no_pre / neither
+    - If any check fails → mark entire batch invalid
+
+    PHASE 2 — apply results (writes only if entire batch valid):
+    - Invalid batch: all orders → FAILED_RECONCILIATION, no writes
+    - hash=post: reconstruct (mark_fill_persisted) where needed, then EXECUTED
+    - hash=pre or no_pre: all orders → PENDING_PRICE
+    - Neither: batch already marked invalid in Phase 1 → FAILED_RECONCILIATION
+
+    No commit_intent path (versionless legacy or crash before CI was written):
+    - Versionless records (no record_version) → FAILED_RECONCILIATION + manual_review
+    - Any persisted marker without commit_intent → FAILED_RECONCILIATION + manual_review
+    - Strict fill events only, no persisted → PENDING_PRICE (retry)
 
     Raises RuntimeError if the fill ledger cannot be read (fail-closed — caller must alert).
-    Also raises if manual_review cases detected (_failed_recs non-empty).
+    Also raises if any manual_review cases detected (_failed_recs non-empty).
     Returns the list of reconciled orders.
     """
     from modules.fills import (  # noqa: PLC0415
+        _FILL_RECORD_VERSION as _FRV,
         compute_portfolio_state_hash,
         load_fill_events,
         mark_fill_persisted,
@@ -427,8 +438,9 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
 
     # Raises RuntimeError on ledger read failure — do not catch; let it propagate fail-closed
     fill_events_by_order, commit_intents = load_fill_events()
+    _cid_to_ci: dict[str, dict] = {ci["commit_id"]: ci for ci in commit_intents}
 
-    # Build map: order_id → commit_intent (for this strategy)
+    # Build order_id → commit_intent map (for this strategy; last CI per order_id wins)
     order_to_intent: dict[str, dict] = {}
     for ci in commit_intents:
         if ci.get("strategy") != strategy_name:
@@ -436,181 +448,204 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         for fill_ref in ci.get("fills", []):
             oid = fill_ref.get("order_id")
             if oid:
-                # Last commit_intent wins (most recent batch attempt)
                 order_to_intent[oid] = ci
 
-    # Compute current portfolio hash once for all orders in this strategy
     current_hash = compute_portfolio_state_hash(state)
-    positions = state.get("positions", {})
 
     reconciled = []
-    _failed_recs: list[str] = []  # order_ids where hash matched neither pre nor post
+    _failed_recs: list[str] = []
+
+    # -----------------------------------------------------------------------
+    # Group SETTLING orders: batch (has CI) vs. no-CI path
+    # -----------------------------------------------------------------------
+    batch_by_cid: dict[str, list[dict]] = {}  # cid → [order, ...]
+    settling_no_ci: list[dict] = []
 
     for order in list(orders.values()):
         if order.get("status") != SETTLING:
             continue
         if order.get("strategy") != strategy_name:
             continue
-
-        order_id = order["order_id"]
-        ticker = order.get("ticker")
-        action = order.get("action")
-
-        order_fill_events = fill_events_by_order.get(order_id, [])
-        commit_intent = order_to_intent.get(order_id)
-
-        if commit_intent is not None:
-            # ---------------------------------------------------------------
-            # New WAL-based path: commit_intent proves intended state.
-            # Use pre/post hash to classify crash precisely.
-            # ---------------------------------------------------------------
-            from modules.fills import _FILL_RECORD_VERSION as _FRV  # noqa: PLC0415
-
-            # Entire chain must be strict (record_version == 2) before authorising anything.
-            # A versionless commit_intent (legacy) cannot authorize EXECUTED or reconstruction.
-            _ci_rv = commit_intent.get("record_version")
-            if not (type(_ci_rv) is int and _ci_rv == _FRV):
-                _failed_recs.append(order_id)
-                updated = save_order(
-                    order, status=FAILED_RECONCILIATION,
-                    failure_reason=(
-                        f"failed_reconciliation: commit_intent for ordre {order_id} har "
-                        f"record_version={_ci_rv!r} — krever nøyaktig {_FRV} "
-                        f"— versjonsløs commit_intent kan ikke autorisere EXECUTED — fail-closed"
-                    ),
-                )
-                orders[order_id] = updated
-                reconciled.append(updated)
-                continue
-
-            post_hash = commit_intent.get("post_portfolio_state_hash", "")
-            pre_hash = commit_intent.get("pre_portfolio_state_hash", "")
-            commit_id = commit_intent.get("commit_id")
-
-            # Shared strict validator: find and validate the filling before any hash branch.
-            # Both pre_hash (→ PENDING_PRICE) and post_hash (→ reconstruction/EXECUTED) paths
-            # must be guarded — a legacy filling must never authorize either.
-            try:
-                _ci_fill_ref, _ci_filling = _resolve_ci_filling_strict(
-                    order_id, order_fill_events, commit_intent, _FRV
-                )
-            except RuntimeError as _fve:
-                _failed_recs.append(order_id)
-                updated = save_order(
-                    order, status=FAILED_RECONCILIATION,
-                    failure_reason=(
-                        f"failed_reconciliation: filling-validering feilet for ordre "
-                        f"{order_id} — {_fve} — fail-closed"
-                    ),
-                )
-                orders[order_id] = updated
-                reconciled.append(updated)
-                continue
-
-            if current_hash == post_hash:
-                # Portfolio hash matches post-fill intent → save completed successfully.
-                # Use list comprehensions (not next()) to detect marker presence.
-                _persisted_markers = [e for e in order_fill_events if e.get("status") == "persisted"]
-                if _persisted_markers:
-                    # Validate full chain with strict version checks; expected_commit_id ensures
-                    # marker matches selected intent.
-                    try:
-                        resolve_fill(order_id, order_fill_events, commit_intents,
-                                     expected_commit_id=commit_id, strict=True)
-                    except RuntimeError as _re:
-                        raise RuntimeError(
-                            f"Reconcile: persisted-markør for ordre {order_id} er ikke gyldig "
-                            f"— fail-closed: {_re}"
-                        ) from _re
-                    updated = save_order(order, status=EXECUTED)
-                else:
-                    # No persisted marker → crash after portfolio save, before mark → reconstruct.
-                    # _ci_filling already resolved and version-validated by _resolve_ci_filling_strict.
-                    _filling_markers = [e for e in order_fill_events if e.get("status") == "filling"]
-                    if _filling_markers:
-                        mark_fill_persisted(
-                            order_id,
-                            _ci_filling.get("fill_attempt_id", ""),
-                            _ci_filling.get("content_hash", ""),
-                            commit_id=commit_id,
-                            post_portfolio_state_hash=post_hash,
-                        )
-                        updated = save_order(order, status=EXECUTED)
-                    else:
-                        # post_hash matches but no filling event — data integrity violation
-                        raise RuntimeError(
-                            f"Reconcile fail-closed: ordre {order_id} har commit_intent med "
-                            f"post_hash-match men ingen filling-event — "
-                            f"dette er en data-integritets-feil, ikke en normal krasjscenario"
-                        )
-            elif pre_hash and current_hash == pre_hash:
-                # Portfolio is still in the pre-fill state → crash before save → retry.
-                # _ci_filling already validated as strict — safe to retry.
-                updated = save_order(
-                    order, status=PENDING_PRICE,
-                    failure_reason=(
-                        "crash-recovery: portfolio i pre-fill tilstand (current==pre) — "
-                        "queued for retry"
-                    ),
-                )
-            elif not pre_hash and current_hash != post_hash:
-                # No pre_hash stored (old commit_intent) — fall back to original logic
-                updated = save_order(
-                    order, status=PENDING_PRICE,
-                    failure_reason=(
-                        "crash-recovery: commit_intent hash mismatch — "
-                        "portfolio not saved, queued for retry"
-                    ),
-                )
-            else:
-                # current matches neither pre nor post → unknown state → fail-closed
-                _failed_recs.append(order_id)
-                updated = save_order(
-                    order, status=FAILED_RECONCILIATION,
-                    failure_reason=(
-                        f"failed_reconciliation: portfolio hash matcher verken "
-                        f"pre ({pre_hash[:8] if pre_hash else '?'}…) "
-                        f"eller post ({post_hash[:8] if post_hash else '?'}…) "
-                        f"— fail-closed"
-                    ),
-                )
-
+        oid = order["order_id"]
+        ci = order_to_intent.get(oid)
+        if ci is None:
+            settling_no_ci.append(order)
         else:
-            # ---------------------------------------------------------------
-            # No commit_intent: versionless legacy records or strict fill events
-            # without a commit_intent chain.
-            #
-            # Versionless records (no record_version) → terminal manual_review.
-            # Any persisted marker without commit_intent → also manual_review.
-            # Strict fill events only, no persisted → crash before commit_intent → retry.
-            # ---------------------------------------------------------------
-            _has_versionless = any(
-                e.get("record_version") is None
-                for e in order_fill_events
-                if e.get("status") in ("filling", "persisted")
-            )
-            _has_persisted = any(e.get("status") == "persisted" for e in order_fill_events)
+            batch_by_cid.setdefault(ci["commit_id"], []).append(order)
 
-            if _has_versionless or _has_persisted:
-                # Versionless records or any persisted marker without commit_intent:
-                # never auto-authorize EXECUTED — terminal manual_review (Telegram via _failed_recs).
-                _failed_recs.append(order_id)
+    # =========================================================================
+    # PHASE 1: Preflight — validate every batch completely before any write.
+    # Outcome is determined here; Phase 2 only executes what Phase 1 decided.
+    # =========================================================================
+    batch_preflight: dict[str, dict] = {}  # cid → result
+
+    for cid, batch_orders in batch_by_cid.items():
+        ci = _cid_to_ci[cid]
+        res: dict = {
+            "valid": True,
+            "fail_reason": None,
+            "hash_result": None,   # "post" | "pre" | "no_pre" | "neither"
+            "filling_by_order": {},  # oid → (fill_ref, filling_event)
+            "needs_reconstruction": set(),  # oids without persisted markers
+        }
+
+        # 1a. Commit_intent version must be exactly int 2
+        _ci_rv = ci.get("record_version")
+        if not (type(_ci_rv) is int and _ci_rv == _FRV):
+            res["valid"] = False
+            res["fail_reason"] = (
+                f"commit_intent {cid!r} har record_version={_ci_rv!r} "
+                f"— krever nøyaktig int {_FRV} — versjonsløs CI kan ikke autorisere EXECUTED"
+            )
+
+        # 1b. Validate every filling and existing persisted chain in the batch
+        if res["valid"]:
+            for order in batch_orders:
+                oid = order["order_id"]
+                order_events = fill_events_by_order.get(oid, [])
+
+                # Strict filling validation (version, content_hash, exactly 1 match)
+                try:
+                    fill_ref, filling = _resolve_ci_filling_strict(oid, order_events, ci, _FRV)
+                    res["filling_by_order"][oid] = (fill_ref, filling)
+                except RuntimeError as _ve:
+                    res["valid"] = False
+                    res["fail_reason"] = str(_ve)
+                    break
+
+                # If a persisted marker exists, validate the full chain strictly
+                _p_markers = [e for e in order_events if e.get("status") == "persisted"]
+                if _p_markers:
+                    try:
+                        resolve_fill(oid, order_events, commit_intents,
+                                     expected_commit_id=cid, strict=True)
+                    except RuntimeError as _re:
+                        res["valid"] = False
+                        res["fail_reason"] = str(_re)
+                        break
+                else:
+                    res["needs_reconstruction"].add(oid)
+
+        # 1c. Hash classification (same pre/post for all orders in a batch)
+        if res["valid"]:
+            _post_h = ci.get("post_portfolio_state_hash", "")
+            _pre_h = ci.get("pre_portfolio_state_hash", "")
+            if current_hash == _post_h:
+                res["hash_result"] = "post"
+            elif _pre_h and current_hash == _pre_h:
+                res["hash_result"] = "pre"
+            elif not _pre_h and current_hash != _post_h:
+                res["hash_result"] = "no_pre"
+            else:
+                res["valid"] = False
+                res["fail_reason"] = (
+                    f"portfolio hash matcher verken "
+                    f"pre ({_pre_h[:8] if _pre_h else '?'}…) "
+                    f"eller post ({_post_h[:8] if _post_h else '?'}…)"
+                )
+
+        batch_preflight[cid] = res
+
+    # =========================================================================
+    # PHASE 2: Apply results — writes only for valid batches.
+    # Iteration order does NOT affect outcomes (decided entirely in Phase 1).
+    # =========================================================================
+    for cid, batch_orders in batch_by_cid.items():
+        ci = _cid_to_ci[cid]
+        res = batch_preflight[cid]
+        commit_id = ci["commit_id"]
+        _post_h = ci.get("post_portfolio_state_hash", "")
+        _pre_h = ci.get("pre_portfolio_state_hash", "")
+
+        if not res["valid"]:
+            # Entire batch fail-closed: no writes, every order → FAILED_RECONCILIATION
+            for order in batch_orders:
+                oid = order["order_id"]
+                _failed_recs.append(oid)
                 updated = save_order(
                     order, status=FAILED_RECONCILIATION,
                     failure_reason=(
-                        "manual_review: versjonsløs SETTLING-ordre uten commit_intent "
-                        "— aldri auto-autoriser EXECUTED"
+                        f"failed_reconciliation: batch {commit_id!r} — "
+                        f"{res['fail_reason']} — fail-closed"
                     ),
                 )
-            else:
-                # Strict fill events only, no persisted marker, no commit_intent:
-                # crash occurred before commit_intent was written → retry is safe.
+                orders[oid] = updated
+                reconciled.append(updated)
+            continue
+
+        hash_result = res["hash_result"]
+        for order in batch_orders:
+            oid = order["order_id"]
+            _, ci_filling = res["filling_by_order"][oid]
+
+            if hash_result == "post":
+                # Portfolio was saved. Write persisted marker only for orders that need it.
+                if oid in res["needs_reconstruction"]:
+                    mark_fill_persisted(
+                        oid,
+                        ci_filling.get("fill_attempt_id", ""),
+                        ci_filling.get("content_hash", ""),
+                        commit_id=commit_id,
+                        post_portfolio_state_hash=_post_h,
+                    )
+                updated = save_order(order, status=EXECUTED)
+
+            elif hash_result == "pre":
+                # Crash before portfolio save — safe to retry (filling is strict v2)
                 updated = save_order(
                     order, status=PENDING_PRICE,
-                    failure_reason="crash-recovery: filling uten commit_intent — queued for retry",
+                    failure_reason=(
+                        "crash-recovery: portfolio i pre-fill tilstand (current==pre) "
+                        "— queued for retry"
+                    ),
                 )
 
-        orders[order_id] = updated
+            else:  # "no_pre"
+                # Old commit_intent (no pre_hash stored) — retry conservatively
+                updated = save_order(
+                    order, status=PENDING_PRICE,
+                    failure_reason=(
+                        "crash-recovery: commit_intent hash mismatch "
+                        "— portfolio not saved, queued for retry"
+                    ),
+                )
+
+            orders[oid] = updated
+            reconciled.append(updated)
+
+    # -----------------------------------------------------------------------
+    # No-commit_intent path: versionless / orphaned persisted / strict-no-CI
+    # -----------------------------------------------------------------------
+    for order in settling_no_ci:
+        oid = order["order_id"]
+        order_fill_events = fill_events_by_order.get(oid, [])
+
+        _has_versionless = any(
+            e.get("record_version") is None
+            for e in order_fill_events
+            if e.get("status") in ("filling", "persisted")
+        )
+        _has_persisted = any(e.get("status") == "persisted" for e in order_fill_events)
+
+        if _has_versionless or _has_persisted:
+            # Versionless records or any persisted marker without commit_intent:
+            # never auto-authorize EXECUTED — terminal manual_review.
+            _failed_recs.append(oid)
+            updated = save_order(
+                order, status=FAILED_RECONCILIATION,
+                failure_reason=(
+                    "manual_review: versjonsløs SETTLING-ordre uten commit_intent "
+                    "— aldri auto-autoriser EXECUTED"
+                ),
+            )
+        else:
+            # Strict fill events only, no persisted, no CI: crash before CI written → retry
+            updated = save_order(
+                order, status=PENDING_PRICE,
+                failure_reason="crash-recovery: filling uten commit_intent — queued for retry",
+            )
+
+        orders[oid] = updated
         reconciled.append(updated)
 
     if _failed_recs:

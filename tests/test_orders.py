@@ -3569,9 +3569,14 @@ class TestRound8Regressions:
         )
 
         # Portfolio matches post_hash_b → reconcile selects CI B (last wins)
-        # But persisted marker has CI A's commit_id → chain mismatch → fail-closed
-        with pytest.raises(RuntimeError, match="kjede-mismatch|persisted"):
+        # But persisted marker has CI A's commit_id → chain mismatch → fail-closed.
+        # Phase 1 detects the mismatch via resolve_fill(strict=True, expected_commit_id=ci_b);
+        # the batch is invalidated and the final RuntimeError is the generic _failed_recs error.
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
             reconcile_settling_orders(orders, STRATEGY, state_b)
+        assert orders[order["order_id"]]["status"] == FAILED_RECONCILIATION, (
+            "chain mismatch must produce FAILED_RECONCILIATION, not EXECUTED"
+        )
 
     # --- Bug 4 continued: resolver path is exclusive (no next()-based preselection) ---
 
@@ -4480,5 +4485,361 @@ class TestRound10Regressions:
             x != -1 for x in [next_try_idx, fn_body.find("\n    reconciled", except_idx)]
         ) else len(fn_body)
         except_handler = fn_body[except_idx:except_end]
+        assert "send_telegram" in except_handler
+        assert "raise" in except_handler
+
+
+# ---------------------------------------------------------------------------
+# Round 11 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound11Regressions:
+    """Regression tests for Round 11 bug found in commit 5a738ad.
+
+    Batch non-atomicity: reconcile processed orders one-by-one inside a single
+    commit_intent. If the first order passed all checks, it got EXECUTED + a new
+    persisted record BEFORE the second order was validated. If the second order
+    had a legacy filling, it became FAILED_RECONCILIATION — but the first order
+    was already EXECUTED with a written persisted record.
+
+    Fix: two-phase batch-atomic model. Phase 1 validates the entire batch for a
+    commit_intent. Phase 2 writes only if the full batch passed. Iteration order
+    in the orders dict must not affect outcomes.
+    """
+
+    SESSION = "2026-08-07"
+    TICKER_A = "AAPL"
+    TICKER_B = "MSFT"
+    STRATEGY = "s1"
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _make_strict_filling(self, tmp_path, oid, ticker, trade_id):
+        """Write a strict v2 filling event and return the record."""
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=oid, trade_id=trade_id,
+            signal_id=None, signal_run_id="run-r11",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=ticker, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+    def _make_legacy_filling(self, tmp_path, oid, ticker, trade_id):
+        """Write a legacy filling (no record_version) directly and return the record."""
+        import json
+        from modules.fills import _make_content_hash, make_fill_id
+        import hashlib
+
+        fill_id = make_fill_id(oid)
+        fa_id = f"fa-r11-legacy-{oid[-4:]}"
+        rec = {
+            "fill_id": fill_id,
+            "fill_attempt_id": fa_id,
+            "order_id": oid,
+            "trade_id": trade_id,
+            "signal_id": None,
+            "signal_run_id": "run-r11",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "strategy": self.STRATEGY,
+            "ticker": ticker,
+            "action": "BUY",
+            "intended_execution_session": self.SESSION,
+            "actual_execution_session": self.SESSION,
+            "execution_price": 100.0,
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": f"{self.SESSION}T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "shares": 5.0,
+            "slippage_bps": 0,
+            "slippage_amount": 0.0,
+            "commission_amount": 0.0,
+            "gross_execution_value": 500.0,
+            "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,
+            "cash_before": 10000.0,
+            "cash_after": 9500.0,
+            "reason": "test",
+            "execution_version": EXEC_VERSION,
+            # NO record_version — this is the legacy record
+            "status": "filling",
+            "written_at": f"{self.SESSION}T13:30:00Z",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        return rec
+
+    def _setup_two_order_batch(self, tmp_path, monkeypatch, *, a_strict=True, b_strict=True):
+        """Set up two SETTLING orders in the same commit_intent.
+
+        Returns (orders, oid_a, oid_b, pre_h, post_h).
+        a_strict / b_strict control whether each filling has record_version=2 or is legacy.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+
+        # Create order A (AAPL)
+        order_a, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r11a", ticker=self.TICKER_A,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid_a = order_a["order_id"]
+        orders[oid_a] = save_order(save_order(order_a), status=SETTLING, trade_id="trd-r11a")
+
+        # Create order B (MSFT)
+        order_b, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r11b", ticker=self.TICKER_B,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=200.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid_b = order_b["order_id"]
+        orders[oid_b] = save_order(save_order(order_b), status=SETTLING, trade_id="trd-r11b")
+
+        # Write filling events (strict or legacy based on parameters)
+        if a_strict:
+            fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r11a")
+        else:
+            fill_a = self._make_legacy_filling(tmp_path, oid_a, self.TICKER_A, "trd-r11a")
+
+        if b_strict:
+            fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r11b")
+        else:
+            fill_b = self._make_legacy_filling(tmp_path, oid_b, self.TICKER_B, "trd-r11b")
+
+        # Write ONE commit_intent referencing BOTH orders
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a,
+                 "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b,
+                 "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        return orders, oid_a, oid_b, pre_h, post_h
+
+    # --- 1. Valid A first + legacy B last: neither gets EXECUTED ---
+
+    def test_valid_a_legacy_b_both_fail_closed(self, tmp_path, monkeypatch):
+        """Strict v2 order A + legacy order B in same CI + current==post: both FAILED_RECONCILIATION.
+
+        Pre-Round-11: A would get EXECUTED + persisted written before B was validated.
+        Batch-atomic Phase 1 detects B's legacy filling before ANY write in Phase 2.
+        """
+        orders, oid_a, oid_b, pre_h, post_h = self._setup_two_order_batch(
+            tmp_path, monkeypatch, a_strict=True, b_strict=False
+        )
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION, (
+            "order A must be FAILED_RECONCILIATION when batch is invalid (not EXECUTED)"
+        )
+        assert orders[oid_b]["status"] == FAILED_RECONCILIATION, (
+            "order B must be FAILED_RECONCILIATION due to legacy filling"
+        )
+
+    def test_valid_a_legacy_b_no_persisted_written(self, tmp_path, monkeypatch):
+        """Strict v2 order A + legacy order B: no persisted record must be written for A."""
+        orders, oid_a, oid_b, pre_h, post_h = self._setup_two_order_batch(
+            tmp_path, monkeypatch, a_strict=True, b_strict=False
+        )
+        state_post = {"cash": 9500.0, "positions": {}}
+        try:
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+        except RuntimeError:
+            pass
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert not persisted, f"no persisted record must be written for {oid} in invalid batch"
+
+    # --- 2. Legacy B first + valid A last: identical result (order-independent) ---
+
+    def test_legacy_b_first_valid_a_last_same_result(self, tmp_path, monkeypatch):
+        """Regardless of iteration order, batch-atomic result must be identical.
+
+        When legacy B is processed before valid A in Phase 1, the batch is marked
+        invalid and Phase 2 produces FAILED_RECONCILIATION for both. Same when A
+        is processed first.
+        """
+        orders, oid_a, oid_b, pre_h, post_h = self._setup_two_order_batch(
+            tmp_path, monkeypatch, a_strict=True, b_strict=False
+        )
+        # Force B to appear first in the batch by rebuilding the orders dict with B first
+        reordered = {oid_b: orders[oid_b], oid_a: orders[oid_a]}
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(reordered, self.STRATEGY, state_post)
+
+        assert reordered[oid_a]["status"] == FAILED_RECONCILIATION
+        assert reordered[oid_b]["status"] == FAILED_RECONCILIATION
+
+        # No persisted records
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert not persisted, f"no persisted for {oid} regardless of iteration order"
+
+    # --- 3. Two strict v2 orders + current==post: both reconstructed and EXECUTED ---
+
+    def test_two_strict_orders_post_hash_both_executed(self, tmp_path, monkeypatch):
+        """Two strict v2 orders in same CI + current==post: both reconstructed, both EXECUTED."""
+        orders, oid_a, oid_b, pre_h, post_h = self._setup_two_order_batch(
+            tmp_path, monkeypatch, a_strict=True, b_strict=True
+        )
+        state_post = {"cash": 9500.0, "positions": {}}
+        result = reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == EXECUTED
+        assert orders[oid_b]["status"] == EXECUTED
+
+        # Exactly one persisted record per order
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert len(persisted) == 1, f"exactly one persisted record for {oid}"
+
+    # --- 4. Two strict v2 orders + current==pre: both PENDING_PRICE, no persisted ---
+
+    def test_two_strict_orders_pre_hash_both_pending(self, tmp_path, monkeypatch):
+        """Two strict v2 orders in same CI + current==pre: both PENDING_PRICE, no persisted."""
+        orders, oid_a, oid_b, pre_h, post_h = self._setup_two_order_batch(
+            tmp_path, monkeypatch, a_strict=True, b_strict=True
+        )
+        state_pre = {"cash": 10000.0, "positions": {}}
+        result = reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+
+        assert orders[oid_a]["status"] == PENDING_PRICE
+        assert orders[oid_b]["status"] == PENDING_PRICE
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert not persisted, f"no persisted record for {oid} in pre-hash case"
+
+    # --- 5. Partially persisted valid batch: reconstruction completes without duplicates ---
+
+    def test_partially_persisted_batch_reconstructs_consistently(self, tmp_path, monkeypatch):
+        """One order already persisted + one not yet persisted, both strict v2.
+
+        Phase 1 validates A's existing chain (resolve_fill strict) and validates
+        B's filling (no persisted). Phase 2 reconstructs only B. Result: A and B
+        both EXECUTED, exactly one persisted record each, no duplicates.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            compute_portfolio_state_hash, write_commit_intent, mark_fill_persisted,
+        )
+
+        orders = {}
+        order_a, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r11pa", ticker=self.TICKER_A,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid_a = order_a["order_id"]
+        orders[oid_a] = save_order(save_order(order_a), status=SETTLING, trade_id="trd-r11pa")
+
+        order_b, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r11pb", ticker=self.TICKER_B,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=200.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid_b = order_b["order_id"]
+        orders[oid_b] = save_order(save_order(order_b), status=SETTLING, trade_id="trd-r11pb")
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r11pa")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r11pb")
+
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a,
+                 "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b,
+                 "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # A is already persisted (crash after save but before A's mark + status)
+        mark_fill_persisted(
+            oid_a, fill_a["fill_attempt_id"], fill_a["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == EXECUTED
+        assert orders[oid_b]["status"] == EXECUTED
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert len(persisted) == 1, f"exactly one persisted record for {oid}, no duplicates"
+
+    # --- 6. Telegram sent and RuntimeError re-raised for invalid batch ---
+
+    def test_invalid_batch_telegram_source_check(self):
+        """Invalid batch RuntimeError must be caught by stock_bot, Telegram sent, re-raised."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_strategy_execution(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        # try wraps the reconcile call
+        assert "try:" in fn_body
+        assert "reconcile_settling_orders" in fn_body
+        reconcile_idx = fn_body.index("reconcile_settling_orders")
+        except_idx = fn_body.find("except RuntimeError", reconcile_idx)
+        assert except_idx != -1, "except RuntimeError must come after reconcile call"
+
+        # send_telegram in the handler
+        handler_end = fn_body.find("raise", except_idx)
+        assert handler_end != -1
+        except_handler = fn_body[except_idx:handler_end + len("raise")]
         assert "send_telegram" in except_handler
         assert "raise" in except_handler
