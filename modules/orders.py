@@ -341,19 +341,77 @@ def get_or_create_order(
     return order, True
 
 
+def _resolve_ci_filling_strict(
+    order_id: str,
+    order_fill_events: list[dict],
+    commit_intent: dict,
+    expected_version: int,
+) -> tuple[dict, dict]:
+    """Shared strict validator: find and validate the filling referenced by commit_intent.
+
+    Enforces the same integrity guarantees for both the persisted path and reconstruction:
+    - Exactly one fill_ref for order_id in commit_intent.fills
+    - Exactly one filling event matching fill_attempt_id
+    - content_hash link is intact
+    - filling.record_version is exactly expected_version (type-strict int check)
+
+    Returns (fill_ref, filling_event) on success.
+    Raises RuntimeError (fail-closed) on any failure.
+    """
+    _refs = [f for f in commit_intent.get("fills", []) if f.get("order_id") == order_id]
+    if len(_refs) != 1:
+        raise RuntimeError(
+            f"commit_intent {commit_intent.get('commit_id')!r} har {len(_refs)} "
+            f"fill_ref(s) for ordre {order_id} — forventet nøyaktig 1 — fail-closed"
+        )
+    fill_ref = _refs[0]
+    ref_fa_id = fill_ref.get("fill_attempt_id", "")
+    ref_hash = fill_ref.get("filling_content_hash", "")
+
+    _fillings = [
+        e for e in order_fill_events
+        if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id
+    ]
+    if len(_fillings) != 1:
+        raise RuntimeError(
+            f"commit_intent {commit_intent.get('commit_id')!r} refererer "
+            f"filling-event {ref_fa_id!r} for ordre {order_id} — "
+            f"fant {len(_fillings)} (forventet nøyaktig 1) — fail-closed"
+        )
+    filling = _fillings[0]
+
+    if ref_hash and filling.get("content_hash") != ref_hash:
+        raise RuntimeError(
+            f"content_hash-mismatch for filling {ref_fa_id!r} (ordre {order_id}) "
+            f"— filling er manipulert — fail-closed"
+        )
+
+    _fv = filling.get("record_version")
+    if not (type(_fv) is int and _fv == expected_version):
+        raise RuntimeError(
+            f"filling for ordre {order_id} (fa_id={ref_fa_id!r}) har "
+            f"record_version={_fv!r} — krever nøyaktig int {expected_version} "
+            f"— mixed-version chain er ikke tillatt — fail-closed"
+        )
+
+    return fill_ref, filling
+
+
 def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> list:
     """Reconcile SETTLING orders using fill event WAL + commit_intent + portfolio state.
 
     Primary recovery path (WAL-based orders with commit_intent):
+    - commit_intent.record_version != 2 → FAILED_RECONCILIATION (mixed-version, fail-closed)
+    - filling.record_version != 2 (via _resolve_ci_filling_strict) → FAILED_RECONCILIATION
     - commit_intent found + current portfolio hash == post_hash:
         - persisted marker present → validate full chain (expected_commit_id check) → EXECUTED
         - no persisted marker → crash after portfolio save, before mark → reconstruct → EXECUTED
     - commit_intent found + current hash == pre_hash → crash before save → PENDING_PRICE
-    - commit_intent found + matches neither → unknown state → FAILED_PRICE (fail-closed)
+    - commit_intent found + matches neither → unknown state → FAILED_RECONCILIATION (fail-closed)
 
     No commit_intent path (versionless legacy or crash before commit_intent was written):
-    - Versionless records (no record_version) → terminal FAILED_PRICE + manual_review (Telegram)
-    - Any persisted marker without commit_intent → terminal FAILED_PRICE + manual_review
+    - Versionless records (no record_version) → terminal FAILED_RECONCILIATION + manual_review
+    - Any persisted marker without commit_intent → terminal FAILED_RECONCILIATION + manual_review
     - Strict fill events only (record_version set), no persisted → PENDING_PRICE (retry)
 
     Raises RuntimeError if the fill ledger cannot be read (fail-closed — caller must alert).
@@ -429,9 +487,29 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
             pre_hash = commit_intent.get("pre_portfolio_state_hash", "")
             commit_id = commit_intent.get("commit_id")
 
+            # Shared strict validator: find and validate the filling before any hash branch.
+            # Both pre_hash (→ PENDING_PRICE) and post_hash (→ reconstruction/EXECUTED) paths
+            # must be guarded — a legacy filling must never authorize either.
+            try:
+                _ci_fill_ref, _ci_filling = _resolve_ci_filling_strict(
+                    order_id, order_fill_events, commit_intent, _FRV
+                )
+            except RuntimeError as _fve:
+                _failed_recs.append(order_id)
+                updated = save_order(
+                    order, status=FAILED_RECONCILIATION,
+                    failure_reason=(
+                        f"failed_reconciliation: filling-validering feilet for ordre "
+                        f"{order_id} — {_fve} — fail-closed"
+                    ),
+                )
+                orders[order_id] = updated
+                reconciled.append(updated)
+                continue
+
             if current_hash == post_hash:
                 # Portfolio hash matches post-fill intent → save completed successfully.
-                # Use list comprehensions (not next()) to detect marker presence (Bug 4 fix).
+                # Use list comprehensions (not next()) to detect marker presence.
                 _persisted_markers = [e for e in order_fill_events if e.get("status") == "persisted"]
                 if _persisted_markers:
                     # Validate full chain with strict version checks; expected_commit_id ensures
@@ -447,36 +525,13 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                     updated = save_order(order, status=EXECUTED)
                 else:
                     # No persisted marker → crash after portfolio save, before mark → reconstruct.
-                    # Loader guarantees at most one fill_ref per order_id, so this is exact.
+                    # _ci_filling already resolved and version-validated by _resolve_ci_filling_strict.
                     _filling_markers = [e for e in order_fill_events if e.get("status") == "filling"]
                     if _filling_markers:
-                        _refs_for_order = [
-                            f for f in commit_intent.get("fills", [])
-                            if f.get("order_id") == order_id
-                        ]
-                        if len(_refs_for_order) != 1:
-                            raise RuntimeError(
-                                f"Reconcile fail-closed: commit_intent {commit_id!r} har "
-                                f"{len(_refs_for_order)} fill_ref(s) for ordre {order_id} "
-                                f"— forventet nøyaktig 1 — fail-closed"
-                            )
-                        fill_ref = _refs_for_order[0]
-                        ref_fa_id = fill_ref.get("fill_attempt_id", "")
-                        _matched_fillings = [
-                            e for e in order_fill_events
-                            if e.get("status") == "filling" and e.get("fill_attempt_id") == ref_fa_id
-                        ]
-                        if len(_matched_fillings) != 1:
-                            raise RuntimeError(
-                                f"Reconcile fail-closed: commit_intent {commit_id!r} refererer "
-                                f"filling-event {ref_fa_id!r} for ordre {order_id} — "
-                                f"fant {len(_matched_fillings)} (forventet nøyaktig 1) — fail-closed"
-                            )
-                        matched_filling = _matched_fillings[0]
                         mark_fill_persisted(
                             order_id,
-                            matched_filling.get("fill_attempt_id", ""),
-                            matched_filling.get("content_hash", ""),
+                            _ci_filling.get("fill_attempt_id", ""),
+                            _ci_filling.get("content_hash", ""),
                             commit_id=commit_id,
                             post_portfolio_state_hash=post_hash,
                         )
@@ -489,7 +544,8 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                             f"dette er en data-integritets-feil, ikke en normal krasjscenario"
                         )
             elif pre_hash and current_hash == pre_hash:
-                # Portfolio is still in the pre-fill state → crash before save → retry
+                # Portfolio is still in the pre-fill state → crash before save → retry.
+                # _ci_filling already validated as strict — safe to retry.
                 updated = save_order(
                     order, status=PENDING_PRICE,
                     failure_reason=(

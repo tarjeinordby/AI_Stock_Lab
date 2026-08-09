@@ -4157,3 +4157,328 @@ class TestRound9Regressions:
         assert "raise" in except_handler, (
             "RuntimeError must be re-raised after sending Telegram in reconcile handler"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round 10 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound10Regressions:
+    """Regression tests for Round 10 bug found in commit ce2d595.
+
+    Mixed-version chain (strict commit_intent v2 + legacy filling with no record_version):
+    - With current_hash == pre_hash: was giving PENDING_PRICE (should be FAILED_RECONCILIATION)
+    - With current_hash == post_hash: was giving EXECUTED + new persisted record
+      (should be FAILED_RECONCILIATION, no persisted record written)
+
+    Root cause: _resolve_ci_filling_strict helper was missing. The CI version check
+    passed (CI has record_version=2), but the filling's record_version was never
+    checked before hash-branch decisions.
+    """
+
+    SESSION = "2026-08-07"
+    TICKER = "AAPL"
+    STRATEGY = "s1"
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _setup_mixed_chain(self, tmp_path, monkeypatch):
+        """Set up: legacy filling (no record_version) + strict CI (record_version=2).
+
+        Returns (orders_dict, order, pre_h, post_h) ready for reconcile test.
+        """
+        import json
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            _make_content_hash, _FILL_RECORD_VERSION, compute_portfolio_state_hash,
+            write_commit_intent, make_fill_id,
+        )
+
+        # Create order first to get the real order_id
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r10", ticker=self.TICKER,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid = order["order_id"]
+        orders[oid] = save_order(save_order(order), status=SETTLING, trade_id="trd-r10")
+
+        # Write a LEGACY filling event (no record_version field)
+        import hashlib
+        fill_id = make_fill_id(oid)
+        fa_id = "fa-r10legacy0001"
+        filling_raw = {
+            "fill_id": fill_id,
+            "fill_attempt_id": fa_id,
+            "order_id": oid,
+            "trade_id": "trd-r10",
+            "signal_id": None,
+            "signal_run_id": "run-r10",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "strategy": self.STRATEGY,
+            "ticker": self.TICKER,
+            "action": "BUY",
+            "intended_execution_session": self.SESSION,
+            "actual_execution_session": self.SESSION,
+            "execution_price": 100.0,
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": f"{self.SESSION}T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "shares": 5.0,
+            "slippage_bps": 0,
+            "slippage_amount": 0.0,
+            "commission_amount": 0.0,
+            "gross_execution_value": 500.0,
+            "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,
+            "cash_before": 10000.0,
+            "cash_after": 9500.0,
+            "reason": "test",
+            "execution_version": EXEC_VERSION,
+            # NO record_version field — this is the legacy record
+            "status": "filling",
+            "written_at": f"{self.SESSION}T13:30:00Z",
+        }
+        filling_raw["content_hash"] = _make_content_hash(filling_raw)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(filling_raw) + "\n")
+
+        # Write a STRICT commit_intent (record_version=2) referencing the legacy filling
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fa_id,
+                    "filling_content_hash": filling_raw["content_hash"]}],
+        )
+        assert ci.get("record_version") == _FILL_RECORD_VERSION, "CI must be strict"
+
+        return orders, orders[oid], pre_h, post_h
+
+    # --- Bug: current==pre → must be FAILED_RECONCILIATION, never PENDING_PRICE ---
+
+    def test_legacy_filling_strict_ci_pre_hash_gives_failed_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Legacy filling + strict CI + current==pre → FAILED_RECONCILIATION, never PENDING_PRICE.
+
+        Pre-Round-10: current_hash==pre_hash gave PENDING_PRICE (retry authorized).
+        The filling was never validated; a legacy record authorized retry implicitly.
+        """
+        orders, order, pre_h, post_h = self._setup_mixed_chain(tmp_path, monkeypatch)
+        oid = order["order_id"]
+
+        # current hash == pre_hash (crash before save)
+        state_pre = {"cash": 10000.0, "positions": {}}
+
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+
+        assert orders[oid]["status"] == FAILED_RECONCILIATION, (
+            "mixed-version chain (legacy filling + strict CI) must give FAILED_RECONCILIATION "
+            "even when current==pre — never PENDING_PRICE"
+        )
+        assert orders[oid]["status"] != PENDING_PRICE, "must not give PENDING_PRICE"
+
+    def test_legacy_filling_strict_ci_post_hash_gives_failed_reconciliation(
+        self, tmp_path, monkeypatch
+    ):
+        """Legacy filling + strict CI + current==post → FAILED_RECONCILIATION, never EXECUTED.
+
+        Pre-Round-10: current_hash==post_hash triggered reconstruction — mark_fill_persisted
+        was called and the order was set to EXECUTED. The filling was never version-checked
+        before reconstruction.
+        """
+        orders, order, pre_h, post_h = self._setup_mixed_chain(tmp_path, monkeypatch)
+        oid = order["order_id"]
+
+        # current hash == post_hash (looks like save completed)
+        state_post = {"cash": 9500.0, "positions": {}}
+
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid]["status"] == FAILED_RECONCILIATION, (
+            "mixed-version chain (legacy filling + strict CI) must give FAILED_RECONCILIATION "
+            "even when current==post — never EXECUTED"
+        )
+        assert orders[oid]["status"] != EXECUTED, "must not give EXECUTED"
+
+    def test_legacy_filling_strict_ci_pre_no_persisted_written(
+        self, tmp_path, monkeypatch
+    ):
+        """Legacy filling + strict CI + current==pre: no persisted record must be written."""
+        import modules.fills as fills_mod
+        orders, order, pre_h, post_h = self._setup_mixed_chain(tmp_path, monkeypatch)
+        oid = order["order_id"]
+
+        state_pre = {"cash": 10000.0, "positions": {}}
+        try:
+            reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+        except RuntimeError:
+            pass
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        persisted_events = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+        assert not persisted_events, (
+            "no persisted record must be written for mixed-version chain (pre path)"
+        )
+
+    def test_legacy_filling_strict_ci_post_no_persisted_written(
+        self, tmp_path, monkeypatch
+    ):
+        """Legacy filling + strict CI + current==post: no persisted record must be written."""
+        orders, order, pre_h, post_h = self._setup_mixed_chain(tmp_path, monkeypatch)
+        oid = order["order_id"]
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        try:
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+        except RuntimeError:
+            pass
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        persisted_events = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+        assert not persisted_events, (
+            "no persisted record must be written for mixed-version chain (post/reconstruction path)"
+        )
+
+    # --- Positive case: strict filling + strict CI still works normally ---
+
+    def test_strict_filling_strict_ci_pre_hash_gives_pending_price(
+        self, tmp_path, monkeypatch
+    ):
+        """Strict filling + strict CI + current==pre → PENDING_PRICE (normal retry path)."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import write_fill_event, write_commit_intent, compute_portfolio_state_hash
+
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r10ok", ticker=self.TICKER,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid = order["order_id"]
+        orders[oid] = save_order(save_order(order), status=SETTLING, trade_id="trd-r10ok")
+
+        filling = write_fill_event(
+            order_id=oid, trade_id="trd-r10ok",
+            signal_id=None, signal_run_id="run-r10ok",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=self.TICKER, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": filling["fill_attempt_id"],
+                    "filling_content_hash": filling["content_hash"]}],
+        )
+
+        # current == pre: crash before save
+        state_pre = {"cash": 10000.0, "positions": {}}
+        result = reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+        assert orders[oid]["status"] == PENDING_PRICE, (
+            "strict filling + strict CI + current==pre must give PENDING_PRICE"
+        )
+
+    def test_strict_filling_strict_ci_post_hash_gives_executed(
+        self, tmp_path, monkeypatch
+    ):
+        """Strict filling + strict CI + current==post → EXECUTED via reconstruction."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import write_fill_event, write_commit_intent, compute_portfolio_state_hash
+
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r10ok2", ticker=self.TICKER,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        oid = order["order_id"]
+        orders[oid] = save_order(save_order(order), status=SETTLING, trade_id="trd-r10ok2")
+
+        filling = write_fill_event(
+            order_id=oid, trade_id="trd-r10ok2",
+            signal_id=None, signal_run_id="run-r10ok2",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=self.TICKER, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": filling["fill_attempt_id"],
+                    "filling_content_hash": filling["content_hash"]}],
+        )
+
+        # current == post: portfolio saved, no persisted marker → reconstruction
+        state_post = {"cash": 9500.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_post)
+        assert orders[oid]["status"] == EXECUTED, (
+            "strict filling + strict CI + current==post must give EXECUTED via reconstruction"
+        )
+
+    # --- Telegram/re-raise check (source check) ---
+
+    def test_mixed_chain_telegram_and_reraise_source_check(self):
+        """Mixed-version chain RuntimeError must be caught in stock_bot, Telegram sent, re-raised."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_strategy_execution(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        # try/except wrapping reconcile_settling_orders
+        assert "try:" in fn_body
+        assert "reconcile_settling_orders" in fn_body
+        # except RuntimeError handler exists after the reconcile call
+        reconcile_idx = fn_body.index("reconcile_settling_orders")
+        except_idx = fn_body.find("except RuntimeError", reconcile_idx)
+        assert except_idx != -1
+        # send_telegram in handler
+        next_try_idx = fn_body.find("try:", except_idx + 1)
+        except_end = min(
+            x for x in [next_try_idx, fn_body.find("\n    reconciled", except_idx)]
+            if x != -1
+        ) if any(
+            x != -1 for x in [next_try_idx, fn_body.find("\n    reconciled", except_idx)]
+        ) else len(fn_body)
+        except_handler = fn_body[except_idx:except_end]
+        assert "send_telegram" in except_handler
+        assert "raise" in except_handler
