@@ -5,16 +5,16 @@
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10000.0,
-  "last_execution_date": "2026-08-07",
+  "last_execution_date": "2026-08-10",
   "positions": {
     "OKTA": {
       "avg_price": 144.34500122070312,
       "buy_date": "2026-08-06",
       "buy_score": 72.1,
-      "highest_price": 147.38999938964844,
+      "highest_price": 152.1199951171875,
       "is_partial": true,
-      "last_price": 147.38999938964844,
-      "market_value": 671.0422619220742,
+      "last_price": 152.1199951171875,
+      "market_value": 692.5771492620119,
       "pyramid_min_price": 147.2319,
       "pyramid_remaining_value": 438.12,
       "shares": 4.552834416859379
@@ -23,10 +23,10 @@
       "avg_price": 142.72027006763412,
       "buy_date": "2026-06-19",
       "buy_score": 70.9,
-      "highest_price": 152.22000122070312,
+      "highest_price": 152.52000427246094,
       "is_partial": false,
-      "last_price": 152.22000122070312,
-      "market_value": 2940.2488187166773,
+      "last_price": 152.52000427246094,
+      "market_value": 2946.0436131685797,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 19.31578501601523
@@ -37,8 +37,8 @@
       "buy_score": 88.9,
       "highest_price": 467.625,
       "is_partial": false,
-      "last_price": 415.1408996582031,
-      "market_value": 659.3861414084807,
+      "last_price": 422.25,
+      "market_value": 670.677831162785,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 0.0,
       "shares": 1.588342998609319
@@ -46,7 +46,7 @@
   },
   "strategy": "Balanced_AI",
   "weekly_meta": {
-    "buys_this_week": 1,
-    "iso_week": "2026-W32"
+    "buys_this_week": 0,
+    "iso_week": "2026-W33"
   }
 }

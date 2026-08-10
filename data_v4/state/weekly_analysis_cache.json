@@ -32,51 +32,67 @@
     "thesis_intact": true
   },
   "DDOG": {
-    "action": "reduce",
+    "action": "hold",
     "catalysts": [
-      "Strong Q1 results mentioned could reverse revenue trend",
-      "Truist upgrade to Buy may attract momentum"
+      "AI observability demand driving new workload adoption and platform expansion",
+      "BofA and RBC bullish stance with avg target $282 implies ~13% upside from current"
     ],
-    "conviction": "low",
-    "fetched_at": "2026-06-22T21:39:56.171586+00:00",
-    "reasoning": "Revenue declining sequentially for 4 quarters (DDOG\u2192$0.83B) signals demand weakness. Recent upgrade and price hold don't offset core growth concerns.",
+    "conviction": "medium",
+    "fetched_at": "2026-08-10T14:32:22.960656+00:00",
+    "reasoning": "Core growth accelerating, margins expanding, EPS rising. Cautious Q3 guidance and largest customer usage cut warrant monitoring.",
     "risks": [
-      "Continued revenue contraction suggests market saturation or competitive pressure",
-      "Software sector weakness creating headwinds"
+      "Largest customer cutting usage signals potential enterprise spending pressure",
+      "Cautious Q3 guidance may compress multiple if growth disappoints"
     ],
     "source": "claude",
-    "thesis_intact": false
+    "thesis_intact": true
+  },
+  "OKTA": {
+    "action": "hold",
+    "catalysts": [
+      "$200M AI agent identity investment could open new TAM",
+      "Cybersecurity sector rebound and nonhuman identity demand surge"
+    ],
+    "conviction": "medium",
+    "fetched_at": "2026-08-10T14:32:07.441903+00:00",
+    "reasoning": "Revenue declining sequentially, margins compressing slightly, but AI agent identity push and cybersecurity tailwinds support medium-term thesis.",
+    "risks": [
+      "Revenue deceleration trend raises growth sustainability concerns",
+      "Current price above analyst avg target of $129; limited upside consensus"
+    ],
+    "source": "claude",
+    "thesis_intact": true
   },
   "ROKU": {
-    "action": "reduce",
+    "action": "hold",
     "catalysts": [
-      "Potential Fox acquisition at premium to current price",
-      "Advertising market recovery could stabilize revenue"
+      "AI/Search integration driving platform revenue acceleration",
+      "Potential acquisition premium if M&A rumors materialize"
     ],
-    "conviction": "low",
-    "fetched_at": "2026-06-22T21:39:41.892530+00:00",
-    "reasoning": "Revenue declining 3 consecutive quarters (-18% peak-to-trough). Acquisition speculation unreliable. Fundamentals deteriorating despite EPS growth.",
+    "conviction": "medium",
+    "fetched_at": "2026-08-10T14:32:13.036982+00:00",
+    "reasoning": "Q2 beat on revenue/ads/subs; EPS trend strong. Margin compression & macro headwinds temper enthusiasm near analyst avg target.",
     "risks": [
-      "Continued revenue decline suggests weakening streaming market position",
-      "M&A speculation appears speculative/unreliable after Netflix passed"
+      "Gross margin declining 6pts over 4Q signals monetization pressure",
+      "Trade Desk macro/structural concerns may spill into Roku ad revenue"
     ],
     "source": "claude",
-    "thesis_intact": false
+    "thesis_intact": true
   },
   "TSM": {
-    "action": "reduce",
+    "action": "add",
     "catalysts": [
-      "AI chip demand recovery could stabilize revenue trends",
-      "Advanced node leadership in 3nm/2nm maintains technology moat"
+      "AI chip demand acceleration",
+      "Microsoft/Nvidia capacity expansion commitments"
     ],
-    "conviction": "low",
-    "fetched_at": "2026-06-22T21:39:49.368097+00:00",
-    "reasoning": "Declining revenue (-17.7% over 4Q) and compressing margins (66.2%\u219258.6%) signal structural headwinds despite AI tailwinds. Rising Intel competition.",
+    "conviction": "high",
+    "fetched_at": "2026-08-10T14:32:17.742304+00:00",
+    "reasoning": "AI demand driving 45% sales growth, expanding margins, accelerating EPS. Dip is sentiment-driven, not fundamental.",
     "risks": [
-      "Continued revenue decline and margin compression trending wrong direction",
-      "Intel 18A advancement threatens foundry dominance and market share"
+      "Geopolitical Taiwan risk",
+      "Customer concentration in Apple/Nvidia"
     ],
     "source": "claude",
-    "thesis_intact": false
+    "thesis_intact": true
   }
 }
