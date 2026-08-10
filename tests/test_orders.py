@@ -30,6 +30,7 @@ from modules.orders import (
     TERMINAL,
     _make_legacy_order_id,
     build_order,
+    check_pending_price_guard,
     expire_stale_orders,
     get_or_create_order,
     get_pending_for_session,
@@ -6021,10 +6022,11 @@ class TestRound14Regressions:
     # --- 5. Defense-in-depth: stock_bot checks persisted chain before retry ---
 
     def test_pending_retry_guard_exists_in_stock_bot(self):
-        """stock_bot must check persisted chain before execute_buy/sell/pyramid is called.
+        """stock_bot must call check_pending_price_guard before the retry loop.
 
-        Source inspection: verify that the defense-in-depth guard runs before the
-        retry loop, sends Telegram, and raises RuntimeError on a live persisted chain.
+        Source inspection: verify the guard call is present and precedes
+        the same-day retry loop (so execute_buy/sell/pyramid can never be
+        reached when the guard raises).
         """
         with open("stock_bot.py") as f:
             src = f.read()
@@ -6032,24 +6034,13 @@ class TestRound14Regressions:
         fn_end = src.find("\ndef ", fn_start + 10)
         fn_body = src[fn_start:fn_end]
 
-        # Guard must appear before the actual retry loop
-        guard_idx = fn_body.find("persisted fill-chain")
+        guard_idx = fn_body.find("check_pending_price_guard(")
         retry_loop_idx = fn_body.find("Retry pending orders from today's session")
-        assert guard_idx != -1, "defense-in-depth guard for persisted chain must exist"
+        assert guard_idx != -1, "check_pending_price_guard must be called in run_strategy_execution"
         assert retry_loop_idx != -1, "retry loop comment must exist"
         assert guard_idx < retry_loop_idx, (
-            "persisted chain guard must come BEFORE the same-day retry loop"
+            "check_pending_price_guard must come BEFORE the same-day retry loop"
         )
-
-        # Must load fill events and call resolve_fill for the check
-        guard_section = fn_body[max(0, guard_idx - 600):retry_loop_idx]
-        assert "resolve_fill" in guard_section or "rf_guard" in guard_section, (
-            "guard must call resolve_fill to verify chain"
-        )
-
-        # Must send Telegram and raise RuntimeError on valid chain
-        assert "send_telegram" in guard_section
-        assert "raise RuntimeError" in guard_section
 
     # --- 6. Strict CI without pre_hash: load_fill_events rejects → fail-closed, no retry ---
 
@@ -6102,4 +6093,272 @@ class TestRound14Regressions:
         # Order must remain SETTLING (no status written — the raise was from load_fill_events)
         assert orders[oid]["status"] == SETTLING, (
             "order must stay SETTLING — error came from load, before any Phase 2 writes"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Round 15 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound15Regressions:
+    """Regression tests for Round 15 bug found in commit 1841d2e.
+
+    The guard in run_strategy_execution caught PENDING_PRICE orders with a VALID
+    strict persisted chain but silently passed on RuntimeError from resolve_fill:
+
+        try:
+            resolve_fill(...)
+            _g_chain_ok = True
+        except RuntimeError:
+            pass           # ← fail-open: corrupt chain allowed to retry
+
+    A corrupt/incomplete chain (missing CI, content-hash mismatch, etc.) should also
+    block retry — the persisted marker exists regardless of whether the chain is intact.
+    Re-executing risks a double-fill even when the chain cannot be fully validated.
+
+    Fix: extract guard to check_pending_price_guard() in modules/orders.py.
+    Both paths (valid chain and corrupt chain) now Telegram + RuntimeError (fail-closed).
+    Only orders with ZERO persisted markers may proceed to same-day retry.
+    """
+
+    SESSION = "2026-08-10"
+    TICKER = "AAPL"
+    STRATEGY = "s1"
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _make_pending_order(self, orders, session=None):
+        order, _ = get_or_create_order(
+            orders=orders,
+            signal_run_id="run-r15",
+            ticker=self.TICKER,
+            strategy=self.STRATEGY,
+            session_date=session or self.SESSION,
+            action="BUY",
+            target_value=5000.0,
+            reason="test",
+            signal_price=100.0,
+            execution_version="v1",
+        )
+        orders[order["order_id"]] = save_order(order, status=PENDING_PRICE)
+        return orders[order["order_id"]]
+
+    def _make_strict_filling(self, tmp_path, oid, trade_id):
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=oid, trade_id=trade_id,
+            signal_id=None, signal_run_id="run-r15",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=self.TICKER, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+    def _pre_post_hashes(self):
+        from modules.fills import compute_portfolio_state_hash
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        return pre_h, post_h
+
+    # --- 1. Pending + valid strict persisted chain → RuntimeError (fail-closed) ---
+
+    def test_valid_persisted_chain_blocks_retry(self, tmp_path, monkeypatch):
+        """PENDING_PRICE + valid strict persisted chain → RuntimeError, never retry.
+
+        This was already blocked before Round 15, but now implemented via
+        check_pending_price_guard() which is independently testable.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent
+
+        orders = {}
+        order = self._make_pending_order(orders)
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, "trd-r15a")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fill["fill_attempt_id"],
+                    "filling_content_hash": fill["content_hash"]}],
+        )
+        mark_fill_persisted(
+            oid, fill["fill_attempt_id"], fill["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        telegram_calls = []
+        with pytest.raises(RuntimeError, match="gyldig strict persisted fill-chain"):
+            check_pending_price_guard(
+                orders, self.STRATEGY, self.SESSION,
+                send_telegram_fn=telegram_calls.append,
+            )
+
+        assert telegram_calls, "Telegram must be sent before raising"
+        assert "manual_review" in telegram_calls[0]
+
+    # --- 2. Pending + persisted but missing commit_intent → RuntimeError (corrupt chain) ---
+
+    def test_persisted_missing_ci_blocks_retry(self, tmp_path, monkeypatch):
+        """PENDING_PRICE + persisted marker referencing a non-existent CI → RuntimeError.
+
+        Pre-Round-15: resolve_fill raised, the except-pass swallowed it, retry proceeded.
+        Post-Round-15: the corrupt-chain path also sends Telegram + raises RuntimeError.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        import json
+        from modules.fills import _make_content_hash
+
+        orders = {}
+        order = self._make_pending_order(orders)
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, "trd-r15b")
+        _, post_h = self._pre_post_hashes()
+
+        # Write a persisted marker that references a commit_id with no matching CI
+        persisted_rec = {
+            "fill_id": fill["fill_id"],
+            "fill_attempt_id": fill["fill_attempt_id"],
+            "order_id": oid,
+            "status": "persisted",
+            "record_version": 2,
+            "filling_content_hash": fill["content_hash"],
+            "post_portfolio_state_hash": post_h,
+            "commit_id": "ci-does-not-exist-" + oid[:8],
+            "written_at": f"{self.SESSION}T14:00:00Z",
+        }
+        persisted_rec["content_hash"] = _make_content_hash(persisted_rec)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(persisted_rec) + "\n")
+
+        telegram_calls = []
+        with pytest.raises(RuntimeError, match="korrupt fill-chain"):
+            check_pending_price_guard(
+                orders, self.STRATEGY, self.SESSION,
+                send_telegram_fn=telegram_calls.append,
+            )
+
+        assert telegram_calls, "Telegram must be sent for corrupt chain"
+        assert "manual_review" in telegram_calls[0]
+
+    # --- 3. Pending + persisted with filling_content_hash mismatch → RuntimeError ---
+
+    def test_persisted_hash_mismatch_blocks_retry(self, tmp_path, monkeypatch):
+        """PENDING_PRICE + persisted marker with wrong filling_content_hash → RuntimeError.
+
+        resolve_fill raises on hash mismatch — previously swallowed, now fail-closed.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        import json
+        from modules.fills import (
+            _make_content_hash, mark_fill_persisted, write_commit_intent,
+        )
+
+        orders = {}
+        order = self._make_pending_order(orders)
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, "trd-r15c")
+        pre_h, post_h = self._pre_post_hashes()
+
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fill["fill_attempt_id"],
+                    "filling_content_hash": fill["content_hash"]}],
+        )
+
+        # Write persisted marker with a deliberately wrong filling_content_hash
+        wrong_hash = "a" * 64
+        persisted_rec = {
+            "fill_id": fill["fill_id"],
+            "fill_attempt_id": fill["fill_attempt_id"],
+            "order_id": oid,
+            "status": "persisted",
+            "record_version": 2,
+            "filling_content_hash": wrong_hash,  # mismatch vs actual filling
+            "post_portfolio_state_hash": post_h,
+            "commit_id": ci["commit_id"],
+            "written_at": f"{self.SESSION}T14:00:00Z",
+        }
+        persisted_rec["content_hash"] = _make_content_hash(persisted_rec)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(persisted_rec) + "\n")
+
+        telegram_calls = []
+        with pytest.raises(RuntimeError, match="korrupt fill-chain"):
+            check_pending_price_guard(
+                orders, self.STRATEGY, self.SESSION,
+                send_telegram_fn=telegram_calls.append,
+            )
+
+        assert telegram_calls, "Telegram must be sent on hash-mismatch corrupt chain"
+
+    # --- 4. Pending without persisted → no RuntimeError (safe retry) ---
+
+    def test_pending_without_persisted_is_safe_to_retry(self, tmp_path, monkeypatch):
+        """PENDING_PRICE order with only a filling event (no persisted) → guard passes.
+
+        No persisted marker means no evidence the portfolio was ever saved.
+        The guard must NOT block — same-day retry is allowed.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        orders = {}
+        order = self._make_pending_order(orders)
+        oid = order["order_id"]
+        # Write only the filling event — no persisted, no CI
+        self._make_strict_filling(tmp_path, oid, "trd-r15d")
+
+        telegram_calls = []
+        # Must not raise
+        check_pending_price_guard(
+            orders, self.STRATEGY, self.SESSION,
+            send_telegram_fn=telegram_calls.append,
+        )
+
+        assert not telegram_calls, "No Telegram when there is no persisted record"
+
+    # --- 5. Guard position in stock_bot: check_pending_price_guard before retry loop ---
+
+    def test_guard_function_called_before_retry_in_stock_bot(self):
+        """Source inspection: check_pending_price_guard must appear before the retry loop.
+
+        Ensures execute_buy/sell/pyramid can never be reached when the guard raises.
+        This test is a supplement to the behavioral tests above.
+        """
+        with open("stock_bot.py") as f:
+            src = f.read()
+
+        fn_start = src.find("def run_strategy_execution(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        guard_idx = fn_body.find("check_pending_price_guard(")
+        retry_idx = fn_body.find("Retry pending orders from today's session")
+        assert guard_idx != -1, "check_pending_price_guard must be called in run_strategy_execution"
+        assert retry_idx != -1, "retry loop comment must exist"
+        assert guard_idx < retry_idx, (
+            "guard must appear BEFORE the same-day retry loop"
+        )
+
+        # execute_buy/sell/pyramid are only in the retry section (after the guard)
+        execute_idx = fn_body.find("execute_buy(")
+        assert execute_idx == -1 or execute_idx > guard_idx, (
+            "execute_buy must not appear before the guard"
         )

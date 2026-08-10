@@ -850,6 +850,65 @@ def get_pending_for_session(orders: dict, session_date: str, strategy: str | Non
     ]
 
 
+def check_pending_price_guard(
+    orders: dict,
+    strategy_name: str,
+    session_date: str,
+    *,
+    send_telegram_fn=None,
+) -> None:
+    """Block same-day retry if any PENDING_PRICE order has a persisted fill record.
+
+    A persisted marker means the order already touched the portfolio at some point.
+    Whether the fill chain is valid (complete) or corrupt (broken/missing CI),
+    re-executing would risk a double-fill. Both cases raise RuntimeError (fail-closed).
+
+    Pass send_telegram_fn=send_telegram to notify on block; omit in tests.
+    """
+    from modules.fills import load_fill_events, resolve_fill  # noqa: PLC0415
+
+    fill_events, commit_intents = load_fill_events()
+    for order in get_pending_for_session(orders, session_date, strategy_name):
+        oid = order["order_id"]
+        events = fill_events.get(oid, [])
+        if not any(e.get("status") == "persisted" for e in events):
+            continue  # No persisted marker — safe to retry normally
+
+        ticker = order.get("ticker", "?")
+        chain_err = None
+        try:
+            resolve_fill(oid, events, commit_intents, strict=True)
+        except RuntimeError as _e:
+            chain_err = _e
+
+        if chain_err is None:
+            msg = (
+                f"⚠️ KRITISK: PENDING_PRICE-ordre {oid!r} ({ticker}) "
+                f"har gyldig strict persisted fill-chain — stopper retry — manual_review\n"
+                f"Strategi: {strategy_name}"
+            )
+            if send_telegram_fn is not None:
+                send_telegram_fn(msg)
+            raise RuntimeError(
+                f"PENDING_PRICE-ordre {oid!r} har gyldig strict persisted fill-chain "
+                f"— aldri re-execute — fail-closed"
+            )
+        else:
+            msg = (
+                f"⚠️ KRITISK: PENDING_PRICE-ordre {oid!r} ({ticker}) "
+                f"har persisted-record men korrupt/ufullstendig fill-chain "
+                f"— stopper retry — manual_review\n"
+                f"Strategi: {strategy_name}\n"
+                f"Feil: {chain_err}"
+            )
+            if send_telegram_fn is not None:
+                send_telegram_fn(msg)
+            raise RuntimeError(
+                f"PENDING_PRICE-ordre {oid!r} har persisted-record men korrupt fill-chain "
+                f"— aldri re-execute — fail-closed: {chain_err}"
+            ) from chain_err
+
+
 def expire_stale_orders(orders: dict, current_session_date: str, *, _now=None) -> list:
     """
     Transition PENDING_PRICE orders to EXPIRED when their session is definitively over.
