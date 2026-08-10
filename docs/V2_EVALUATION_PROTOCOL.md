@@ -8,15 +8,30 @@
 
 ## Period Definitions
 
-| Period | Start | End | Purpose |
-|--------|-------|-----|---------|
-| In-sample | 2015-01-01 | 2020-12-31 | Model development only |
-| Validation | 2021-01-01 | 2022-12-31 | Parameter validation (no tuning after viewing) |
-| Out-of-sample | 2023-01-01 | Rolling | Never used for parameter selection |
+The model was registered on **2026-08-10**. Four distinct periods apply:
+
+| Period | Start | End | `is_truly_oos` | Purpose |
+|--------|-------|-----|----------------|---------|
+| `in_sample` | 2015-01-01 | 2020-12-31 | No | Model development — weights were set here |
+| `validation` | 2021-01-01 | 2022-12-31 | No | Sanity check only — no tuning after viewing |
+| `retrospective_holdout` | 2023-01-01 | 2026-08-09 | **No** | Observed before registration — context only |
+| `prospective_out_of_sample` | **2026-08-11** | Rolling | **Yes** | Only period valid for promotion decisions |
+
+**Critical distinctions:**
+
+- `retrospective_holdout` (2023-01-01 – 2026-08-09): This data existed and was observable
+  when the model was registered on 2026-08-10. It was **not** used to set factor weights,
+  but it cannot be considered truly out-of-sample because it was available to the researcher.
+  Results from this period are reported for context only and **cannot substitute for
+  prospective OOS evidence** in promotion decisions.
+
+- `prospective_out_of_sample`: Starts 2026-08-11 — the first NYSE session after model
+  registration. **Only this period counts toward promotion.** Earliest possible promotion
+  date: **2027-02-11** (6 months after registration).
 
 **Rule:** Factor weights (pre-registered 2026-08-10) cannot be changed based on
-validation or out-of-sample results. A new model version must be created and
-registered under a new `model_version` key.
+any observed results. To change weights, create a new model version under a new
+`model_version` key with a new registration date.
 
 ---
 
@@ -40,8 +55,8 @@ For each strategy and each period:
 ### Return Metrics
 - Annualized return
 - Total return
-- Excess annualized return vs SPY
-- Excess annualized return vs QQQ
+- Excess annualized return vs SPY (aligned to strategy dates)
+- Excess annualized return vs QQQ (aligned to strategy dates)
 
 ### Risk Metrics
 - Annualized volatility
@@ -52,25 +67,54 @@ For each strategy and each period:
 - Beta vs SPY
 - Downside capture ratio vs SPY
 
-### Activity Metrics
+### Activity Metrics (requires position-level data — None until live runner)
 - Average number of positions
 - Estimated annual turnover (% of portfolio value)
 - Estimated annual cost (turnover × 10 bps round-trip)
-- Hit rate (fraction of positive-return trading days)
 - Sector concentration (average HHI)
 
 ### Data Quality Metrics
 - Factor coverage (per ticker, averaged across portfolio)
 - Claude availability (0.0 in V2A — not yet connected)
-- Point-in-time fundamentals: False for quality/value
-- Survivorship bias: always noted as "present"
+- Point-in-time fundamentals: False for quality/value factors
+- Survivorship bias: always "present — current universe only"
+
+---
+
+## Insufficient Evidence — No Ranking
+
+When `sufficient_evidence=False` (fewer than 252 trading days, failed Sharpe
+computation, etc.):
+
+- The strategy is listed last in `compare_strategies()` output with `rank=None`
+- A strategy with `sufficient_evidence=False` and Sharpe 9.0 **must not** rank above
+  a strategy with `sufficient_evidence=True` and Sharpe 1.0
+- Results are labeled `insufficient_evidence` — no winner is declared
+- Do not extrapolate from short periods or incomplete data
+
+---
+
+## Backtest Limitations
+
+**Full four-factor backtest: UNSUPPORTED**
+
+A backtest using quality and value factors requires point-in-time fundamental data
+(e.g., Compustat or FactSet). yfinance `.info` returns current values only. Using
+current fundamentals for historical periods introduces look-ahead bias. Running
+`run_v2_backtest()` raises `NotImplementedError`.
+
+**Momentum + safety only backtest: SUPPORTED**
+
+Both factors are computed entirely from price data, which is available as-of any
+historical date. Survivorship bias still applies. Results are directional only.
+This variant can be run without look-ahead bias.
+
+**Promotion is always blocked** (`BACKTEST_STATUS["promotion_blocked"] = True`)
+until 6 months of prospective paper-trading data are available.
 
 ---
 
 ## Comparison: Factor-Only vs Claude-Shadow
-
-The primary purpose of the shadow design is to isolate Claude's contribution.
-Comparison methodology:
 
 1. Factor_Only_Core_V2 and Factor_Plus_Claude_Shadow_V2 use identical factor scores
 2. Any difference in logged signal quality is attributed to Claude
@@ -85,45 +129,34 @@ Comparison methodology:
 - Round-trip cost: 10 basis points
 - No market impact modeled (paper trading, small capital)
 - No financing costs (fully invested or cash, no leverage)
-- No tax drag (paper trading)
 
 ---
 
 ## Promotion Criteria
 
-V2 can only be promoted to live production when ALL of the following are met:
+V2 can only be promoted to live production when **ALL** of the following are met:
 
-1. **Minimum out-of-sample period:** 6 months of live paper trading
-2. **Evidence quality:** `sufficient_evidence=True` for all three strategies
-3. **Survivorship bias:** Explicitly reported in all results
-4. **Factor coverage:** Reported per-strategy; not hidden
-5. **Sharpe vs SPY:** Core strategy Sharpe > SPY Sharpe in out-of-sample period
-6. **Drawdown discipline:** Max drawdown does not exceed SPY's by more than 25%
-7. **Independent review:** Results reviewed before promotion
-8. **No overfitting:** Factor weights unchanged from pre-registration date
+1. **Period:** Results must be from `prospective_out_of_sample` only
+2. **Minimum OOS data:** ≥ 6 months of prospective paper trading (earliest: 2027-02-11)
+3. **Sufficient evidence:** `sufficient_evidence=True` for the strategy
+4. **Sharpe vs SPY:** Strategy Sharpe exceeds SPY Sharpe by ≥ 0.10 in the same period
+5. **Drawdown discipline:** Max drawdown ≤ 1.25 × SPY max drawdown
+6. **Alpha months:** ≥ 50% of months with positive alpha vs SPY
+7. **Survivorship bias:** Disclosed and noted in all results
+8. **Factor coverage:** ≥ 60% average factor coverage
+9. **Point-in-time fundamentals:** Must be True (blocks all current V2A promotion)
+10. **No overfitting:** Factor weights unchanged from 2026-08-10
 
-**Winner selection:** The strategy with the highest out-of-sample Sharpe ratio
-(NOT in-sample Sharpe) advances. If no strategy meets the drawdown criterion,
-promotion is deferred.
+**Winner selection:** Highest `prospective_out_of_sample` Sharpe among strategies
+meeting all criteria. If no strategy passes all criteria, promotion is deferred.
 
 ---
 
 ## Anti-Overfitting Rules
 
 1. Factor weights are fixed as of 2026-08-10. Do not change them.
-2. Do not observe out-of-sample results before finalizing model parameters.
-3. If validation results are disappointing, create a new model version with
-   new weights — do not modify `quant_baseline_v2`.
-4. Do not mine the out-of-sample period for patterns to "fix" the model.
-5. Report all three strategies — do not cherry-pick the best performer.
-
----
-
-## Reporting Insufficient Evidence
-
-When data is insufficient (< 252 trading days, missing factor data, etc.):
-
-- Report `evidence_note` from `EvaluationMetrics`
-- Do not produce a winner ranking based on incomplete data
-- Label results `insufficient_evidence` in all outputs
-- Do not extrapolate from short periods
+2. Do not use retrospective_holdout results for model selection.
+3. If performance is disappointing, create a new model version — do not modify
+   `quant_baseline_v2` weights.
+4. Report all three strategies — do not cherry-pick the best performer.
+5. `prospective_out_of_sample` data must never be used to tune parameters.

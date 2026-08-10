@@ -214,10 +214,12 @@ def _normalize_as_of(as_of: pd.Timestamp) -> pd.Timestamp:
 
 
 def _normalize_df_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Strip timezone from DataFrame DatetimeIndex if timezone-aware."""
+    """Convert DatetimeIndex to UTC-naive. Naive indexes are treated as UTC."""
     if df.index.tz is not None:
         df = df.copy()
-        df.index = df.index.tz_localize(None)
+        # Convert to UTC first, then strip timezone so UTC moments are preserved.
+        # tz_localize(None) alone would strip tz without adjusting the hour — wrong.
+        df.index = df.index.tz_convert("UTC").tz_localize(None)
     return df
 
 
@@ -504,7 +506,10 @@ def build_value_factor(
         rows.append({
             "ticker": ticker,
             **{f"value_{k}_available": v for k, v in available.items()},
-            "value_ev_ebitda_inv_raw": ev_ebitda_inv,  # kept for sector adjustment
+            # Store raw sub-factor values so sector adjustment can recompute value_raw
+            "value_fcf_yield_raw": fcf_yield,
+            "value_earnings_yield_raw": earnings_yield,
+            "value_ev_ebitda_inv_raw": ev_ebitda_inv,
             "value_raw": value_raw,
             "value_coverage": coverage,
             "value_available": value_raw is not None,
@@ -515,8 +520,10 @@ def build_value_factor(
         result["value_sector_adjusted"] = False
         return result
 
-    # Sector-relative normalization of ev_ebitda_inv before winsorize_rank
-    sector_adjusted = False
+    # Sector-relative normalization of ev_ebitda_inv before winsorize_rank.
+    # value_sector_adjusted is per-ticker: True only for tickers that were actually adjusted.
+    result["value_sector_adjusted"] = False
+
     if sector_map is not None and "value_ev_ebitda_inv_raw" in result.columns:
         result["_sector"] = result["ticker"].map(sector_map)
 
@@ -525,58 +532,58 @@ def build_value_factor(
             avail_mask = grp["value_ev_ebitda_inv_available"] == True
             avail_grp = grp[avail_mask]
             if len(avail_grp) < _SECTOR_MIN_GROUP_SIZE:
-                continue  # below minimum → no sector adjustment for this group
+                continue  # below minimum → no sector adjustment, stays False
 
-            sector_median = avail_grp["value_ev_ebitda_inv_raw"].median()
+            valid_vals = avail_grp["value_ev_ebitda_inv_raw"].dropna()
+            valid_finite = valid_vals[valid_vals.apply(_is_finite)]
+            if len(valid_finite) < _SECTOR_MIN_GROUP_SIZE:
+                continue
+
+            sector_median = float(valid_finite.median())
             if not _is_finite(sector_median) or sector_median == 0:
                 continue
 
-            # Normalize: ticker value / sector median
+            # Normalize: each ticker's ev_ebitda_inv / sector median
             for idx in avail_grp.index:
                 raw_val = result.at[idx, "value_ev_ebitda_inv_raw"]
                 if _is_finite(raw_val):
-                    normalized = float(raw_val) / float(sector_median)
+                    normalized = float(raw_val) / sector_median
                     if _is_finite(normalized):
                         result.at[idx, "value_ev_ebitda_inv_raw"] = normalized
-            sector_adjusted = True
+                        result.at[idx, "value_sector_adjusted"] = True
 
-        if sector_adjusted:
-            # Recompute value_raw using sector-adjusted ev_ebitda_inv
-            weights = {"fcf_yield": 0.40, "earnings_yield": 0.35, "ev_ebitda_inv": 0.25}
-            new_raws = []
-            for row in result.itertuples():
-                avail = {
-                    "fcf_yield": row.value_fcf_yield_available,
-                    "earnings_yield": row.value_earnings_yield_available,
-                    "ev_ebitda_inv": row.value_ev_ebitda_inv_available,
-                }
-                vals = {
-                    "fcf_yield": getattr(row, "value_fcf_yield_available", False) and row.value_raw,
-                    "earnings_yield": None,
-                    "ev_ebitda_inv": row.value_ev_ebitda_inv_raw if row.value_ev_ebitda_inv_available else None,
-                }
-                # Rebuild value_raw from fcf_yield, earnings_yield, and adjusted ev_ebitda_inv
-                # We need original fcf_yield and earnings_yield — extract from columns
-                fcf_y = result.at[row.Index, "value_fcf_yield_available"]
-                ey_avail = result.at[row.Index, "value_earnings_yield_available"]
-                ev_avail = result.at[row.Index, "value_ev_ebitda_inv_available"]
-                ev_adj = result.at[row.Index, "value_ev_ebitda_inv_raw"]
-
-                # We don't store fcf_yield and earnings_yield as separate columns — fallback
-                # to original value_raw for non-ev components. This is acceptable for now.
-                new_raws.append(result.at[row.Index, "value_raw"])
-
-            # Note: full recomputation of value_raw with adjusted ev_ebitda_inv requires
-            # storing fcf_yield and earnings_yield separately. For now, the sector adjustment
-            # affects the winsorize_rank step (which uses value_ev_ebitda_inv_raw) via
-            # the cross-sectional ranking. The value_raw field remains as computed above.
-
+        # Recompute value_raw for ALL tickers using stored fcf_yield, earnings_yield,
+        # and (possibly adjusted) ev_ebitda_inv. This is what makes sector adjustment real.
+        SF_WEIGHTS = {"value_fcf_yield_raw": 0.40, "value_earnings_yield_raw": 0.35, "value_ev_ebitda_inv_raw": 0.25}
+        AVAIL_COLS = {"value_fcf_yield_raw": "value_fcf_yield_available",
+                      "value_earnings_yield_raw": "value_earnings_yield_available",
+                      "value_ev_ebitda_inv_raw": "value_ev_ebitda_inv_available"}
+        new_raws = []
+        new_avail = []
+        for _, row in result.iterrows():
+            w_sum = sum(w for col, w in SF_WEIGHTS.items() if row.get(AVAIL_COLS[col]) and _is_finite(row.get(col)))
+            if w_sum <= 0:
+                new_raws.append(None)
+                new_avail.append(False)
+            else:
+                val = sum(float(row[col]) * w / w_sum
+                          for col, w in SF_WEIGHTS.items()
+                          if row.get(AVAIL_COLS[col]) and _is_finite(row.get(col)))
+                if _is_finite(val):
+                    new_raws.append(val)
+                    new_avail.append(True)
+                else:
+                    new_raws.append(None)
+                    new_avail.append(False)
+        result["value_raw"] = new_raws
+        result["value_available"] = new_avail
         result = result.drop(columns=["_sector"], errors="ignore")
 
-    result["value_sector_adjusted"] = sector_adjusted
-
-    # Drop internal column before returning
-    result = result.drop(columns=["value_ev_ebitda_inv_raw"], errors="ignore")
+    # Drop internal sub-factor raw columns before returning
+    result = result.drop(
+        columns=["value_ev_ebitda_inv_raw", "value_fcf_yield_raw", "value_earnings_yield_raw"],
+        errors="ignore",
+    )
 
     avail = result["value_available"] == True
     if avail.sum() > 1:
@@ -593,6 +600,8 @@ def _value_unavailable(ticker: str) -> dict:
         "value_fcf_yield_available": False,
         "value_earnings_yield_available": False,
         "value_ev_ebitda_inv_available": False,
+        "value_fcf_yield_raw": None,
+        "value_earnings_yield_raw": None,
         "value_ev_ebitda_inv_raw": None,
         "value_raw": None,
         "value_coverage": 0.0,

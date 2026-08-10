@@ -998,3 +998,257 @@ class TestConfigHashValidation:
         h = entry.get("portfolio_config_hash", "")
         assert h not in ("", "placeholder", "PLACEHOLDER", None, "n/a")
         assert len(str(h)) == 64
+
+
+# ---------------------------------------------------------------------------
+# V. Sector-adjusted value factor (Round 3)
+# ---------------------------------------------------------------------------
+
+class TestSectorAdjustedValue:
+    """Regression: sector adjustment must actually change value_raw, not just set a flag."""
+
+    def _make_fundamentals(self, n: int = 8) -> dict:
+        result = {}
+        for i in range(n):
+            result[f"T{i:02d}"] = {
+                "freeCashflow": 1_000_000 * (i + 1),
+                "marketCap": 20_000_000 * (i + 1),
+                "forwardPE": 15.0 + i,
+                "enterpriseValue": 25_000_000 * (i + 1),
+                "ebitda": 2_000_000 * (i + 1),
+            }
+        return result
+
+    def test_sector_adjustment_changes_value_raw(self):
+        from modules.v2_strategy import build_value_factor
+        fundamentals = self._make_fundamentals(8)
+        sector_map = {f"T{i:02d}": "Technology" for i in range(8)}
+
+        result_no = build_value_factor(fundamentals, sector_map=None)
+        result_with = build_value_factor(fundamentals, sector_map=sector_map)
+
+        no_raw = result_no.set_index("ticker")["value_raw"].dropna()
+        with_raw = result_with.set_index("ticker")["value_raw"].dropna()
+        common = no_raw.index.intersection(with_raw.index)
+        diffs = (no_raw.loc[common] - with_raw.loc[common]).abs()
+        assert diffs.max() > 1e-10, "Sector adjustment must change value_raw for at least one ticker"
+
+    def test_sector_adjusted_flag_true_for_large_sector(self):
+        from modules.v2_strategy import build_value_factor
+        fundamentals = self._make_fundamentals(8)
+        sector_map = {f"T{i:02d}": "Technology" for i in range(8)}
+        result = build_value_factor(fundamentals, sector_map=sector_map)
+        assert "value_sector_adjusted" in result.columns
+        n_adjusted = int(result["value_sector_adjusted"].sum())
+        assert n_adjusted >= 5, f"Expected >= 5 adjusted tickers, got {n_adjusted}"
+
+    def test_small_sector_not_adjusted(self):
+        from modules.v2_strategy import build_value_factor
+        # Only 4 tickers in sector — below _SECTOR_MIN_GROUP_SIZE (5)
+        fundamentals = self._make_fundamentals(4)
+        sector_map = {f"T{i:02d}": "Technology" for i in range(4)}
+        result = build_value_factor(fundamentals, sector_map=sector_map)
+        assert int(result["value_sector_adjusted"].sum()) == 0, \
+            "Sectors with fewer than 5 tickers must not be adjusted"
+
+    def test_without_sector_map_all_flags_false(self):
+        from modules.v2_strategy import build_value_factor
+        fundamentals = self._make_fundamentals(8)
+        result = build_value_factor(fundamentals, sector_map=None)
+        assert "value_sector_adjusted" in result.columns
+        assert int(result["value_sector_adjusted"].sum()) == 0
+
+    def test_single_sector_lower_ev_ebitda_scores_higher(self):
+        """Lower EV/EBITDA → higher ev_ebitda_inv → should score higher on value."""
+        from modules.v2_strategy import build_value_factor
+        # All same except enterpriseValue — T00 cheapest, T05 most expensive
+        fundamentals = {}
+        for i in range(6):
+            fundamentals[f"T{i:02d}"] = {
+                "freeCashflow": 1_000_000,
+                "marketCap": 20_000_000,
+                "forwardPE": 15.0,
+                "enterpriseValue": 10_000_000 * (i + 1),
+                "ebitda": 2_000_000,
+            }
+        sector_map = {f"T{i:02d}": "Technology" for i in range(6)}
+        result = build_value_factor(fundamentals, sector_map=sector_map)
+        scored = result.dropna(subset=["value_score"]).set_index("ticker")
+        if "T00" in scored.index and "T05" in scored.index:
+            assert scored.at["T00", "value_score"] > scored.at["T05", "value_score"], \
+                "Lower EV/EBITDA ticker must have higher value_score"
+
+
+# ---------------------------------------------------------------------------
+# W. Timezone normalization (Round 3)
+# ---------------------------------------------------------------------------
+
+class TestTimezoneNormalization:
+    """Regression: must tz_convert to UTC before stripping timezone."""
+
+    def test_normalize_converts_et_to_utc_naive(self):
+        from modules.v2_strategy import _normalize_df_index
+        # 2024-01-15 16:00 America/New_York = 21:00 UTC (January = EST = UTC-5)
+        idx = pd.DatetimeIndex(["2024-01-15 16:00:00"]).tz_localize("America/New_York")
+        df = pd.DataFrame({"Close": [100.0]}, index=idx)
+        result = _normalize_df_index(df)
+        assert result.index.tz is None
+        assert result.index[0].hour == 21, (
+            f"16:00 ET must become 21:00 UTC-naive (EST=UTC-5), got hour={result.index[0].hour}"
+        )
+
+    def test_normalize_naive_index_unchanged(self):
+        from modules.v2_strategy import _normalize_df_index
+        idx = pd.DatetimeIndex(["2024-01-15 16:00:00"])
+        df = pd.DataFrame({"Close": [100.0]}, index=idx)
+        result = _normalize_df_index(df)
+        assert result.index[0].hour == 16, "Naive index must not be modified"
+
+    def test_utc_aware_cutoff_excludes_row_after_cutoff(self):
+        """16:00 ET row (= 21:00 UTC-naive) must be excluded by a 14:00 UTC-naive cutoff."""
+        from modules.v2_strategy import _normalize_df_index
+        idx = pd.DatetimeIndex(["2024-01-15 16:00:00"]).tz_localize("America/New_York")
+        df = pd.DataFrame({"Close": [100.0]}, index=idx)
+        df_norm = _normalize_df_index(df)
+        cutoff = pd.Timestamp("2024-01-15 14:00:00")
+        filtered = df_norm[df_norm.index <= cutoff]
+        assert len(filtered) == 0, \
+            "Row at 21:00 UTC-naive must be excluded by 14:00 UTC-naive cutoff"
+
+    def test_get_prospective_oos_months_utc_aware(self):
+        from modules.v2_evaluation import get_prospective_oos_months
+        as_of = pd.Timestamp("2027-02-11", tz="UTC")
+        months = get_prospective_oos_months(as_of=as_of)
+        assert months >= 6, f"Expected >= 6 months, got {months}"
+
+    def test_get_prospective_oos_months_et_aware(self):
+        from modules.v2_evaluation import get_prospective_oos_months
+        as_of = pd.Timestamp("2027-02-11 12:00:00").tz_localize("America/New_York")
+        months = get_prospective_oos_months(as_of=as_of)
+        assert months >= 6, f"Expected >= 6 months, got {months}"
+
+    def test_get_prospective_oos_months_before_window_tz_aware(self):
+        from modules.v2_evaluation import get_prospective_oos_months
+        # Day before prospective OOS window opens
+        as_of = pd.Timestamp("2026-08-10", tz="UTC")
+        assert get_prospective_oos_months(as_of=as_of) == 0
+
+    def test_dst_transition_winter_vs_summer(self):
+        """UTC offset differs across DST — normalization must reflect actual UTC moment."""
+        from modules.v2_strategy import _normalize_df_index
+        # 2024-01-15 = EST (UTC-5): 16:00 ET → 21:00 UTC
+        idx_winter = pd.DatetimeIndex(["2024-01-15 16:00:00"]).tz_localize("America/New_York")
+        # 2024-07-15 = EDT (UTC-4): 16:00 ET → 20:00 UTC
+        idx_summer = pd.DatetimeIndex(["2024-07-15 16:00:00"]).tz_localize("America/New_York")
+        df_w = _normalize_df_index(pd.DataFrame({"Close": [100.0]}, index=idx_winter))
+        df_s = _normalize_df_index(pd.DataFrame({"Close": [100.0]}, index=idx_summer))
+        assert df_w.index[0].hour == 21, "Winter (EST): 16:00 ET must become 21:00 UTC-naive"
+        assert df_s.index[0].hour == 20, "Summer (EDT): 16:00 ET must become 20:00 UTC-naive"
+
+
+# ---------------------------------------------------------------------------
+# X. Evaluator hardening (Round 3)
+# ---------------------------------------------------------------------------
+
+class TestEvaluatorHardening:
+    """Regression: QQQ alignment, rank column, activity_data, promotion period gate."""
+
+    def _make_returns(self, n: int = 300, seed: int = 0) -> pd.Series:
+        rng = np.random.default_rng(seed)
+        idx = pd.date_range("2023-01-01", periods=n, freq="B")
+        return pd.Series(rng.normal(0.0005, 0.01, n), index=idx)
+
+    def test_qqq_no_overlap_gives_none(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._make_returns(300)
+        # QQQ on completely non-overlapping dates
+        qqq_idx = pd.date_range("2020-01-01", periods=300, freq="B")
+        qqq_r = pd.Series([0.001] * 300, index=qqq_idx)
+        spy_r = pd.Series([0.001] * 300, index=r.index)
+        m = compute_metrics(r, {"SPY": spy_r, "QQQ": qqq_r}, "S", "in_sample")
+        assert m.excess_return_vs_qqq is None, "Non-overlapping QQQ dates must yield None"
+
+    def test_qqq_aligned_to_strategy_dates(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._make_returns(300)
+        # QQQ spans a much wider window — only overlap should be used
+        qqq_idx = pd.date_range("2022-01-01", periods=700, freq="B")
+        qqq_r = pd.Series([0.001] * 700, index=qqq_idx)
+        spy_r = pd.Series([0.001] * 300, index=r.index)
+        m = compute_metrics(r, {"SPY": spy_r, "QQQ": qqq_r}, "S", "in_sample")
+        assert m.excess_return_vs_qqq is not None, "Overlapping QQQ dates must produce a value"
+
+    def test_insufficient_evidence_never_ranks_above_sufficient(self):
+        from modules.v2_evaluation import EvaluationMetrics, compare_strategies
+        a = EvaluationMetrics("High_Sharpe_Insuf", "in_sample")
+        a.sufficient_evidence = False
+        a.sharpe_ratio = 9.0
+
+        b = EvaluationMetrics("Low_Sharpe_Suf", "in_sample")
+        b.sufficient_evidence = True
+        b.sharpe_ratio = 1.0
+
+        df = compare_strategies([a, b])
+        row_a = df[df["strategy"] == "High_Sharpe_Insuf"].iloc[0]
+        row_b = df[df["strategy"] == "Low_Sharpe_Suf"].iloc[0]
+        assert row_b["rank"] == 1, f"Sufficient-evidence strategy must rank 1, got {row_b['rank']}"
+        rank_a = row_a["rank"]
+        assert rank_a is None or (isinstance(rank_a, float) and math.isnan(rank_a)), \
+            f"Insufficient-evidence must have rank=None/NaN, got {rank_a}"
+
+    def test_rank_column_present(self):
+        from modules.v2_evaluation import EvaluationMetrics, compare_strategies
+        m = EvaluationMetrics("X", "in_sample")
+        m.sufficient_evidence = True
+        m.sharpe_ratio = 1.5
+        df = compare_strategies([m])
+        assert "rank" in df.columns
+
+    def test_activity_data_populates_fields(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._make_returns(300)
+        spy_r = pd.Series([0.001] * 300, index=r.index)
+        activity = {
+            "avg_positions": 12.0,
+            "avg_sector_concentration": 0.25,
+            "estimated_annual_turnover": 0.50,
+        }
+        m = compute_metrics(r, {"SPY": spy_r}, "S", "in_sample", activity_data=activity)
+        assert m.avg_positions == 12.0
+        assert m.avg_sector_concentration == 0.25
+        assert m.estimated_annual_turnover == 0.50
+        # Cost estimate: turnover × 5 bps one-way × 2 = 5.0 bps
+        assert m.estimated_annual_cost_bps == pytest.approx(5.0, rel=1e-6)
+
+    def test_activity_fields_none_when_absent(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._make_returns(300)
+        spy_r = pd.Series([0.001] * 300, index=r.index)
+        m = compute_metrics(r, {"SPY": spy_r}, "S", "in_sample")
+        assert m.avg_positions is None
+        assert m.avg_sector_concentration is None
+        assert m.estimated_annual_turnover is None
+        assert m.estimated_annual_cost_bps is None
+
+    def test_promotion_blocked_for_retrospective_holdout(self):
+        from modules.v2_evaluation import EvaluationMetrics, check_promotion_criteria
+        strat = EvaluationMetrics("S", "retrospective_holdout")
+        strat.sharpe_ratio = 2.0
+        spy = EvaluationMetrics("SPY", "retrospective_holdout")
+        spy.sharpe_ratio = 1.0
+        spy.max_drawdown = -0.20
+        result = check_promotion_criteria(strat, spy, oos_months=12)
+        assert result["period_is_prospective_oos"] is False
+        assert result["all_passed"] is False
+        assert len(result.get("failures", [])) >= 1
+
+    def test_promotion_blocked_for_in_sample(self):
+        from modules.v2_evaluation import EvaluationMetrics, check_promotion_criteria
+        strat = EvaluationMetrics("S", "in_sample")
+        strat.sharpe_ratio = 5.0
+        spy = EvaluationMetrics("SPY", "in_sample")
+        spy.sharpe_ratio = 1.0
+        spy.max_drawdown = -0.10
+        result = check_promotion_criteria(strat, spy, oos_months=12)
+        assert result.get("all_passed") is False
+        assert result.get("period_is_prospective_oos") is False

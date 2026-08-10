@@ -128,9 +128,13 @@ def get_prospective_oos_months(as_of: pd.Timestamp | None = None) -> int:
 
     The prospective OOS window starts 2026-08-11 (the day after model lock).
     Returns 0 if as_of is before the window start.
+    Timezone-aware as_of is converted to UTC-naive before comparison.
     """
     if as_of is None:
         as_of = pd.Timestamp.today()
+    # Normalize timezone-aware as_of to UTC-naive
+    if hasattr(as_of, "tzinfo") and as_of.tzinfo is not None:
+        as_of = as_of.tz_convert("UTC").tz_localize(None)
     window_start = EVALUATION_PERIODS["prospective_out_of_sample"]["start"]
     if as_of < window_start:
         return 0
@@ -190,13 +194,21 @@ def compute_metrics(
     period: str,
     factor_coverage: float | None = None,
     risk_free_rate: float = RISK_FREE_RATE_ANNUAL,
+    activity_data: dict | None = None,
 ) -> EvaluationMetrics:
     """
     Compute evaluation metrics from a daily return series.
 
     returns: pd.Series of daily portfolio returns (not cumulative)
     benchmark_returns: {"SPY": series, "QQQ": series}
-    claude_availability is always 0.0 in V2A.
+
+    activity_data: optional dict with position-level fields that cannot be
+      computed from returns alone. Supported keys:
+        avg_positions, avg_sector_concentration, estimated_annual_turnover,
+        estimated_annual_cost_bps, claude_availability.
+      When absent, these fields remain None (not fabricated as 0).
+
+    claude_availability is always 0.0 in V2A (Claude not connected for orders).
     """
     m = EvaluationMetrics(strategy_name=strategy_name, period=period)
     m.claude_availability = 0.0  # V2A: Claude is never available for order creation
@@ -267,48 +279,95 @@ def compute_metrics(
 
     qqq_r = benchmark_returns.get("QQQ")
     if qqq_r is not None and len(qqq_r) >= 20:
-        qqq_clean = qqq_r.dropna()
-        qqq_ann = float((1 + qqq_clean).prod() ** (TRADING_DAYS_PER_YEAR / len(qqq_clean)) - 1)
-        m.excess_return_vs_qqq = (m.annualized_return or 0.0) - qqq_ann
+        # Align QQQ to strategy dates (same as SPY alignment — no cross-period contamination)
+        qqq_aligned = qqq_r.dropna().reindex(r.index).dropna()
+        strat_for_qqq = r.reindex(qqq_aligned.index).dropna()
+        qqq_aligned = qqq_aligned.reindex(strat_for_qqq.index).dropna()
+        if len(qqq_aligned) >= 20:
+            years_qqq = len(qqq_aligned) / TRADING_DAYS_PER_YEAR
+            if years_qqq > 0:
+                qqq_total = float((1 + qqq_aligned).prod() - 1)
+                qqq_ann = float((1 + qqq_total) ** (1 / years_qqq) - 1)
+                m.excess_return_vs_qqq = (m.annualized_return or 0.0) - qqq_ann
+        # else: no overlap → excess_return_vs_qqq remains None
 
     m.factor_coverage = factor_coverage
     m.sufficient_evidence = n >= TRADING_DAYS_PER_YEAR and m.sharpe_ratio is not None
     if not m.sufficient_evidence:
         m.evidence_note = f"limited: {n} days of data (need {TRADING_DAYS_PER_YEAR}+)"
 
+    # Activity fields — only populated when position-level data is provided
+    m.claude_availability = 0.0  # V2A: Claude not connected for order creation
+    if activity_data:
+        m.avg_positions = activity_data.get("avg_positions")
+        m.avg_sector_concentration = activity_data.get("avg_sector_concentration")
+        m.estimated_annual_turnover = activity_data.get("estimated_annual_turnover")
+        explicit_cost = activity_data.get("estimated_annual_cost_bps")
+        if explicit_cost is not None:
+            m.estimated_annual_cost_bps = explicit_cost
+        elif m.estimated_annual_turnover is not None:
+            # Estimate: turnover × round-trip cost (2 × one-way 5 bps = 10 bps)
+            m.estimated_annual_cost_bps = m.estimated_annual_turnover * EST_TRADE_COST_BPS * 2
+        if "claude_availability" in activity_data:
+            m.claude_availability = activity_data["claude_availability"]
+
     return m
 
 
+def _metrics_to_row(m: EvaluationMetrics, rank) -> dict:
+    return {
+        "rank": rank,
+        "strategy": m.strategy_name,
+        "period": m.period,
+        "sufficient_evidence": m.sufficient_evidence,
+        "evidence_note": m.evidence_note,
+        "ann_return": m.annualized_return,
+        "excess_vs_spy": m.excess_return_vs_spy,
+        "excess_vs_qqq": m.excess_return_vs_qqq,
+        "volatility": m.annualized_volatility,
+        "sharpe": m.sharpe_ratio,
+        "sortino": m.sortino_ratio,
+        "max_drawdown": m.max_drawdown,
+        "calmar": m.calmar_ratio,
+        "beta": m.beta,
+        "downside_capture": m.downside_capture,
+        "hit_rate": m.hit_rate,
+        "avg_positions": m.avg_positions,
+        "avg_sector_concentration": m.avg_sector_concentration,
+        "estimated_annual_turnover": m.estimated_annual_turnover,
+        "estimated_annual_cost_bps": m.estimated_annual_cost_bps,
+        "claude_availability": m.claude_availability,
+        "factor_coverage": m.factor_coverage,
+        "positive_alpha_months_fraction": m._positive_alpha_months_fraction,
+        "survivorship_bias": m.survivorship_bias_note,
+        "point_in_time_fundamentals": m.point_in_time_fundamentals,
+    }
+
+
 def compare_strategies(results: list[EvaluationMetrics]) -> pd.DataFrame:
-    """Build a comparison table sorted by Sharpe ratio descending."""
+    """
+    Build a comparison table with explicit rank column.
+
+    Sufficient-evidence strategies are ranked by Sharpe (descending).
+    Insufficient-evidence strategies are listed last with rank=None,
+    regardless of their Sharpe value. A strategy with Sharpe 9.0 but
+    sufficient_evidence=False never outranks a strategy with Sharpe 1.0
+    and sufficient_evidence=True.
+    """
+    sufficient = sorted(
+        [m for m in results if m.sufficient_evidence],
+        key=lambda m: (m.sharpe_ratio or float("-inf")),
+        reverse=True,
+    )
+    insufficient = [m for m in results if not m.sufficient_evidence]
+
     rows = []
-    for m in results:
-        rows.append({
-            "strategy": m.strategy_name,
-            "period": m.period,
-            "ann_return": m.annualized_return,
-            "excess_vs_spy": m.excess_return_vs_spy,
-            "excess_vs_qqq": m.excess_return_vs_qqq,
-            "volatility": m.annualized_volatility,
-            "sharpe": m.sharpe_ratio,
-            "sortino": m.sortino_ratio,
-            "max_drawdown": m.max_drawdown,
-            "calmar": m.calmar_ratio,
-            "beta": m.beta,
-            "downside_capture": m.downside_capture,
-            "hit_rate": m.hit_rate,
-            "factor_coverage": m.factor_coverage,
-            "claude_availability": m.claude_availability,
-            "positive_alpha_months_fraction": m._positive_alpha_months_fraction,
-            "sufficient_evidence": m.sufficient_evidence,
-            "evidence_note": m.evidence_note,
-            "survivorship_bias": m.survivorship_bias_note,
-            "point_in_time_fundamentals": m.point_in_time_fundamentals,
-        })
-    df = pd.DataFrame(rows)
-    if "sharpe" in df.columns and not df.empty:
-        df = df.sort_values("sharpe", ascending=False, na_position="last")
-    return df
+    for rank_idx, m in enumerate(sufficient, start=1):
+        rows.append(_metrics_to_row(m, rank=rank_idx))
+    for m in insufficient:
+        rows.append(_metrics_to_row(m, rank=None))
+
+    return pd.DataFrame(rows)
 
 
 def check_promotion_criteria(
@@ -323,7 +382,20 @@ def check_promotion_criteria(
     Promotion is blocked if V2 backtest is unsupported (see BACKTEST_STATUS).
     All criteria must pass for promotion.
     """
-    results: dict[str, bool] = {}
+    results: dict[str, bool | list] = {}
+    failures: list[str] = []
+
+    # 0. Period must be prospective_out_of_sample — only this counts for promotion
+    if strategy_metrics.period != "prospective_out_of_sample":
+        results["period_is_prospective_oos"] = False
+        results["all_passed"] = False
+        results["failures"] = [
+            f"Promotion requires period='prospective_out_of_sample'; "
+            f"got '{strategy_metrics.period}'. Retrospective or in-sample data "
+            "cannot substitute for prospective out-of-sample evidence."
+        ]
+        return results
+    results["period_is_prospective_oos"] = True
 
     # 1. Minimum prospective OOS data
     results["min_prospective_oos_months"] = (
@@ -371,4 +443,14 @@ def check_promotion_criteria(
     # 7. Backtest support gate — promotion blocked if backtest unsupported
     results["backtest_not_blocking_promotion"] = not BACKTEST_STATUS.get("promotion_blocked", False)
 
+    # Collect failures for reporting
+    for k, v in results.items():
+        if isinstance(v, bool) and not v:
+            failures.append(k)
+
+    results["all_passed"] = all(
+        v for k, v in results.items()
+        if isinstance(v, bool) and k != "all_passed"
+    )
+    results["failures"] = failures
     return results
