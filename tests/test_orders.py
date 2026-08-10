@@ -5325,3 +5325,425 @@ class TestRound12Regressions:
         for oid in (oid_a, oid_b):
             p = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
             assert not p, f"no persisted for {oid} in pre-hash case"
+
+
+# ---------------------------------------------------------------------------
+# Round 13 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound13Regressions:
+    """Regression tests for Round 13 bug found in commit 1e99537.
+
+    The overlap check in Phase 1 was per-CI and one-sided: CI_A detected that
+    MSFT was mapped to CI_B and marked itself invalid, but CI_B only saw its own
+    fill_refs (MSFT mapped to itself → no overlap detected). CI_B proceeded to
+    EXECUTED + persisted even though it shared an order with the failing CI_A.
+
+    Fix: a global pre-pass before Phase 1 collects all order_ids across ALL active
+    CIs (active = has ≥1 SETTLING order), finds contested order_ids (appearing in
+    ≥2 active CIs), builds a CI-adjacency graph via shared contested oids, finds
+    connected components, and pre-marks every CI in any multi-CI component as
+    invalid BEFORE Phase 1 runs. Historical/superseded CIs (not in batch_by_cid)
+    are excluded from the overlap graph.
+    """
+
+    SESSION = "2026-08-07"
+    TICKER_A = "AAPL"
+    TICKER_B = "MSFT"
+    TICKER_C = "NVDA"
+    STRATEGY = "s1"
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _make_strict_filling(self, tmp_path, oid, ticker, trade_id):
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=oid, trade_id=trade_id,
+            signal_id=None, signal_run_id="run-r13",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=ticker, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+    def _create_order_settling(self, orders, signal_run_id, ticker, trade_id):
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id=signal_run_id, ticker=ticker,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id=trade_id
+        )
+        return orders[order["order_id"]]
+
+    def _pre_post_hashes(self):
+        from modules.fills import compute_portfolio_state_hash
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        return pre_h, post_h
+
+    def _setup_three_orders(self, tmp_path, monkeypatch):
+        """Create AAPL, MSFT, NVDA as SETTLING. Return (orders, oid_a, oid_b, oid_c,
+        fill_a, fill_b, fill_c, pre_h, post_h).
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r13a", self.TICKER_A, "trd-r13a")
+        order_b = self._create_order_settling(orders, "run-r13b", self.TICKER_B, "trd-r13b")
+        order_c = self._create_order_settling(orders, "run-r13c", self.TICKER_C, "trd-r13c")
+
+        fill_a = self._make_strict_filling(tmp_path, order_a["order_id"], self.TICKER_A, "trd-r13a")
+        fill_b = self._make_strict_filling(tmp_path, order_b["order_id"], self.TICKER_B, "trd-r13b")
+        fill_c = self._make_strict_filling(tmp_path, order_c["order_id"], self.TICKER_C, "trd-r13c")
+
+        pre_h, post_h = self._pre_post_hashes()
+        return (
+            orders,
+            order_a["order_id"], order_b["order_id"], order_c["order_id"],
+            fill_a, fill_b, fill_c,
+            pre_h, post_h,
+        )
+
+    # --- A. Active overlap: CI_A=[AAPL,MSFT] + CI_B=[MSFT,NVDA], all SETTLING ---
+
+    def test_active_overlap_all_three_fail_closed(self, tmp_path, monkeypatch):
+        """CI_A=[AAPL,MSFT] + CI_B=[MSFT,NVDA], all SETTLING + current==post → all fail-closed.
+
+        Pre-Round-13: CI_B detected no overlap (MSFT was mapped to itself) → MSFT and NVDA
+        were EXECUTED + persisted. RuntimeError fired only for AAPL (from CI_A).
+        """
+        orders, oid_a, oid_b, oid_c, fill_a, fill_b, fill_c, pre_h, post_h = (
+            self._setup_three_orders(tmp_path, monkeypatch)
+        )
+
+        from modules.fills import write_commit_intent
+
+        # CI_A written first → CI_B written after (last-wins: MSFT and NVDA → CI_B)
+        ci_a = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+        ci_b = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+                {"order_id": oid_c, "fill_attempt_id": fill_c["fill_attempt_id"],
+                 "filling_content_hash": fill_c["content_hash"]},
+            ],
+        )
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION, "AAPL must be fail-closed"
+        assert orders[oid_b]["status"] == FAILED_RECONCILIATION, "MSFT must be fail-closed"
+        assert orders[oid_c]["status"] == FAILED_RECONCILIATION, "NVDA must be fail-closed"
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b, oid_c):
+            persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert not persisted, f"no persisted record for {oid} when overlap detected"
+
+    def test_active_overlap_failure_reason_mentions_overlap(self, tmp_path, monkeypatch):
+        """failure_reason on all three orders must mention the overlapping CI and contested oid."""
+        orders, oid_a, oid_b, oid_c, fill_a, fill_b, fill_c, pre_h, post_h = (
+            self._setup_three_orders(tmp_path, monkeypatch)
+        )
+
+        from modules.fills import write_commit_intent
+
+        ci_a = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+        ci_b = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+                {"order_id": oid_c, "fill_attempt_id": fill_c["fill_attempt_id"],
+                 "filling_content_hash": fill_c["content_hash"]},
+            ],
+        )
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        try:
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+        except RuntimeError:
+            pass
+
+        for oid in (oid_a, oid_b, oid_c):
+            fr = orders[oid].get("failure_reason", "")
+            assert "overlap" in fr, f"failure_reason for {oid} must mention overlap: {fr!r}"
+
+    # --- B. Same scenario reversed: CI_B first, CI_A second; reversed orders dict ---
+
+    def test_active_overlap_reversed_ci_order_same_result(self, tmp_path, monkeypatch):
+        """CI_B written before CI_A (reversed last-wins); reversed orders dict: same outcome."""
+        orders, oid_a, oid_b, oid_c, fill_a, fill_b, fill_c, pre_h, post_h = (
+            self._setup_three_orders(tmp_path, monkeypatch)
+        )
+
+        from modules.fills import write_commit_intent
+
+        # CI_B first (so last-wins maps MSFT → CI_A, AAPL → CI_A)
+        ci_b = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+                {"order_id": oid_c, "fill_attempt_id": fill_c["fill_attempt_id"],
+                 "filling_content_hash": fill_c["content_hash"]},
+            ],
+        )
+        ci_a = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # Reversed orders dict (NVDA first, AAPL last)
+        reordered = {oid_c: orders[oid_c], oid_b: orders[oid_b], oid_a: orders[oid_a]}
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(reordered, self.STRATEGY, state_post)
+
+        assert reordered[oid_a]["status"] == FAILED_RECONCILIATION
+        assert reordered[oid_b]["status"] == FAILED_RECONCILIATION
+        assert reordered[oid_c]["status"] == FAILED_RECONCILIATION
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b, oid_c):
+            assert not [e for e in events.get(oid, []) if e.get("status") == "persisted"], (
+                f"no persisted for {oid} regardless of CI or dict order"
+            )
+
+    # --- C. Indirect (transitive) overlap: CI_A↔CI_B↔CI_C, no direct A↔C share ---
+
+    def test_indirect_overlap_entire_component_rejected(self, tmp_path, monkeypatch):
+        """CI_A shares oid1 with CI_B; CI_B shares oid2 with CI_C (no direct A-C share).
+
+        Transitive closure: {CI_A, CI_B, CI_C} is one connected component → all fail-closed.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        # Four SETTLING orders: oid1=AAPL, oid2=MSFT, oid3=NVDA, oid4=GOOG
+        TICKER_D = "GOOG"
+        orders = {}
+        order_1 = self._create_order_settling(orders, "run-r13-t1", self.TICKER_A, "trd-t1")
+        order_2 = self._create_order_settling(orders, "run-r13-t2", self.TICKER_B, "trd-t2")
+        order_3 = self._create_order_settling(orders, "run-r13-t3", self.TICKER_C, "trd-t3")
+        order_4 = self._create_order_settling(orders, "run-r13-t4", TICKER_D, "trd-t4")
+        oid1 = order_1["order_id"]
+        oid2 = order_2["order_id"]
+        oid3 = order_3["order_id"]
+        oid4 = order_4["order_id"]
+
+        fill_1 = self._make_strict_filling(tmp_path, oid1, self.TICKER_A, "trd-t1")
+        fill_2 = self._make_strict_filling(tmp_path, oid2, self.TICKER_B, "trd-t2")
+        fill_3 = self._make_strict_filling(tmp_path, oid3, self.TICKER_C, "trd-t3")
+        fill_4 = self._make_strict_filling(tmp_path, oid4, TICKER_D, "trd-t4")
+
+        pre_h, post_h = self._pre_post_hashes()
+
+        # CI_A = [oid1, oid2]; CI_B = [oid2, oid3]; CI_C = [oid3, oid4]
+        # last-wins: oid2→CI_B, oid3→CI_C, oid1→CI_A, oid4→CI_C
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid1, "fill_attempt_id": fill_1["fill_attempt_id"],
+                 "filling_content_hash": fill_1["content_hash"]},
+                {"order_id": oid2, "fill_attempt_id": fill_2["fill_attempt_id"],
+                 "filling_content_hash": fill_2["content_hash"]},
+            ],
+        )
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid2, "fill_attempt_id": fill_2["fill_attempt_id"],
+                 "filling_content_hash": fill_2["content_hash"]},
+                {"order_id": oid3, "fill_attempt_id": fill_3["fill_attempt_id"],
+                 "filling_content_hash": fill_3["content_hash"]},
+            ],
+        )
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid3, "fill_attempt_id": fill_3["fill_attempt_id"],
+                 "filling_content_hash": fill_3["content_hash"]},
+                {"order_id": oid4, "fill_attempt_id": fill_4["fill_attempt_id"],
+                 "filling_content_hash": fill_4["content_hash"]},
+            ],
+        )
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        for oid in (oid1, oid2, oid3, oid4):
+            assert orders[oid]["status"] == FAILED_RECONCILIATION, (
+                f"{oid} must be fail-closed (indirect transitive overlap)"
+            )
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid1, oid2, oid3, oid4):
+            assert not [e for e in events.get(oid, []) if e.get("status") == "persisted"], (
+                f"no persisted for {oid} in transitive overlap"
+            )
+
+    # --- D. Legitimate superseded retry: old CI has no active SETTLING orders ---
+
+    def test_superseded_ci_does_not_block_active_retry(self, tmp_path, monkeypatch):
+        """Old CI_A references AAPL but has no SETTLING orders mapped to it (superseded).
+        New CI_B is the only active CI for AAPL + MSFT. CI_A must not block CI_B.
+
+        Scenario: crash recovery set AAPL to PENDING_PRICE after CI_A was written.
+        AAPL later goes back to SETTLING with a fresh fill. A new CI_B is written
+        for the retry. CI_A is historical — no active SETTLING order maps to it.
+        CI_B should complete normally (both orders → EXECUTED).
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            compute_portfolio_state_hash, write_commit_intent, write_fill_event,
+        )
+
+        # Two SETTLING orders: AAPL and MSFT
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r13d1", self.TICKER_A, "trd-r13d1")
+        order_b = self._create_order_settling(orders, "run-r13d2", self.TICKER_B, "trd-r13d2")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        # Old (superseded) filling for AAPL — an earlier fill attempt
+        old_fill_a = write_fill_event(
+            order_id=oid_a, trade_id="trd-r13d1-old",
+            signal_id=None, signal_run_id="run-r13d1-old",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=self.TICKER_A, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        # Old CI_A references the old AAPL fill (historical; last-wins will be overridden)
+        pre_h, post_h = self._pre_post_hashes()
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": old_fill_a["fill_attempt_id"],
+                 "filling_content_hash": old_fill_a["content_hash"]},
+            ],
+        )
+
+        # Fresh (retry) filling for AAPL — a new fill_attempt_id
+        new_fill_a = write_fill_event(
+            order_id=oid_a, trade_id="trd-r13d1",
+            signal_id=None, signal_run_id="run-r13d1",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=self.TICKER_A, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r13d2")
+
+        # New CI_B references the fresh AAPL fill + MSFT (the only active CI)
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": new_fill_a["fill_attempt_id"],
+                 "filling_content_hash": new_fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # last-wins: oid_a → CI_B (new), oid_b → CI_B
+        # CI_A has no active SETTLING order mapped to it → not in batch_by_cid → not active
+        # Overlap pre-pass: only one active CI (CI_B) → no overlap
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == EXECUTED, (
+            "AAPL must be EXECUTED via the retry CI — old superseded CI must not block it"
+        )
+        assert orders[oid_b]["status"] == EXECUTED, "MSFT must be EXECUTED"
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            p = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert len(p) == 1, f"exactly one persisted for {oid} in the retry path"
+
+    # --- E. Telegram + RuntimeError on overlap ---
+
+    def test_overlap_telegram_and_reraise(self):
+        """Overlap → RuntimeError must be caught by stock_bot, Telegram sent, re-raised."""
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_strategy_execution(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        assert "try:" in fn_body
+        assert "reconcile_settling_orders" in fn_body
+        reconcile_idx = fn_body.index("reconcile_settling_orders")
+        except_idx = fn_body.find("except RuntimeError", reconcile_idx)
+        assert except_idx != -1
+
+        handler_end = fn_body.find("raise", except_idx)
+        assert handler_end != -1
+        except_handler = fn_body[except_idx:handler_end + len("raise")]
+        assert "send_telegram" in except_handler
+        assert "raise" in except_handler

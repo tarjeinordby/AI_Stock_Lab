@@ -474,12 +474,87 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
             batch_by_cid.setdefault(ci["commit_id"], []).append(order)
 
     # =========================================================================
-    # PHASE 1: Preflight — validate every batch completely before any write.
-    # Outcome is determined here; Phase 2 only executes what Phase 1 decided.
+    # GLOBAL OVERLAP PRE-CHECK — before Phase 1.
+    # An "active" CI has ≥1 SETTLING order in batch_by_cid. Two active CIs that
+    # share any order_id across their fill_refs form an overlapping pair. All CIs
+    # in the connected component are marked invalid before any Phase 1 write.
+    # Historical/superseded CIs (not in batch_by_cid) are never counted.
     # =========================================================================
     batch_preflight: dict[str, dict] = {}  # cid → result
 
+    # 0a. Collect all order_ids referenced by each active CI's fill_refs
+    _active_cid_oids: dict[str, set[str]] = {}
+    for _cid in batch_by_cid:
+        _active_cid_oids[_cid] = {
+            _fr.get("order_id")
+            for _fr in _cid_to_ci[_cid].get("fills", [])
+            if _fr.get("order_id")
+        }
+
+    # 0b. Invert: order_id → set of active cids that reference it
+    _oid_to_active_cids: dict[str, set[str]] = {}
+    for _cid, _oids in _active_cid_oids.items():
+        for _oid in _oids:
+            _oid_to_active_cids.setdefault(_oid, set()).add(_cid)
+
+    # 0c. Contested = order_id in more than one active CI
+    _contested_oids: dict[str, set[str]] = {
+        _oid: _cids
+        for _oid, _cids in _oid_to_active_cids.items()
+        if len(_cids) > 1
+    }
+
+    # 0d. Transitive closure: BFS/DFS over CI adjacency (shared contested order)
+    if _contested_oids:
+        _adjacency: dict[str, set[str]] = {_cid: set() for _cid in batch_by_cid}
+        for _cids in _contested_oids.values():
+            _cid_list = list(_cids)
+            for _i, _ca in enumerate(_cid_list):
+                for _cb in _cid_list[_i + 1:]:
+                    _adjacency[_ca].add(_cb)
+                    _adjacency[_cb].add(_ca)
+
+        _visited_overlap: set[str] = set()
+        for _start in list(_adjacency):
+            if _start in _visited_overlap:
+                continue
+            _component: set[str] = set()
+            _stack = [_start]
+            while _stack:
+                _cur = _stack.pop()
+                if _cur in _component:
+                    continue
+                _component.add(_cur)
+                _stack.extend(_adjacency[_cur] - _component)
+            _visited_overlap.update(_component)
+            if len(_component) <= 1:
+                continue
+            # Multi-CI component: every CI in it is fail-closed
+            for _cid in _component:
+                _contested_here = sorted(
+                    _oid for _oid in _active_cid_oids[_cid] if _oid in _contested_oids
+                )
+                _other_cids = sorted(_component - {_cid})
+                batch_preflight[_cid] = {
+                    "valid": False,
+                    "fail_reason": (
+                        f"aktiv CI-overlap: commit_intent {_cid!r} deler "
+                        f"order_id(s) {_contested_here!r} med {_other_cids!r} "
+                        f"— overlappende aktive commit_intents — fail-closed"
+                    ),
+                    "hash_result": None,
+                    "filling_by_order": {},
+                    "needs_reconstruction": set(),
+                }
+
+    # =========================================================================
+    # PHASE 1: Preflight — validate every batch completely before any write.
+    # Outcome is determined here; Phase 2 only executes what Phase 1 decided.
+    # CIs pre-marked by the overlap check are skipped here.
+    # =========================================================================
     for cid, batch_orders in batch_by_cid.items():
+        if cid in batch_preflight:  # pre-marked invalid by overlap detection
+            continue
         ci = _cid_to_ci[cid]
         res: dict = {
             "valid": True,
