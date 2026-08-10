@@ -45,11 +45,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run bot
+      # Phase 1: Run signal analysis → saves draft (publication_status="draft")
+      - name: Run signal (draft)
         run: python stock_bot.py
 
-      - name: Commit data
-        if: always()
+      # Phase 2: Commit and push the draft signal + ledger records
+      - name: Commit og push utkast-signal
+        id: draft_push
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
@@ -58,14 +60,16 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "Ingen endringer å committe."
+            echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          git commit -m "${BOT_MODE^}: $(date -u +%Y-%m-%d)"
+          git commit -m "Signal draft: $(date -u +%Y-%m-%d)"
 
           for attempt in 1 2 3; do
             if git push origin main; then
               echo "Push OK ✅"
+              echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
               exit 0
             fi
             echo "Push feilet (forsøk $attempt/3) — henter nyeste og prøver igjen..."
@@ -73,4 +77,108 @@ jobs:
           done
 
           echo "Push feilet etter 3 forsøk ❌"
+          exit 1
+
+      # Phase 3: Finalize signal — sets published fields + writes publication record
+      # Only runs after successful push; SIGNAL_COMMIT_SHA is the SHA of the draft commit.
+      - name: Finaliser signal-publikasjon
+        env:
+          BOT_MODE: finalize_signal
+          SIGNAL_COMMIT_SHA: ${{ steps.draft_push.outputs.sha }}
+        run: python stock_bot.py
+
+      # Phase 3.5: Always commit ledger records — persistence guarantee even on failure
+      # Runs with if: always() so partial ledger state is committed even if Phase 3 failed.
+      # Also pushes any commits that are ahead of origin/main — this handles the case where
+      # Phase 2 created a local commit but the push failed (no staged diff, but commits exist).
+      # Phase 4 is guarded (no if: always()), so the signal file is only committed on success.
+      - name: Commit og push ledger-records (alltid — sikrer persistens)
+        if: always()
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git add data_v4/ledger/ || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Signal ledger-state: $(date -u +%Y-%m-%d)"
+          fi
+
+          # Push any commits ahead of origin/main — includes Phase 2 draft if its push failed
+          AHEAD=$(git log origin/main..HEAD --oneline 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$AHEAD" -eq "0" ]; then
+            echo "Ingen commits å pushe."
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "Ledger-records pushet ✅ ($AHEAD commits)"
+              exit 0
+            fi
+            echo "Push feilet (forsøk $attempt/3)..."
+            git pull --rebase origin main
+          done
+
+          echo "Push av ledger-records feilet etter 3 forsøk ❌"
+          exit 1
+
+      # Phase 4: Commit and push the finalized signal + publication record
+      # Not run if Phase 3 (finalize_signal) failed — avoids pushing incomplete state
+      - name: Commit og push finalisert signal
+        id: final_push
+        run: |
+          git add data_v4/ || true
+
+          if git diff --cached --quiet; then
+            echo "Ingen endringer etter finalisering."
+            echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          git commit -m "Signal published: $(date -u +%Y-%m-%d)"
+
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "Finalisert signal pushet ✅"
+              echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "Push feilet (forsøk $attempt/3)..."
+            git pull --rebase origin main
+          done
+
+          echo "Push av finalisert signal feilet etter 3 forsøk ❌"
+          exit 1
+
+      # Phase 5: Persistence-ack — record the finalized commit SHA
+      # This proves the finalized signal file is in git and the SHA is traceable.
+      - name: Skriv persistence-ack (finalized_commit_sha)
+        env:
+          BOT_MODE: ack_publication
+          FINAL_COMMIT_SHA: ${{ steps.final_push.outputs.sha }}
+        run: python stock_bot.py
+
+      # Phase 6: Commit and push the ack record (signal_publications.jsonl)
+      - name: Commit og push persistence-ack
+        run: |
+          git add data_v4/ledger/signal_publications.jsonl || true
+
+          if git diff --cached --quiet; then
+            echo "Ingen ack å committe (allerede ack-et)."
+            exit 0
+          fi
+
+          git commit -m "Signal finalized_ack: $(date -u +%Y-%m-%d)"
+
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "Persistence-ack pushet ✅"
+              exit 0
+            fi
+            echo "Push feilet (forsøk $attempt/3)..."
+            git pull --rebase origin main
+          done
+
+          echo "Push av persistence-ack feilet etter 3 forsøk ❌"
           exit 1

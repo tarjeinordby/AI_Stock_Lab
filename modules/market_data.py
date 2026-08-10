@@ -192,6 +192,118 @@ def get_price_cached(ticker, fallback_price, price_cache):
     return price
 
 
+def prefetch_open_prices(tickers, fallback_prices=None, chunk_size=80):
+    """
+    Batch-fetch today's opening prices for execute-mode fills (MOO model).
+    Falls back to fallback_prices[ticker] (yesterday's close) when unavailable.
+    Returns {ticker: price} for all tickers with a known price.
+    """
+    if not tickers:
+        return {}
+    if fallback_prices is None:
+        fallback_prices = {}
+    cache = {}
+
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i : i + chunk_size]
+        try:
+            raw = yf.download(
+                tickers=chunk,
+                period="2d",
+                interval="1d",
+                auto_adjust=True,
+                group_by="ticker",
+                threads=True,
+                progress=False,
+            )
+            if raw is None or raw.empty:
+                continue
+            for ticker in chunk:
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        if ticker not in raw.columns.get_level_values(0):
+                            continue
+                        open_s = raw[ticker]["Open"].dropna()
+                    else:
+                        open_col = raw["Open"]
+                        open_s = (open_col if isinstance(open_col, pd.Series) else open_col.squeeze()).dropna()
+                    if not open_s.empty:
+                        price = float(open_s.iloc[-1])
+                        if price > 0:
+                            cache[ticker] = price
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"prefetch_open_prices feil: {e}")
+
+    for ticker in tickers:
+        if ticker not in cache and fallback_prices.get(ticker):
+            cache[ticker] = fallback_prices[ticker]
+
+    print(f"Åpningspriser (valuation): {len(cache)}/{len(tickers)} tickere")
+    return cache
+
+
+def prefetch_execution_prices(tickers, session_date, chunk_size=80):
+    """
+    Batch-fetch opening prices for fills on session_date (next_session_daily_open_v1 model).
+
+    Strict: a ticker is included only when the downloaded data contains a row
+    whose date matches session_date exactly and whose Open is positive.
+    No fallback of any kind is applied — callers must treat a missing ticker
+    as "no fill for this session".
+
+    Returns {ticker: price}.
+    """
+    if not tickers:
+        return {}
+    session_ts = pd.Timestamp(session_date).normalize()
+    cache = {}
+
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i : i + chunk_size]
+        try:
+            raw = yf.download(
+                tickers=chunk,
+                period="5d",
+                interval="1d",
+                auto_adjust=True,
+                group_by="ticker",
+                threads=True,
+                progress=False,
+            )
+            if raw is None or raw.empty:
+                continue
+            for ticker in chunk:
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        if ticker not in raw.columns.get_level_values(0):
+                            continue
+                        ticker_df = raw[ticker].dropna(how="all")
+                    else:
+                        ticker_df = raw.dropna(how="all")
+                    idx_norm = ticker_df.index.normalize()
+                    row = ticker_df[idx_norm == session_ts]
+                    if row.empty:
+                        continue
+                    price = float(row["Open"].iloc[0])
+                    if price > 0:
+                        cache[ticker] = price
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"prefetch_execution_prices feil: {e}")
+
+    n_missing = len(tickers) - len(cache)
+    print(
+        f"Execution prices (next_session_daily_open_v1 {session_date}): "
+        f"{len(cache)}/{len(tickers)} tickere"
+    )
+    if n_missing > 0:
+        print(f"  {n_missing} tickere mangler gyldig åpningspris — ingen fill for disse")
+    return cache
+
+
 def _get_latest_close_from_raw(raw, ticker):
     """Extract latest close price for a ticker from a yf.download result."""
     try:

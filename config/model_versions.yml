@@ -1,0 +1,339 @@
+# Model version registry — FROZEN entries must never be modified.
+#
+# SCOPE: Only parameters that determine WHICH stocks are recommended and HOW
+# they are scored. This includes feature definitions, factor weights, scoring
+# thresholds, bonuses/penalties, quality filter, universe rules, and the
+# signal-score impact of macro regime.
+#
+# NOT in this file:
+#   - Portfolio execution rules (max_positions, stop_loss, pyramid, sector_cap)
+#     → portfolio_versions.yml
+#   - Fill/price/commission/execution rules
+#     → execution_versions.yml
+#   - Macro portfolio exposure multiplier (inverted_exposure_multiplier)
+#     → portfolio_versions.yml (it controls capital allocation, not scoring)
+#
+# MACRO REGIME SPLIT (documented here for clarity):
+#   model_versions.yml:     momentum_delta / quality_delta applied to scoring weights
+#                           → changes how tickers are ranked (model concern)
+#   portfolio_versions.yml: inverted_exposure_multiplier = 0.80
+#                           → changes how much capital is deployed (portfolio concern)
+#   Both share the same inversion_threshold_pct = -0.50% as the trigger condition.
+#
+# model_config_hash: SHA-256 of all fields except model_config_hash itself.
+# Verified by modules/versioning.py against live scoring.py at startup.
+#
+# To add a new model version:
+#   1. Add new top-level key (quant_baseline_v2, ...)
+#   2. Run: python3 -m modules.versioning --compute-hash
+#   3. Code changes must match the new config exactly.
+
+quant_baseline_v1:
+  description: >
+    Baseline 4-factor scoring model (momentum, quality, value, sentiment).
+    FROZEN as of 2026-08-05. Do not modify. Create quant_baseline_v2 instead.
+  created_at: "2026-08-05"
+  frozen: true
+  model_config_hash: "d303b9a12ce0f0552eeaddee6f9625dbd713d1e08d3f527f25ddec1412ac41d2"
+
+  config:
+
+    # ------------------------------------------------------------------
+    # AI MODELS (signal scoring only — not portfolio/reporting models)
+    # ------------------------------------------------------------------
+    ai_models:
+      sentiment_model: "claude-haiku-4-5-20251001"
+      earnings_model: "claude-opus-4-8"
+      weekly_model: "claude-sonnet-4-6"
+      sentiment_prompt_version: "sentiment_v1"
+      earnings_prompt_version: "earnings_v1"
+      weekly_prompt_version: "weekly_v1"
+
+    # ------------------------------------------------------------------
+    # MOMENTUM FACTOR (rank-based, 0-100)
+    # Source: modules/scoring.py build_score_table()
+    # ------------------------------------------------------------------
+    momentum_factor:
+      mom_12_1_weight: 0.40
+      mom_6_1_weight: 0.25
+      rank_rs_weight: 0.20
+      ret_1m_weight: 0.15
+      winsorize_quantile_low: 0.02
+      winsorize_quantile_high: 0.98
+
+    # ------------------------------------------------------------------
+    # QUALITY FACTOR (fundamental breakpoints → 0-100 score)
+    # Source: modules/scoring.py _quality_sub_score()
+    # ------------------------------------------------------------------
+    quality_factor:
+      roe_thresholds:
+        - {above: 0.20, score: 1.00}
+        - {above: 0.15, score: 0.85}
+        - {above: 0.10, score: 0.65}
+        - {above: 0.00, score: 0.40}
+        - {default: 0.10}
+      gross_margin_thresholds:
+        - {above: 0.60, score: 1.00}
+        - {above: 0.40, score: 0.80}
+        - {above: 0.25, score: 0.60}
+        - {above: 0.10, score: 0.35}
+        - {default: 0.10}
+      debt_equity_thresholds:
+        - {below: 0.30, score: 1.00}
+        - {below: 0.70, score: 0.80}
+        - {below: 1.00, score: 0.60}
+        - {below: 1.50, score: 0.35}
+        - {default: 0.10}
+      earnings_growth_thresholds:
+        - {above: 0.30, score: 1.00}
+        - {above: 0.20, score: 0.85}
+        - {above: 0.10, score: 0.65}
+        - {above: 0.00, score: 0.40}
+        - {default: 0.10}
+      missing_value_fill: "universe_median"
+
+    # ------------------------------------------------------------------
+    # VALUE / GROWTH FACTOR (0-100 score)
+    # Source: modules/scoring.py _value_sub_score()
+    # ------------------------------------------------------------------
+    value_factor:
+      forward_pe_thresholds:
+        - {range: [8, 15], score: 1.00}
+        - {range: [15, 25], score: 0.75}
+        - {range: [25, 35], score: 0.50}
+        - {range: [0, 8], score: 0.30}
+        - {default: 0.20}
+      peg_ratio_thresholds:
+        - {below: 1.0, score: 1.00}
+        - {below: 1.5, score: 0.80}
+        - {below: 2.0, score: 0.60}
+        - {below: 3.0, score: 0.35}
+        - {default: 0.15}
+      price_to_sales_thresholds:
+        - {below: 2, score: 1.00}
+        - {below: 5, score: 0.75}
+        - {below: 10, score: 0.50}
+        - {below: 20, score: 0.30}
+        - {default: 0.10}
+      missing_value_fill: "universe_median"
+
+    # ------------------------------------------------------------------
+    # SENTIMENT FACTOR (0-100)
+    # Source: modules/scoring.py build_score_table()
+    # ------------------------------------------------------------------
+    sentiment_factor:
+      news_score_weight: 0.25
+      earnings_contribution_weight: 0.75
+      earnings_center: 0.50
+      earnings_bonus_scale: 100.0
+      missing_value_fill: "universe_median"
+
+    # ------------------------------------------------------------------
+    # SCORE PENALTIES / BONUSES (multipliers on final per-strategy score)
+    # These affect the final score and therefore the ranking of tickers.
+    # Source: modules/scoring.py build_score_table()
+    # ------------------------------------------------------------------
+    score_adjustments:
+      penalty_below_sma200: 0.45
+      penalty_overbought: 0.90
+      penalty_very_weak_rsi: 0.70
+      penalty_vol60_above_1_20: 0.80
+      penalty_non_megacap_in_megacap_strategy: 0.10
+      bonus_insider_buying: 1.10
+
+    # ------------------------------------------------------------------
+    # REGIME WEIGHTS (pure regime weights, before strategy blend)
+    # These are blended 50/50 with per-strategy base_weights to determine
+    # the effective scoring weights. Regime affects RANKING, not just exposure.
+    # Source: modules/scoring.py REGIME_WEIGHTS
+    # ------------------------------------------------------------------
+    regime_weights:
+      explosive:  {momentum: 0.45, quality: 0.35, value: 0.15, sentiment: 0.05}
+      bullish:    {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
+      neutral:    {momentum: 0.25, quality: 0.45, value: 0.25, sentiment: 0.05}
+      defensive:  {momentum: 0.15, quality: 0.50, value: 0.30, sentiment: 0.05}
+      unknown:    {momentum: 0.30, quality: 0.40, value: 0.25, sentiment: 0.05}
+
+    # ------------------------------------------------------------------
+    # MACRO INVERSION — SIGNAL-SCORE IMPACT ONLY
+    # Source: modules/scoring.py _MACRO_INVERTED_ADJ, modules/macro.py
+    #
+    # SPLIT with portfolio_versions.yml:
+    #   HERE (model):      Weight adjustments → changes ticker RANKING
+    #   PORTFOLIO FILE:    inverted_exposure_multiplier = 0.80
+    #                      → reduces capital deployed (does not affect ranking)
+    # Both use the same inversion_threshold_pct as the trigger condition.
+    # ------------------------------------------------------------------
+    macro_inversion_score_adjustment:
+      inversion_threshold_pct: -0.50
+      momentum_delta: -0.10
+      quality_delta: 0.10
+      value_delta: 0.0
+      sentiment_delta: 0.0
+
+    # ------------------------------------------------------------------
+    # WEIGHT BLENDING (strategy weights × regime weights)
+    # Source: modules/scoring.py get_effective_weights()
+    # ------------------------------------------------------------------
+    weight_blending:
+      strategy_fraction: 0.50
+      regime_fraction: 0.50
+
+    # ------------------------------------------------------------------
+    # QUALITY FILTER (mechanical pre-scoring gate)
+    # Determines which tickers are analyzed. This is a model concern because
+    # it defines the eligible universe for scoring.
+    # Source: modules/scoring.py passes_quality_filter()
+    # ------------------------------------------------------------------
+    quality_filter:
+      min_gross_margin: 0.30
+      min_revenue_growth: 0.05
+      max_debt_equity: 2.0
+      min_market_cap_usd: 2000000000
+      require_fcf_positive: true
+      margin_exempt_sectors:
+        - "Financial Services"
+        - "Energy"
+        - "Utilities"
+        - "Real Estate"
+        - "Basic Materials"
+      held_positions_exempt: true
+      benchmarks_exempt:
+        - "SPY"
+        - "QQQ"
+
+    # ------------------------------------------------------------------
+    # UNIVERSE CONSTRUCTION
+    # Determines which tickers the model can recommend.
+    # Source: modules/universe.py build_universe()
+    # ------------------------------------------------------------------
+    universe:
+      sources:
+        - "sp500_wikipedia_current"
+        - "nasdaq100_wikipedia_current"
+        - "extra_watchlist"
+      note_survivorship_bias: >
+        Uses current index constituents, not historical. Creates survivorship
+        bias in backtests. Acceptable for live forward-testing only.
+      extra_watchlist:
+        - "PLTR"
+        - "ARM"
+        - "SMCI"
+        - "TSM"
+        - "ASML"
+        - "NVO"
+        - "SHOP"
+        - "SE"
+        - "COIN"
+        - "RBLX"
+        - "U"
+        - "SNOW"
+        - "MDB"
+        - "DDOG"
+        - "NET"
+        - "CRWD"
+        - "CELH"
+        - "ELF"
+        - "TOST"
+        - "APP"
+        - "HOOD"
+        - "SOFI"
+        - "MSTR"
+        - "UBER"
+        - "ABNB"
+        - "PANW"
+        - "ZS"
+        - "OKTA"
+        - "BILL"
+        - "ROKU"
+        - "DELL"
+        - "HIMS"
+        - "IONQ"
+        - "RGTI"
+        - "QBTS"
+      megacap_tickers:
+        - "AAPL"
+        - "MSFT"
+        - "NVDA"
+        - "GOOGL"
+        - "GOOG"
+        - "AMZN"
+        - "META"
+        - "AVGO"
+        - "TSLA"
+        - "BRK-B"
+        - "LLY"
+        - "JPM"
+        - "V"
+        - "MA"
+        - "NFLX"
+        - "COST"
+        - "ORCL"
+        - "AMD"
+        - "CRM"
+        - "ADBE"
+        - "QCOM"
+        - "CSCO"
+        - "PEP"
+        - "KO"
+        - "MCD"
+        - "WMT"
+        - "HD"
+        - "UNH"
+        - "ABBV"
+        - "NVO"
+        - "ASML"
+        - "TSM"
+      benchmarks_included:
+        - "SPY"
+        - "QQQ"
+
+    # ------------------------------------------------------------------
+    # DATA SOURCES (what data feeds into the score)
+    # ------------------------------------------------------------------
+    data_sources:
+      price_data: "yfinance daily period=2y auto_adjust=False"
+      fundamentals: "yfinance .info (current NOT point-in-time)"
+      macro: "Treasury.gov 10Y-2Y yield curve no-api-key cache=24h"
+      insider: "yfinance .insider_transactions"
+      earnings_calendar: "yfinance .calendar"
+
+    # ------------------------------------------------------------------
+    # PER-STRATEGY SIGNAL CONFIG (model side only: score_column, base_weights)
+    # Portfolio-side params (stop_loss, max_positions, etc.) are in
+    # portfolio_versions.yml under risk_parity_pyramid_v1.
+    # Source: modules/scoring.py STRATEGIES
+    # ------------------------------------------------------------------
+    strategies:
+      Max_Return_AI:
+        score_column: "score_max_return"
+        base_weights: {momentum: 0.45, quality: 0.30, value: 0.20, sentiment: 0.05}
+
+      Quality_Momentum_AI:
+        score_column: "score_quality_momentum"
+        base_weights: {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
+
+      Balanced_AI:
+        score_column: "score_balanced"
+        base_weights: {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
+
+      Low_Risk_AI:
+        score_column: "score_low_risk"
+        base_weights: {momentum: 0.25, quality: 0.45, value: 0.25, sentiment: 0.05}
+
+      MegaCap_AI:
+        score_column: "score_megacap"
+        base_weights: {momentum: 0.30, quality: 0.45, value: 0.20, sentiment: 0.05}
+
+      AI_Sentiment_AI:
+        score_column: "score_ai_sentiment"
+        base_weights: {momentum: 0.30, quality: 0.45, value: 0.15, sentiment: 0.10}
+
+    # ------------------------------------------------------------------
+    # SCORING OUTPUT
+    # ------------------------------------------------------------------
+    scoring_output:
+      top_candidates_to_save: 150
+      top_candidates_to_report: 5
+      score_range_min: 0
+      score_range_max: 100

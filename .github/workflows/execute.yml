@@ -1,10 +1,10 @@
 name: Execute — Oppdater porteføljer og send rapport
 
 on:
-  workflow_run:
-    workflows: ["Pre-market — Hent pre-market priser"]
-    types: [completed]
-    branches: [main]
+  schedule:
+    # 14:40 UTC = 10:40 ET (EDT, UTC-4 sommerhalvår) / 09:40 ET (EST, UTC-5 vinterhalvår)
+    # Alltid etter NYSE open (09:30 ET) uavhengig av DST — dekopler fra premarket-workflow
+    - cron: "40 14 * * 1-5"
   workflow_dispatch:
     inputs:
       mode:
@@ -27,9 +27,6 @@ concurrency:
 jobs:
   execute:
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
 
     env:
       BOT_MODE: ${{ inputs.mode || 'execute' }}

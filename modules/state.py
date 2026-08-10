@@ -1,11 +1,14 @@
 import os
 import json
 import math
+import uuid
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+
+from modules.versioning import PORTFOLIO_VERSION as _PORTFOLIO_VERSION
 
 OSLO = ZoneInfo("Europe/Oslo")
 NY = ZoneInfo("America/New_York")
@@ -21,6 +24,7 @@ FUNDAMENTALS_CACHE_FILE = f"{STATE_DIR}/fundamentals_cache.json"
 SENTIMENT_CACHE_FILE = f"{STATE_DIR}/sentiment_cache.json"
 WEEKLY_ANALYSIS_CACHE_FILE = f"{STATE_DIR}/weekly_analysis_cache.json"
 GLOBAL_STATE_FILE = f"{STATE_DIR}/_global.json"
+ORDERS_FILE = f"{STATE_DIR}/orders.jsonl"
 
 START_CAPITAL = 10_000.0
 
@@ -101,17 +105,27 @@ def load_json(path, default=None):
 
 
 def read_csv_or_empty(path, columns):
-    if os.path.exists(path):
-        try:
-            return pd.read_csv(path)
-        except Exception:
-            pass
-    return pd.DataFrame(columns=columns)
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=columns)
+    try:
+        return pd.read_csv(path)
+    except Exception as exc:
+        raise RuntimeError(f"Kan ikke lese CSV {path}: {exc}") from exc
 
 
 def save_csv(df, path):
     ensure_dirs()
-    df.to_csv(path, index=False)
+    tmp = path + ".tmp"
+    df.to_csv(tmp, index=False)
+    with open(tmp, "rb") as f:
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    parent = os.path.dirname(os.path.abspath(path))
+    fd = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def safe_float(x, default=None):
@@ -169,6 +183,8 @@ def initial_strategy_state(strategy_name):
     return {
         "strategy": strategy_name,
         "created_at": now_utc().isoformat(),
+        "portfolio_id": str(uuid.uuid4()),
+        "portfolio_version": _PORTFOLIO_VERSION,
         "cash": START_CAPITAL,
         "positions": {},
         "highest_portfolio_value": START_CAPITAL,
@@ -179,19 +195,60 @@ def initial_strategy_state(strategy_name):
 
 
 def load_strategy_state(strategy_name):
-    state = load_json(strategy_state_file(strategy_name), initial_strategy_state(strategy_name))
-    # Ensure all required keys exist for backward compatibility
+    path = strategy_state_file(strategy_name)
+    if not os.path.exists(path):
+        return initial_strategy_state(strategy_name)
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+    except OSError as exc:
+        raise RuntimeError(f"Kan ikke lese porteføljefil {path}: {exc}") from exc
+    if not content.strip():
+        raise RuntimeError(
+            f"Porteføljefil for '{strategy_name}' er tom: {path}. "
+            "Slett filen for å starte på nytt med initial kapital."
+        )
+    try:
+        state = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Porteføljefil for '{strategy_name}' er korrupt: {path}. "
+            f"JSON-feil: {exc}. Slett eller reparer filen manuelt."
+        ) from exc
+    # Backward-compat migrations
     if "highest_portfolio_value" not in state:
         state["highest_portfolio_value"] = START_CAPITAL
     if "cooldowns" not in state:
         state["cooldowns"] = {}
     if "weekly_meta" not in state:
         state["weekly_meta"] = {"iso_week": "", "buys_this_week": 0}
+    if "portfolio_id" not in state:
+        state["portfolio_id"] = str(uuid.uuid4())
+    if "portfolio_version" not in state:
+        state["portfolio_version"] = _PORTFOLIO_VERSION
     return state
 
 
 def save_strategy_state(strategy_name, state):
-    save_json(state, strategy_state_file(strategy_name))
+    """Atomically save portfolio state: temp file → fsync → os.replace → fsync parent.
+
+    Crash between write and os.replace leaves a .tmp file (harmless) but never
+    produces a partially-written portfolio JSON at the canonical path.
+    """
+    path = strategy_state_file(strategy_name)
+    ensure_dirs()
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(to_json_safe(state), f, indent=2, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+    parent = os.path.dirname(os.path.abspath(path))
+    fd = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def reset_week_if_needed(state):
@@ -212,24 +269,44 @@ def trading_days_between(date_str):
         return 999
 
 
+class SignalNotPublishedError(Exception):
+    """Raised when the signal file exists but is not yet finalized/published."""
+
+
 def load_latest_signal():
+    """
+    Load the most recently registered signal file.
+
+    Fail-closed: no directory scan fallback. The signal must have been
+    explicitly registered in _global.json by run_finalize_signal() with
+    publication_status="published". If the file is missing or unpublished,
+    raise rather than silently falling back to an older or unvalidated signal.
+    """
     global_state = load_json(GLOBAL_STATE_FILE, {})
     signal_path = global_state.get("last_signal_file")
 
-    if signal_path and os.path.exists(signal_path):
-        try:
-            with open(signal_path, "r") as f:
-                return json.load(f), signal_path
-        except Exception:
-            pass
+    if not signal_path:
+        raise FileNotFoundError(
+            "Ingen signalfil registrert i _global.json. "
+            "Kjør BOT_MODE=signal etterfulgt av BOT_MODE=finalize_signal."
+        )
+    if not os.path.exists(signal_path):
+        raise FileNotFoundError(
+            f"Signalfil ikke funnet på disk: {signal_path}. "
+            "Sjekk at data_v4/signals/ er korrekt committed og pushet."
+        )
 
-    files = sorted([f for f in os.listdir(SIGNALS_DIR) if f.endswith("_signal.json")])
-    if not files:
-        raise FileNotFoundError("Fant ingen signalfil. Kjør signal-modus først.")
-
-    signal_path = f"{SIGNALS_DIR}/{files[-1]}"
     with open(signal_path, "r") as f:
-        return json.load(f), signal_path
+        signal = json.load(f)
+
+    if signal.get("publication_status") != "published":
+        raise SignalNotPublishedError(
+            f"Signal {signal_path!r} er ikke publisert "
+            f"(status={signal.get('publication_status')!r}). "
+            "Kjør BOT_MODE=finalize_signal etter vellykket git push."
+        )
+
+    return signal, signal_path
 
 
 def load_benchmark_state():

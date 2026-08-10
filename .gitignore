@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# macOS
+.DS_Store
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Ledger lock files (runtime artifacts, must not be committed)
+data_v4/state/orders.jsonl.lock
+data_v4/ledger/fills.jsonl.lock

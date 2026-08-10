@@ -173,6 +173,13 @@ def _build_correlation_alerts(results):
     return "\n🚫 FILTRERT UT:\n" + "\n".join(lines)
 
 
+def _fmt_rate(executed, created):
+    """Format fill rate as 'ex/n (pct)' or '0/0 (N/A)' when cohort is empty."""
+    if created == 0:
+        return "0/0 (N/A)"
+    return f"{executed}/{created} ({executed / created:.0%})"
+
+
 def _build_actions(results):
     lines = ["📌 DAGENS HANDLINGER"]
     any_action = False
@@ -199,6 +206,88 @@ def _build_actions(results):
 
     if not any_action:
         lines.append("Ingen kjøp/salg i dag.")
+
+    # ── Execution statistics ──────────────────────────────────────────────────
+    # Aggregated from the persistent order ledger (via exec_stats in each result).
+    # Cohort = orders where intended_execution_session == session_date AND strategy.
+    # Each order_id counted once regardless of how many reruns touched it.
+    # recommendations = candidates_count per strategy (sum = total, no dedup across strategies).
+
+    def _sum(key):
+        return sum(r.get("exec_stats", {}).get(key, 0) for r in results)
+
+    total_n       = _sum("cohort_size")
+    total_ex      = _sum("executed")  # terminal EXECUTED only; SETTLING shown separately
+    total_pending = _sum("pending_price")
+    total_fp      = _sum("failed_price")
+    total_fr      = _sum("failed_reconciliation")
+    total_expired = _sum("expired")
+    total_cancel  = _sum("cancelled")
+    total_miss    = _sum("missing_execution_price")
+    total_buy_n   = _sum("buy_created")
+    total_buy_ex  = _sum("buy_executed")
+    total_sell_n  = _sum("sell_created")
+    total_sell_ex = _sum("sell_executed")
+    total_pyr_n   = _sum("pyramid_created")
+    total_pyr_ex  = _sum("pyramid_executed")
+
+    # recommendations: per strategy from signal candidates (sum = cross-strategy total)
+    rec_parts = [
+        f"{r.get('recommendations', 0)} ({r['strategy']})" for r in results
+    ]
+    total_rec = sum(r.get("recommendations", 0) for r in results)
+    rec_str = " + ".join(rec_parts) + f" = {total_rec} totalt" if len(results) > 1 else str(total_rec)
+
+    # expired_this_run: orders expired by expire_stale_orders() today (may be from prior sessions)
+    total_expired_run = sum(r.get("expired_this_run", 0) for r in results)
+
+    status_parts = []
+    if total_pending > 0:
+        status_parts.append(f"{total_pending} venter pris")
+    if total_miss > 0:
+        status_parts.append(f"{total_miss} mangler exekveringspris")
+    if total_fp > 0:
+        status_parts.append(f"{total_fp} feilet (pris)")
+    if total_fr > 0:
+        status_parts.append(f"{total_fr} feilet (reconcile)")
+    if total_expired > 0:
+        status_parts.append(f"{total_expired} utløpt")
+    if total_cancel > 0:
+        status_parts.append(f"{total_cancel} kansellert")
+    status_str = "  " + " | ".join(status_parts) if status_parts else ""
+
+    total_settling = _sum("settling")
+    total_unclassified = _sum("unclassified_status") + _sum("unclassified_action")
+    total_safety = _sum("safety_created")
+
+    # fill_rate = terminal EXECUTED only / cohort_size (SETTLING shown separately)
+    fill_rate_str = _fmt_rate(total_ex, total_n)
+
+    stat_lines = [
+        f"\n📋 ORDREUTFØRELSE (sesjonskohort)",
+        f"  📡 Anbefalinger: {rec_str}",
+        f"  Opprettede: {total_n}",
+        f"  Fylt (EXECUTED): {fill_rate_str}",
+    ]
+    if total_settling > 0:
+        stat_lines.append(f"  Under filling (SETTLING): {total_settling}")
+    if status_str:
+        stat_lines.append(status_str)
+    if total_safety > 0:
+        stat_lines.append(f"  herav sikkerhetssalg: {total_safety}")
+    if total_unclassified > 0:
+        stat_lines.append(f"  ⚠️ Ukjent status/action: {total_unclassified} (manual_review)")
+    stat_lines += [
+        f"  KJØP:    {_fmt_rate(total_buy_ex, total_buy_n)}",
+        f"  SELG:    {_fmt_rate(total_sell_ex, total_sell_n)}",
+        f"  PYRAMID: {_fmt_rate(total_pyr_ex, total_pyr_n)}",
+    ]
+    if total_expired_run > 0:
+        stat_lines.append(
+            f"  🗑️ Utløpt i dag (fra tidl. sesjoner): {total_expired_run}"
+        )
+
+    lines.extend(stat_lines)
 
     return "\n".join(lines)
 
@@ -544,6 +633,55 @@ def build_monthly_report(results, spy_ret, qqq_ret):
 
 
 # ============================================================
+# STALE / INVALID SIGNAL REPORT
+# ============================================================
+
+def build_stale_signal_message(validation) -> str:
+    """
+    Build a Telegram alert for a stale or invalid signal.
+    validation is a SignalValidationResult (imported lazily to avoid circular import).
+    """
+    blocked_buys = sum(
+        len(r.get("buys", [])) == 0 and not r.get("orders_created", 0)
+        for r in getattr(validation, "_results", [])
+    )
+    tier = getattr(validation, "data_quality_tier", "unknown")
+    dq = getattr(validation, "data_quality", {})
+    coverage = dq.get("signal_coverage_rate")
+    stale_pct = dq.get("stale_pct")
+
+    mode = getattr(validation, "failure_mode", "unknown")
+    is_fully_invalid = not getattr(validation, "is_valid", True)
+    header = "⛔ SIGNAL AVVIST" if is_fully_invalid else "⚠️ BEGRENSET KJØRING"
+
+    lines = [
+        header,
+        f"Signal-run ID:     {getattr(validation, 'signal_run_id', 'ukjent') or 'ukjent'}",
+        f"Intendert sesjon:  {getattr(validation, 'intended_session', 'ukjent') or 'ukjent'}",
+        f"Dagens sesjon:     {getattr(validation, 'actual_session', today_str())}",
+        f"Generert (UTC):    {getattr(validation, 'generated_at', 'ukjent') or 'ukjent'}",
+        f"Publisert (UTC):   {getattr(validation, 'published_at', 'ukjent') or 'ukjent'}",
+        f"Feilmodus:         {mode}",
+        f"Årsak:             {getattr(validation, 'reason', '')}",
+    ]
+
+    if coverage is not None or stale_pct is not None:
+        lines.append(
+            f"Data-kvalitet:     tier={tier}, "
+            f"coverage={coverage}, stale_pct={stale_pct}"
+        )
+
+    lines += [
+        "",
+        "✅ Tillatte handlinger: stop-loss, trailing stop, drawdown-beskyttelse",
+        "❌ Blokkerte handlinger: nye kjøp, pyramidering"
+        + (", signal-baserte salg" if is_fully_invalid else ""),
+    ]
+
+    return "\n".join(lines)
+
+
+# ============================================================
 # FULL MESSAGE ASSEMBLY
 # ============================================================
 
@@ -551,8 +689,17 @@ def build_full_message(results, signal, signal_path, spy_ret, qqq_ret,
                        drawdown_warnings, fundamentals_cache=None, macro=None,
                        earnings_analysis=None, active_weights=None, corr_pairs=None,
                        sentiment_scores=None, quality_report=None,
-                       weekly_analyses=None, ai_cost_usd=0.0):
-    msg = build_daily_report(
+                       weekly_analyses=None, ai_cost_usd=0.0,
+                       signal_validation=None):
+    # Prefix restricted-execution banner when signal is invalid/stale
+    prefix = ""
+    if signal_validation is not None and (
+        not signal_validation.is_valid or not signal_validation.allow_new_buys
+    ):
+        mode = signal_validation.failure_mode
+        prefix = f"⚠️ BEGRENSET KJØRING ({mode}) — kun risikohåndtering\n\n"
+
+    msg = prefix + build_daily_report(
         results, signal, signal_path, spy_ret, qqq_ret, drawdown_warnings,
         macro=macro, earnings_analysis=earnings_analysis, active_weights=active_weights,
         sentiment_scores=sentiment_scores, quality_report=quality_report,
