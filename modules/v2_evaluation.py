@@ -195,12 +195,20 @@ def compute_metrics(
     factor_coverage: float | None = None,
     risk_free_rate: float = RISK_FREE_RATE_ANNUAL,
     activity_data: dict | None = None,
+    requires_pit_fundamentals: bool = True,
+    min_factor_coverage: float = 0.30,
 ) -> EvaluationMetrics:
     """
     Compute evaluation metrics from a daily return series.
 
     returns: pd.Series of daily portfolio returns (not cumulative)
     benchmark_returns: {"SPY": series, "QQQ": series}
+
+    requires_pit_fundamentals: True (default) for models using quality/value factors.
+      Set False only for explicit price-only (momentum + safety) models. When True and
+      point_in_time_fundamentals=False, sufficient_evidence is blocked.
+    min_factor_coverage: minimum factor_coverage for sufficient_evidence (default 0.30).
+      Only applied when factor_coverage is not None.
 
     activity_data: optional dict with position-level fields that cannot be
       computed from returns alone. Supported keys:
@@ -209,6 +217,10 @@ def compute_metrics(
       When absent, these fields remain None (not fabricated as 0).
 
     claude_availability is always 0.0 in V2A (Claude not connected for orders).
+
+    Benchmark excess returns use MATCHED-PERIOD annualized returns: both strategy
+    and benchmark are annualized over the same overlapping observations only.
+    This prevents cross-period contamination when benchmark coverage differs.
     """
     m = EvaluationMetrics(strategy_name=strategy_name, period=period)
     m.claude_availability = 0.0  # V2A: Claude is never available for order creation
@@ -249,52 +261,94 @@ def compute_metrics(
 
     m.hit_rate = float((r > 0).mean())
 
-    spy_r = benchmark_returns.get("SPY")
-    if spy_r is not None and len(spy_r) >= 20:
-        spy_r = spy_r.dropna().reindex(r.index).dropna()
-        aligned = r.reindex(spy_r.index).dropna()
-        if len(aligned) >= 20:
-            spy_ann = float((1 + spy_r).prod() ** (TRADING_DAYS_PER_YEAR / len(spy_r)) - 1)
-            m.excess_return_vs_spy = (m.annualized_return or 0.0) - spy_ann
-            spy_var = float(spy_r.var())
+    # --- SPY benchmark (matched-period: both series annualized over the same overlap) ---
+    spy_r_raw = benchmark_returns.get("SPY")
+    if spy_r_raw is not None:
+        spy_clean = spy_r_raw.dropna()
+        # Inner-align: only timestamps where both strategy and SPY have valid observations
+        strat_spy = r.reindex(spy_clean.index).dropna()
+        spy_al = spy_clean.reindex(strat_spy.index).dropna()
+        common_spy = strat_spy.index.intersection(spy_al.index)
+        strat_spy = strat_spy.reindex(common_spy)
+        spy_al = spy_al.reindex(common_spy)
+        if len(spy_al) >= 20:
+            n_sp = len(spy_al)
+            yrs_sp = n_sp / TRADING_DAYS_PER_YEAR
+            if yrs_sp > 0:
+                strat_total_sp = float((1 + strat_spy).prod() - 1)
+                spy_total_sp = float((1 + spy_al).prod() - 1)
+                strat_ann_sp = float((1 + strat_total_sp) ** (1 / yrs_sp) - 1)
+                spy_ann_sp = float((1 + spy_total_sp) ** (1 / yrs_sp) - 1)
+                m.excess_return_vs_spy = strat_ann_sp - spy_ann_sp
+            spy_var = float(spy_al.var())
             if spy_var > 0:
-                cov = float(np.cov(aligned.values, spy_r.reindex(aligned.index).fillna(0).values)[0, 1])
+                cov = float(np.cov(strat_spy.values, spy_al.values)[0, 1])
                 m.beta = cov / spy_var
-            spy_down = spy_r < 0
-            if spy_down.sum() >= 5:
-                strat_down = aligned.reindex(spy_r[spy_down].index).dropna()
-                spy_down_al = spy_r[spy_down].reindex(strat_down.index).dropna()
-                if len(spy_down_al) >= 5 and float(spy_down_al.mean()) != 0:
-                    m.downside_capture = float(strat_down.mean() / spy_down_al.mean())
-
-            # Monthly alpha fraction: fraction of months strategy outperformed SPY
-            if isinstance(r.index, pd.DatetimeIndex):
-                strat_monthly = (1 + r).resample("ME").prod() - 1
-                spy_monthly = (1 + spy_r).resample("ME").prod() - 1
+            spy_down_mask = spy_al < 0
+            if spy_down_mask.sum() >= 5:
+                spy_down_vals = spy_al[spy_down_mask]
+                strat_down_vals = strat_spy[spy_down_mask]
+                if float(spy_down_vals.mean()) != 0:
+                    m.downside_capture = float(strat_down_vals.mean() / spy_down_vals.mean())
+            if isinstance(strat_spy.index, pd.DatetimeIndex):
+                strat_monthly = (1 + strat_spy).resample("ME").prod() - 1
+                spy_monthly = (1 + spy_al).resample("ME").prod() - 1
                 common_months = strat_monthly.index.intersection(spy_monthly.index)
                 if len(common_months) >= 2:
-                    strat_m = strat_monthly.reindex(common_months)
-                    spy_m = spy_monthly.reindex(common_months)
-                    m._positive_alpha_months_fraction = float((strat_m > spy_m).mean())
+                    m._positive_alpha_months_fraction = float(
+                        (strat_monthly.reindex(common_months) > spy_monthly.reindex(common_months)).mean()
+                    )
 
-    qqq_r = benchmark_returns.get("QQQ")
-    if qqq_r is not None and len(qqq_r) >= 20:
-        # Align QQQ to strategy dates (same as SPY alignment — no cross-period contamination)
-        qqq_aligned = qqq_r.dropna().reindex(r.index).dropna()
-        strat_for_qqq = r.reindex(qqq_aligned.index).dropna()
-        qqq_aligned = qqq_aligned.reindex(strat_for_qqq.index).dropna()
-        if len(qqq_aligned) >= 20:
-            years_qqq = len(qqq_aligned) / TRADING_DAYS_PER_YEAR
-            if years_qqq > 0:
-                qqq_total = float((1 + qqq_aligned).prod() - 1)
-                qqq_ann = float((1 + qqq_total) ** (1 / years_qqq) - 1)
-                m.excess_return_vs_qqq = (m.annualized_return or 0.0) - qqq_ann
-        # else: no overlap → excess_return_vs_qqq remains None
+    # --- QQQ benchmark (matched-period, same logic as SPY) ---
+    qqq_r_raw = benchmark_returns.get("QQQ")
+    if qqq_r_raw is not None:
+        qqq_clean = qqq_r_raw.dropna()
+        strat_qqq = r.reindex(qqq_clean.index).dropna()
+        qqq_al = qqq_clean.reindex(strat_qqq.index).dropna()
+        common_qqq = strat_qqq.index.intersection(qqq_al.index)
+        strat_qqq = strat_qqq.reindex(common_qqq)
+        qqq_al = qqq_al.reindex(common_qqq)
+        if len(qqq_al) >= 20:
+            n_qq = len(qqq_al)
+            yrs_qq = n_qq / TRADING_DAYS_PER_YEAR
+            if yrs_qq > 0:
+                strat_total_qq = float((1 + strat_qqq).prod() - 1)
+                qqq_total = float((1 + qqq_al).prod() - 1)
+                strat_ann_qq = float((1 + strat_total_qq) ** (1 / yrs_qq) - 1)
+                qqq_ann = float((1 + qqq_total) ** (1 / yrs_qq) - 1)
+                m.excess_return_vs_qqq = strat_ann_qq - qqq_ann
+        # else: insufficient overlap → excess_return_vs_qqq remains None
 
     m.factor_coverage = factor_coverage
-    m.sufficient_evidence = n >= TRADING_DAYS_PER_YEAR and m.sharpe_ratio is not None
+
+    # sufficient_evidence requires: minimum data, valid Sharpe, known period,
+    # adequate factor coverage, and PIT fundamentals for fundamental-factor models.
+    known_period = period in EVALUATION_PERIODS
+    coverage_ok = factor_coverage is None or factor_coverage >= min_factor_coverage
+    pit_ok = (not requires_pit_fundamentals) or m.point_in_time_fundamentals
+    m.sufficient_evidence = (
+        n >= TRADING_DAYS_PER_YEAR
+        and m.sharpe_ratio is not None
+        and known_period
+        and coverage_ok
+        and pit_ok
+    )
     if not m.sufficient_evidence:
-        m.evidence_note = f"limited: {n} days of data (need {TRADING_DAYS_PER_YEAR}+)"
+        reasons = []
+        if n < TRADING_DAYS_PER_YEAR:
+            reasons.append(f"insufficient_data: {n} days (need {TRADING_DAYS_PER_YEAR}+)")
+        if m.sharpe_ratio is None:
+            reasons.append("sharpe_unavailable")
+        if not known_period:
+            reasons.append(f"unknown_period: '{period}'")
+        if not coverage_ok:
+            reasons.append(f"low_factor_coverage: {factor_coverage} (need {min_factor_coverage}+)")
+        if not pit_ok:
+            reasons.append(
+                "point_in_time_fundamentals=False blocks sufficient_evidence "
+                "for fundamental-factor models (set requires_pit_fundamentals=False for price-only)"
+            )
+        m.evidence_note = "; ".join(reasons) if reasons else "insufficient_evidence"
 
     # Activity fields — only populated when position-level data is provided
     m.claude_availability = 0.0  # V2A: Claude not connected for order creation
@@ -397,12 +451,27 @@ def check_promotion_criteria(
         return results
     results["period_is_prospective_oos"] = True
 
-    # 1. Minimum prospective OOS data
+    # 1. Strategy must itself have sufficient evidence (data, Sharpe, coverage, PIT)
+    results["sufficient_evidence"] = strategy_metrics.sufficient_evidence
+    if not strategy_metrics.sufficient_evidence:
+        failures.append(
+            f"sufficient_evidence=False: {strategy_metrics.evidence_note or 'see evidence_note'}"
+        )
+
+    # 2. Point-in-time fundamentals must be True for fundamental-factor models
+    results["point_in_time_fundamentals"] = strategy_metrics.point_in_time_fundamentals
+    if not strategy_metrics.point_in_time_fundamentals:
+        failures.append(
+            "point_in_time_fundamentals=False: cannot promote a fundamental-factor model "
+            "without point-in-time data (look-ahead bias risk)"
+        )
+
+    # 3. Minimum prospective OOS data
     results["min_prospective_oos_months"] = (
         oos_months >= PROMOTION_CRITERIA["min_prospective_oos_months"]
     )
 
-    # 2. Sharpe ratio must exceed SPY Sharpe by the threshold
+    # 4. Sharpe ratio must exceed SPY Sharpe by the threshold
     strat_sharpe = strategy_metrics.sharpe_ratio
     spy_sharpe = spy_metrics.sharpe_ratio
     if strat_sharpe is not None and spy_sharpe is not None:
@@ -412,7 +481,7 @@ def check_promotion_criteria(
     else:
         results["min_sharpe_above_spy"] = False
 
-    # 3. Max drawdown must not be too much worse than SPY's
+    # 5. Max drawdown must not be too much worse than SPY's
     strat_dd = strategy_metrics.max_drawdown
     spy_dd = spy_metrics.max_drawdown
     if strat_dd is not None and spy_dd is not None and spy_dd < 0:
@@ -422,7 +491,7 @@ def check_promotion_criteria(
     else:
         results["max_drawdown_ratio_vs_spy"] = False
 
-    # 4. Fraction of months with positive alpha vs SPY
+    # 6. Fraction of months with positive alpha vs SPY
     alpha_frac = strategy_metrics._positive_alpha_months_fraction
     if alpha_frac is not None:
         results["min_positive_alpha_months_fraction"] = (
@@ -431,21 +500,22 @@ def check_promotion_criteria(
     else:
         results["min_positive_alpha_months_fraction"] = False
 
-    # 5. Survivorship bias disclosed
+    # 7. Survivorship bias disclosed
     results["must_report_survivorship_bias"] = bool(strategy_metrics.survivorship_bias_note)
 
-    # 6. Factor coverage disclosed
+    # 8. Factor coverage disclosed
     results["must_report_factor_coverage"] = (
         strategy_metrics.factor_coverage is not None
         and strategy_metrics.factor_coverage >= min_factor_coverage
     )
 
-    # 7. Backtest support gate — promotion blocked if backtest unsupported
+    # 9. Backtest support gate — promotion blocked if backtest unsupported
     results["backtest_not_blocking_promotion"] = not BACKTEST_STATUS.get("promotion_blocked", False)
 
-    # Collect failures for reporting
+    # Collect failures for reporting (sufficient_evidence and point_in_time_fundamentals
+    # failures were already appended above; collect remaining boolean failures here)
     for k, v in results.items():
-        if isinstance(v, bool) and not v:
+        if isinstance(v, bool) and not v and k not in ("sufficient_evidence", "point_in_time_fundamentals"):
             failures.append(k)
 
     results["all_passed"] = all(

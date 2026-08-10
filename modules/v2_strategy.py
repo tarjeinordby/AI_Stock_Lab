@@ -450,7 +450,9 @@ def build_value_factor(
     with available ev_ebitda_inv data. Sectors below the minimum threshold fall
     back to cross-sectional normalization.
 
-    value_sector_adjusted=True if sector adjustment was applied to at least one ticker.
+    value_sector_adjusted is a per-ticker boolean: True only for tickers whose
+    ev_ebitda_inv was actually normalized (sector size >= _SECTOR_MIN_GROUP_SIZE).
+    Tickers in small sectors or without ev_ebitda_inv data remain False.
     Missing values tracked. NOT point-in-time. NaN/inf → unavailable.
     """
     rows = []

@@ -1252,3 +1252,152 @@ class TestEvaluatorHardening:
         result = check_promotion_criteria(strat, spy, oos_months=12)
         assert result.get("all_passed") is False
         assert result.get("period_is_prospective_oos") is False
+
+
+# ---------------------------------------------------------------------------
+# Y. Matched-period benchmark alignment + evidence gating (Round 4)
+# ---------------------------------------------------------------------------
+
+class TestMatchedPeriodAlignment:
+    """Regression: excess return must use matched-period returns, not full-strategy annualized."""
+
+    def _strat_idx(self, n: int = 300) -> pd.DatetimeIndex:
+        return pd.date_range("2023-01-01", periods=n, freq="B")
+
+    def test_qqq_partial_overlap_identical_returns_gives_zero_excess(self):
+        """Partial QQQ overlap with identical -1% daily returns must yield excess = 0."""
+        from modules.v2_evaluation import compute_metrics
+        idx = self._strat_idx(300)
+        r = pd.Series([-0.01] * 300, index=idx)
+        spy_r = pd.Series([-0.01] * 300, index=idx)
+        # QQQ only covers last 20 strategy days with the same return
+        qqq_r = pd.Series([-0.01] * 20, index=idx[-20:])
+        m = compute_metrics(r, {"SPY": spy_r, "QQQ": qqq_r}, "S", "in_sample",
+                            requires_pit_fundamentals=False)
+        assert m.excess_return_vs_qqq is not None
+        assert abs(m.excess_return_vs_qqq) < 1e-9, (
+            f"Identical returns in overlap must give excess=0, got {m.excess_return_vs_qqq}"
+        )
+
+    def test_spy_partial_overlap_identical_returns_gives_zero_excess(self):
+        """Partial SPY overlap with identical returns must yield excess_vs_spy = 0."""
+        from modules.v2_evaluation import compute_metrics
+        idx = self._strat_idx(300)
+        r = pd.Series([0.001] * 300, index=idx)
+        spy_partial = pd.Series([0.001] * 20, index=idx[-20:])
+        m = compute_metrics(r, {"SPY": spy_partial}, "S", "in_sample",
+                            requires_pit_fundamentals=False)
+        assert m.excess_return_vs_spy is not None
+        assert abs(m.excess_return_vs_spy) < 1e-9, (
+            f"Identical returns in overlap must give excess=0, got {m.excess_return_vs_spy}"
+        )
+
+    def test_qqq_full_overlap_identical_returns_gives_zero_excess(self):
+        """Full QQQ/strategy overlap with identical returns must yield excess = 0."""
+        from modules.v2_evaluation import compute_metrics
+        idx = self._strat_idx(300)
+        r = pd.Series([0.002] * 300, index=idx)
+        spy_r = pd.Series([0.002] * 300, index=idx)
+        qqq_r = pd.Series([0.002] * 300, index=idx)
+        m = compute_metrics(r, {"SPY": spy_r, "QQQ": qqq_r}, "S", "in_sample",
+                            requires_pit_fundamentals=False)
+        assert m.excess_return_vs_qqq is not None
+        assert abs(m.excess_return_vs_qqq) < 1e-9
+
+    def test_low_factor_coverage_blocks_sufficient_evidence(self):
+        from modules.v2_evaluation import compute_metrics
+        idx = self._strat_idx(300)
+        r = pd.Series([0.001] * 300, index=idx)
+        spy_r = pd.Series([0.001] * 300, index=idx)
+        m = compute_metrics(r, {"SPY": spy_r}, "S", "in_sample",
+                            factor_coverage=0.10, requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "low_factor_coverage" in m.evidence_note
+
+    def test_full_factor_model_without_pit_blocks_sufficient_evidence(self):
+        """Full factor model (requires_pit_fundamentals=True) with PIT=False → insufficient."""
+        from modules.v2_evaluation import compute_metrics
+        idx = self._strat_idx(300)
+        r = pd.Series([0.001] * 300, index=idx)
+        spy_r = pd.Series([0.001] * 300, index=idx)
+        # Default: requires_pit_fundamentals=True; point_in_time_fundamentals=False by default
+        m = compute_metrics(r, {"SPY": spy_r}, "S", "in_sample", factor_coverage=0.80)
+        assert not m.sufficient_evidence
+        assert "point_in_time_fundamentals" in m.evidence_note
+
+    def test_price_only_model_can_have_sufficient_evidence(self):
+        """Price-only model (requires_pit_fundamentals=False) is exempt from PIT check."""
+        from modules.v2_evaluation import compute_metrics
+        idx = self._strat_idx(300)
+        r = pd.Series([0.001] * 300, index=idx)
+        spy_r = pd.Series([0.001] * 300, index=idx)
+        m = compute_metrics(r, {"SPY": spy_r}, "S", "in_sample",
+                            factor_coverage=0.80, requires_pit_fundamentals=False)
+        assert m.sufficient_evidence
+
+    def test_promotion_blocked_when_sufficient_evidence_false(self):
+        from modules.v2_evaluation import EvaluationMetrics, check_promotion_criteria
+        strat = EvaluationMetrics("S", "prospective_out_of_sample")
+        strat.sufficient_evidence = False
+        strat.evidence_note = "insufficient_data: 100 days (need 252+)"
+        strat.sharpe_ratio = 2.0
+        spy = EvaluationMetrics("SPY", "prospective_out_of_sample")
+        spy.sharpe_ratio = 1.0
+        spy.max_drawdown = -0.15
+        result = check_promotion_criteria(strat, spy, oos_months=7)
+        assert result["sufficient_evidence"] is False
+        assert result["all_passed"] is False
+        assert any("sufficient_evidence" in f for f in result["failures"])
+
+    def test_promotion_blocked_when_pit_fundamentals_false(self):
+        from modules.v2_evaluation import EvaluationMetrics, check_promotion_criteria
+        strat = EvaluationMetrics("S", "prospective_out_of_sample")
+        strat.sufficient_evidence = True
+        strat.point_in_time_fundamentals = False  # default but explicit here
+        strat.sharpe_ratio = 2.0
+        strat.survivorship_bias_note = "present"
+        strat.factor_coverage = 0.80
+        strat._positive_alpha_months_fraction = 0.6
+        strat.max_drawdown = -0.10
+        spy = EvaluationMetrics("SPY", "prospective_out_of_sample")
+        spy.sharpe_ratio = 1.0
+        spy.max_drawdown = -0.15
+        result = check_promotion_criteria(strat, spy, oos_months=7)
+        assert result["point_in_time_fundamentals"] is False
+        assert result["all_passed"] is False
+        assert any("point_in_time_fundamentals" in f for f in result["failures"])
+
+    def test_promotion_failure_reasons_are_precise(self):
+        """failures list must contain human-readable reason strings, not just keys."""
+        from modules.v2_evaluation import EvaluationMetrics, check_promotion_criteria
+        strat = EvaluationMetrics("S", "prospective_out_of_sample")
+        strat.sufficient_evidence = False
+        strat.evidence_note = "insufficient_data: 50 days"
+        strat.point_in_time_fundamentals = False
+        strat.sharpe_ratio = 1.0
+        spy = EvaluationMetrics("SPY", "prospective_out_of_sample")
+        spy.sharpe_ratio = 0.8
+        spy.max_drawdown = -0.20
+        result = check_promotion_criteria(strat, spy, oos_months=7)
+        failures = result.get("failures", [])
+        # Each failure must be a non-empty string with meaningful content
+        assert len(failures) >= 2, f"Expected >= 2 failures, got {failures}"
+        for f in failures:
+            assert isinstance(f, str) and len(f) > 5, f"Failure reason too short: {repr(f)}"
+
+    def test_insufficient_evidence_rank_none_in_compare(self):
+        """Insufficient-evidence strategy must have rank=None even after adding new checks."""
+        from modules.v2_evaluation import EvaluationMetrics, compare_strategies
+        insuf = EvaluationMetrics("A", "in_sample")
+        insuf.sufficient_evidence = False
+        insuf.sharpe_ratio = 8.0
+
+        suf = EvaluationMetrics("B", "in_sample")
+        suf.sufficient_evidence = True
+        suf.sharpe_ratio = 0.5
+
+        df = compare_strategies([insuf, suf])
+        row_a = df[df["strategy"] == "A"].iloc[0]
+        rank_a = row_a["rank"]
+        assert rank_a is None or (isinstance(rank_a, float) and math.isnan(rank_a)), \
+            f"Insufficient-evidence must have rank=None, got {rank_a}"
