@@ -224,3 +224,105 @@ spy_buy_hold_v1:
   created_at: null
   frozen: false
   status: "planned"
+
+# ============================================================================
+# QUANT BASELINE V2 — Research / Paper Trading (not yet live)
+# ============================================================================
+
+risk_managed_factor_v2:
+  description: >
+    V2 paper-trading portfolio. Correct capped-weight allocation (no
+    renormalization above cap). Three strategies with distinct risk profiles.
+    Claude shadow logged but never used for order creation.
+    Status: research/paper only - not active in production workflows.
+  created_at: "2026-08-10"
+  frozen: false
+  status: "research"
+  portfolio_config_hash: "8f22885005413987bb36722bba5df678801d90f33879975959abdcee2c39a9e6"
+
+  config:
+
+    strategies:
+      Core_Quality_Momentum_V2:
+        max_positions: 12
+        max_position_weight: 0.12
+        max_new_buys_per_week: 4
+        buy_top_n: 25
+        min_score_percentile: 0.70
+        sell_rank_threshold: 110
+        stop_loss: -0.18
+        trailing_stop: -0.25
+        buyback_cooldown_days: 10
+        exposure:
+          explosive: 0.95
+          bullish: 0.90
+          neutral: 0.65
+          defensive: 0.35
+          unknown: 0.55
+
+      Aggressive_Momentum_V2:
+        max_positions: 10
+        max_position_weight: 0.15
+        max_new_buys_per_week: 5
+        buy_top_n: 20
+        min_score_percentile: 0.75
+        sell_rank_threshold: 120
+        stop_loss: -0.22
+        trailing_stop: -0.28
+        buyback_cooldown_days: 7
+        exposure:
+          explosive: 1.00
+          bullish: 1.00
+          neutral: 0.70
+          defensive: 0.35
+          unknown: 0.60
+
+      Defensive_Quality_V2:
+        max_positions: 15
+        max_position_weight: 0.09
+        max_new_buys_per_week: 3
+        buy_top_n: 30
+        min_score_percentile: 0.65
+        sell_rank_threshold: 100
+        stop_loss: -0.14
+        trailing_stop: -0.20
+        buyback_cooldown_days: 14
+        exposure:
+          explosive: 0.80
+          bullish: 0.75
+          neutral: 0.55
+          defensive: 0.30
+          unknown: 0.50
+
+    general:
+      min_position_value_usd: 500
+      sector_cap: 0.25
+      start_capital_usd: 10000.0
+      weight_algorithm: "capped_allocation_v2"
+      weight_description: >
+        Correct capped allocation: clip to max_position_weight, redistribute
+        surplus only to positions with remaining capacity, keep uninvestable
+        fraction as cash. Never renormalizes above the cap.
+
+    pyramid:
+      initial_fill_fraction: 0.60
+      pyramid_fill_fraction: 0.40
+      min_trading_days_before_fill: 5
+      min_gain_before_fill: 0.02
+
+    exit_rules:
+      sell_if_below_sma200: true
+
+    drawdown_protection:
+      level_1_threshold: -0.20
+      level_1_max_exposure: 0.50
+      level_2_threshold: -0.30
+      level_2_max_exposure: 0.20
+
+    claude_shadow:
+      enabled: false
+      order_creation_blocked: true
+      log_only: true
+      description: >
+        Claude shadow analysis is logged for evaluation but cannot influence
+        order creation in V2A. All paper fills use factor scores only.
