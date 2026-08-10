@@ -4843,3 +4843,485 @@ class TestRound11Regressions:
         except_handler = fn_body[except_idx:handler_end + len("raise")]
         assert "send_telegram" in except_handler
         assert "raise" in except_handler
+
+
+# ---------------------------------------------------------------------------
+# Round 12 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound12Regressions:
+    """Regression tests for Round 12 bug found in commit 9bd3d23.
+
+    Phase 1 preflight only validated SETTLING orders in batch_orders.
+    A non-SETTLING fill_ref in the same CI (missing from orders, EXECUTED with
+    broken chain, etc.) was silently ignored. The SETTLING order could reach EXECUTED
+    even though the CI had an invalid co-fill_ref.
+
+    Fix: Phase 1 now iterates ALL fill_refs in ci.fills. Missing orders, unexpected
+    statuses, and broken EXECUTED chains all block the entire batch.
+    """
+
+    SESSION = "2026-08-07"
+    TICKER_A = "AAPL"
+    TICKER_B = "MSFT"
+    STRATEGY = "s1"
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _make_strict_filling(self, tmp_path, oid, ticker, trade_id):
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=oid, trade_id=trade_id,
+            signal_id=None, signal_run_id="run-r12",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=ticker, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+    def _make_legacy_filling(self, tmp_path, oid, ticker, trade_id):
+        import json
+        from modules.fills import _make_content_hash, make_fill_id
+        fill_id = make_fill_id(oid)
+        fa_id = f"fa-r12-legacy-{oid[-4:]}"
+        rec = {
+            "fill_id": fill_id,
+            "fill_attempt_id": fa_id,
+            "order_id": oid,
+            "trade_id": trade_id,
+            "signal_id": None,
+            "signal_run_id": "run-r12",
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "strategy": self.STRATEGY,
+            "ticker": ticker,
+            "action": "BUY",
+            "intended_execution_session": self.SESSION,
+            "actual_execution_session": self.SESSION,
+            "execution_price": 100.0,
+            "execution_price_source": "next_session_daily_open_v1",
+            "execution_price_timestamp": f"{self.SESSION}T13:30:00Z",
+            "execution_price_interval": "1d",
+            "gross_execution_price": 100.0,
+            "shares": 5.0,
+            "slippage_bps": 0,
+            "slippage_amount": 0.0,
+            "commission_amount": 0.0,
+            "gross_execution_value": 500.0,
+            "total_execution_cost": 0.0,
+            "net_cash_effect": -500.0,
+            "cash_before": 10000.0,
+            "cash_after": 9500.0,
+            "reason": "test",
+            "execution_version": EXEC_VERSION,
+            # NO record_version — legacy record
+            "status": "filling",
+            "written_at": f"{self.SESSION}T13:30:00Z",
+        }
+        rec["content_hash"] = _make_content_hash(rec)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        return rec
+
+    def _create_order_settling(self, orders, signal_run_id, ticker, trade_id):
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id=signal_run_id, ticker=ticker,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id=trade_id
+        )
+        return orders[order["order_id"]]
+
+    def _pre_post_hashes(self):
+        from modules.fills import compute_portfolio_state_hash
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        return pre_h, post_h
+
+    # --- 1. A SETTLING valid + B missing from orders + B has legacy filling ---
+
+    def test_a_settling_valid_b_missing_and_legacy_batch_rejected(self, tmp_path, monkeypatch):
+        """B missing from orders dict + legacy filling → entire batch rejected, A never EXECUTED.
+
+        Pre-Round-12: A would be EXECUTED before B's fill_ref was ever validated.
+        Phase 1 now iterates all fill_refs; B's legacy filling fails first → batch invalid.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12a", self.TICKER_A, "trd-r12a")
+        order_b = self._create_order_settling(orders, "run-r12b", self.TICKER_B, "trd-r12b")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12a")
+        fill_b = self._make_legacy_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12b")
+
+        pre_h, post_h = self._pre_post_hashes()
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # Remove B from orders (simulates it being absent from the active orders dict)
+        del orders[oid_b]
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION, (
+            "A must be FAILED_RECONCILIATION — whole batch is invalid"
+        )
+        assert oid_b not in orders, "B must remain absent from orders dict"
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        assert not [e for e in events.get(oid_a, []) if e.get("status") == "persisted"], (
+            "no persisted record must be written for A in an invalid batch"
+        )
+
+    # --- 2. A SETTLING valid + B EXECUTED but invalid chain (no persisted marker) ---
+
+    def test_a_settling_valid_b_executed_no_chain_batch_rejected(self, tmp_path, monkeypatch):
+        """B is EXECUTED but has no persisted marker → entire batch rejected.
+
+        Phase 1 detects EXECUTED order with no persisted chain and fails the batch
+        before any write.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12c", self.TICKER_A, "trd-r12c")
+        order_b = self._create_order_settling(orders, "run-r12d", self.TICKER_B, "trd-r12d")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12c")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12d")
+
+        pre_h, post_h = self._pre_post_hashes()
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # Set B to EXECUTED without a persisted marker (simulates inconsistent state)
+        orders[oid_b] = save_order(orders[oid_b], status=EXECUTED)
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        assert not [e for e in events.get(oid_a, []) if e.get("status") == "persisted"]
+
+    # --- 3a. Reversed fill_ref order: B (missing+legacy) first, A (valid) last ---
+
+    def test_reversed_fill_refs_b_first_missing_legacy_batch_rejected(self, tmp_path, monkeypatch):
+        """Same as test 1 but CI has fill_refs in [B, A] order — outcome must be identical."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12e", self.TICKER_A, "trd-r12e")
+        order_b = self._create_order_settling(orders, "run-r12f", self.TICKER_B, "trd-r12f")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12e")
+        fill_b = self._make_legacy_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12f")
+
+        pre_h, post_h = self._pre_post_hashes()
+        # REVERSED: B is listed first in fills
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+            ],
+        )
+
+        del orders[oid_b]
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION, (
+            "A must be FAILED_RECONCILIATION regardless of fill_ref order in CI"
+        )
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        assert not [e for e in events.get(oid_a, []) if e.get("status") == "persisted"]
+
+    # --- 3b. Reversed fill_ref order: B (EXECUTED no chain) first, A last ---
+
+    def test_reversed_fill_refs_b_executed_no_chain_first_batch_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """Same as test 2 but CI has fill_refs in [B, A] order — outcome must be identical."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12g", self.TICKER_A, "trd-r12g")
+        order_b = self._create_order_settling(orders, "run-r12h", self.TICKER_B, "trd-r12h")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12g")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12h")
+
+        pre_h, post_h = self._pre_post_hashes()
+        # REVERSED: B first
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+            ],
+        )
+
+        orders[oid_b] = save_order(orders[oid_b], status=EXECUTED)
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        assert not [e for e in events.get(oid_a, []) if e.get("status") == "persisted"]
+
+    # --- 4. Missing order-record with strict filling → specific failure_reason ---
+
+    def test_missing_order_with_strict_filling_fail_closed(self, tmp_path, monkeypatch):
+        """B missing from orders dict + strict filling → fail-closed with 'mangler fra orders-dicten'.
+
+        This tests the missing-orders check path specifically (filling passes strict validation
+        before the orders lookup).
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12i", self.TICKER_A, "trd-r12i")
+        order_b = self._create_order_settling(orders, "run-r12j", self.TICKER_B, "trd-r12j")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12i")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12j")
+
+        pre_h, post_h = self._pre_post_hashes()
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # Remove B — strict filling exists but B is not in the active orders dict
+        del orders[oid_b]
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION
+
+        # failure_reason on A must mention the missing-orders path
+        failure_reason = orders[oid_a].get("failure_reason", "")
+        assert "mangler fra orders" in failure_reason, (
+            f"failure_reason must reference missing orders, got: {failure_reason!r}"
+        )
+
+    # --- 5. A SETTLING no persisted + B EXECUTED with valid strict chain ---
+
+    def test_a_settling_b_executed_valid_chain_reconstructs_a(self, tmp_path, monkeypatch):
+        """A SETTLING (no persisted) + B EXECUTED with complete strict chain → A reconstructed.
+
+        Phase 1 validates B's chain (resolve_fill strict passes), adds A to needs_reconstruction.
+        Phase 2 writes exactly one persisted for A and sets A to EXECUTED. B is untouched.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent,
+        )
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12k", self.TICKER_A, "trd-r12k")
+        order_b = self._create_order_settling(orders, "run-r12l", self.TICKER_B, "trd-r12l")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12k")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12l")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # B is already persisted and EXECUTED (e.g., from a previous partial run)
+        mark_fill_persisted(
+            oid_b, fill_b["fill_attempt_id"], fill_b["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+        orders[oid_b] = save_order(orders[oid_b], status=EXECUTED)
+
+        # A is still SETTLING with no persisted marker
+        state_post = {"cash": 9500.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == EXECUTED, "A must be reconstructed to EXECUTED"
+        assert orders[oid_b]["status"] == EXECUTED, "B must remain EXECUTED (unchanged)"
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        a_persisted = [e for e in events.get(oid_a, []) if e.get("status") == "persisted"]
+        b_persisted = [e for e in events.get(oid_b, []) if e.get("status") == "persisted"]
+        assert len(a_persisted) == 1, "exactly one persisted record for A"
+        assert len(b_persisted) == 1, "exactly one persisted record for B (no duplicate)"
+
+    # --- 6. Regression: two valid SETTLING orders + current==post → both EXECUTED ---
+
+    def test_two_strict_settling_post_hash_regression(self, tmp_path, monkeypatch):
+        """Two strict v2 SETTLING orders + current==post: both EXECUTED after Round 12 change."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12m", self.TICKER_A, "trd-r12m")
+        order_b = self._create_order_settling(orders, "run-r12n", self.TICKER_B, "trd-r12n")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12m")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12n")
+
+        pre_h, post_h = self._pre_post_hashes()
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        state_post = {"cash": 9500.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid_a]["status"] == EXECUTED
+        assert orders[oid_b]["status"] == EXECUTED
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            p = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert len(p) == 1, f"exactly one persisted for {oid}"
+
+    # --- 7. Regression: two valid SETTLING orders + current==pre → both PENDING_PRICE ---
+
+    def test_two_strict_settling_pre_hash_regression(self, tmp_path, monkeypatch):
+        """Two strict v2 SETTLING orders + current==pre: both PENDING_PRICE after Round 12."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r12o", self.TICKER_A, "trd-r12o")
+        order_b = self._create_order_settling(orders, "run-r12p", self.TICKER_B, "trd-r12p")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r12o")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r12p")
+
+        pre_h, post_h = self._pre_post_hashes()
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        state_pre = {"cash": 10000.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+
+        assert orders[oid_a]["status"] == PENDING_PRICE
+        assert orders[oid_b]["status"] == PENDING_PRICE
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            p = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+            assert not p, f"no persisted for {oid} in pre-hash case"

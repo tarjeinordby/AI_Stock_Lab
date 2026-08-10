@@ -498,33 +498,101 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                 f"— krever nøyaktig int {_FRV} — versjonsløs CI kan ikke autorisere EXECUTED"
             )
 
-        # 1b. Validate every filling and existing persisted chain in the batch
+        # 1b. Validate ALL fill_refs in CI — not just batch_orders (SETTLING).
+        # Missing orders, wrong statuses, or invalid chains all block the entire batch.
         if res["valid"]:
-            for order in batch_orders:
-                oid = order["order_id"]
+            for fill_ref in ci.get("fills", []):
+                oid = fill_ref.get("order_id")
+                if not oid:
+                    res["valid"] = False
+                    res["fail_reason"] = (
+                        f"commit_intent {cid!r} har fill_ref uten order_id — fail-closed"
+                    )
+                    break
                 order_events = fill_events_by_order.get(oid, [])
 
-                # Strict filling validation (version, content_hash, exactly 1 match)
+                # Strict filling validation (version, content_hash, exactly-one match)
                 try:
-                    fill_ref, filling = _resolve_ci_filling_strict(oid, order_events, ci, _FRV)
-                    res["filling_by_order"][oid] = (fill_ref, filling)
+                    fill_ref_val, filling = _resolve_ci_filling_strict(
+                        oid, order_events, ci, _FRV
+                    )
+                    res["filling_by_order"][oid] = (fill_ref_val, filling)
                 except RuntimeError as _ve:
                     res["valid"] = False
                     res["fail_reason"] = str(_ve)
                     break
 
-                # If a persisted marker exists, validate the full chain strictly
-                _p_markers = [e for e in order_events if e.get("status") == "persisted"]
-                if _p_markers:
+                # Look up the order record — must exist in the orders dict
+                order_rec = orders.get(oid)
+                if order_rec is None:
+                    res["valid"] = False
+                    res["fail_reason"] = (
+                        f"fill_ref for ordre {oid!r} i commit_intent {cid!r} "
+                        f"mangler fra orders-dicten — fail-closed (manual_review)"
+                    )
+                    break
+
+                order_status = order_rec.get("status")
+
+                if order_status == SETTLING:
+                    # Detect overlapping CIs: SETTLING order mapped to a different CI
+                    _mapped_ci = order_to_intent.get(oid)
+                    if _mapped_ci is not None and _mapped_ci.get("commit_id") != cid:
+                        res["valid"] = False
+                        res["fail_reason"] = (
+                            f"ordre {oid!r} er SETTLING men er mappet til "
+                            f"commit_intent {_mapped_ci.get('commit_id')!r} "
+                            f"— overlappende commit_intents — fail-closed"
+                        )
+                        break
+                    # Validate existing persisted chain if present
+                    _p_markers = [
+                        e for e in order_events if e.get("status") == "persisted"
+                    ]
+                    if _p_markers:
+                        try:
+                            resolve_fill(
+                                oid, order_events, commit_intents,
+                                expected_commit_id=cid, strict=True,
+                            )
+                        except RuntimeError as _re:
+                            res["valid"] = False
+                            res["fail_reason"] = str(_re)
+                            break
+                    else:
+                        res["needs_reconstruction"].add(oid)
+
+                elif order_status == EXECUTED:
+                    # EXECUTED is only valid if a strict persisted chain exists for this CI
+                    _p_markers = [
+                        e for e in order_events if e.get("status") == "persisted"
+                    ]
+                    if not _p_markers:
+                        res["valid"] = False
+                        res["fail_reason"] = (
+                            f"ordre {oid!r} er EXECUTED men mangler persisted-marker "
+                            f"— inkonsistent tilstand — fail-closed"
+                        )
+                        break
                     try:
-                        resolve_fill(oid, order_events, commit_intents,
-                                     expected_commit_id=cid, strict=True)
+                        resolve_fill(
+                            oid, order_events, commit_intents,
+                            expected_commit_id=cid, strict=True,
+                        )
                     except RuntimeError as _re:
                         res["valid"] = False
                         res["fail_reason"] = str(_re)
                         break
+                    # EXECUTED with valid chain: already done — Phase 2 will not touch it
+
                 else:
-                    res["needs_reconstruction"].add(oid)
+                    # Unexpected status: PENDING_PRICE, EXPIRED, FAILED_PRICE, etc.
+                    res["valid"] = False
+                    res["fail_reason"] = (
+                        f"fill_ref for ordre {oid!r} har status {order_status!r} "
+                        f"— forventet SETTLING eller EXECUTED — fail-closed"
+                    )
+                    break
 
         # 1c. Hash classification (same pre/post for all orders in a batch)
         if res["valid"]:
