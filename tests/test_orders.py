@@ -29,6 +29,7 @@ from modules.orders import (
     SETTLING,
     TERMINAL,
     _make_legacy_order_id,
+    build_execution_stats,
     build_order,
     check_pending_price_guard,
     expire_stale_orders,
@@ -6653,3 +6654,274 @@ class TestRound16Regressions:
             "Order must remain PENDING_PRICE when no persisted marker exists"
         )
         assert not telegram_calls
+
+# ===========================================================================
+# Round 17 — Ledger-based execution statistics (build_execution_stats)
+# ===========================================================================
+
+def _with_file_r17(tmp_path, monkeypatch):
+    """Redirect orders ledger to a temp file for Round 17 tests."""
+    import modules.orders as om
+    monkeypatch.setattr(om, "ORDERS_FILE", str(tmp_path / "orders.jsonl"))
+    monkeypatch.setattr(om, "_ORDERS_LOCK_FILE", str(tmp_path / "orders.jsonl.lock"))
+
+
+def _make_order_r17(
+    orders, strategy, session, action="BUY", status=PENDING_PRICE,
+    failure_reason=None, ticker="AAPL"
+):
+    """Create an order in the given dict with the specified status."""
+    order, _ = get_or_create_order(
+        orders=orders,
+        signal_run_id=f"run-r17-{action}-{ticker}",
+        ticker=ticker,
+        strategy=strategy,
+        session_date=session,
+        action=action,
+        target_value=5000.0,
+        reason="test",
+        signal_price=100.0,
+        execution_version="v1",
+    )
+    if status != PENDING_PRICE or failure_reason:
+        order = save_order(order, status=status, failure_reason=failure_reason)
+    else:
+        order = save_order(order)
+    orders[order["order_id"]] = order
+    return order
+
+
+class TestRound17Regressions:
+    """
+    Behavioral tests for build_execution_stats.
+
+    Cohort definition: intended_execution_session == session_date AND strategy == strategy_name.
+    Each order_id counted once (append-only ledger deduplicated by load_orders).
+
+    recommendations = candidates_count per strategy from the most recent validated signal-run.
+    Reported separately (not computed here); these tests verify the stats dict keys.
+    """
+
+    SESSION = "2026-08-10"
+    STRATEGY = "test_strategy_r17"
+
+    # 1. FAILED_PRICE in ledger gives failed_price=1
+    def test_failed_price_reported(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, status=FAILED_PRICE)
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["failed_price"] == 1
+        assert stats["cohort_size"] == 1
+        # fill_rate = (executed + settling) / cohort_size = 0/1 = 0.0 (not None)
+        assert stats["fill_rate"] == 0.0
+
+    # 2. FAILED_RECONCILIATION reported
+    def test_failed_reconciliation_reported(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, status=FAILED_RECONCILIATION)
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["failed_reconciliation"] == 1
+        assert stats["cohort_size"] == 1
+        assert stats["fill_rate"] == 0.0
+
+    # 3. EXPIRED reported
+    def test_expired_reported(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, status=EXPIRED)
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["expired"] == 1
+        assert stats["cohort_size"] == 1
+        assert stats["fill_rate"] == 0.0
+
+    # 4. CANCELLED reported
+    def test_cancelled_reported(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, status=CANCELLED)
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["cancelled"] == 1
+        assert stats["cohort_size"] == 1
+        assert stats["fill_rate"] == 0.0
+
+    # 5. Append-only snapshots for same order_id counted as one order
+    def test_append_only_same_order_counted_once(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        order = _make_order_r17(orders, self.STRATEGY, self.SESSION)
+        oid = order["order_id"]
+        # Append multiple status updates for the same order_id
+        for _ in range(3):
+            updated = save_order(orders[oid], status=PENDING_PRICE, failure_reason="retry")
+            orders[oid] = updated
+        # Reload from disk — deduplicates by order_id (last-write-wins)
+        reloaded = load_orders()
+        stats = build_execution_stats(reloaded, self.SESSION, self.STRATEGY)
+        assert stats["cohort_size"] == 1, "Same order_id must be counted once regardless of appends"
+        assert stats["pending_price"] == 1
+
+    # 6. Pending order filled at rerun: created=1, executed=1, fill_rate=100%
+    def test_pending_filled_at_rerun_gives_full_fill_rate(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        order = _make_order_r17(orders, self.STRATEGY, self.SESSION, status=PENDING_PRICE)
+        oid = order["order_id"]
+        # Simulate fill: status transitions to EXECUTED
+        executed = save_order(orders[oid], status=EXECUTED)
+        orders[oid] = executed
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["cohort_size"] == 1
+        assert stats["executed"] == 1
+        assert stats["pending_price"] == 0
+        assert stats["fill_rate"] == 1.0, "100% fill rate when single order is EXECUTED"
+
+    # 7. Rerun without new orders still shows stats (no crash, cohort_size=0 is valid)
+    def test_zero_orders_shows_stats_without_crash(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["cohort_size"] == 0
+        assert stats["fill_rate"] is None
+        assert stats["buy_fill_rate"] is None
+        assert stats["sell_fill_rate"] is None
+        assert stats["pyramid_fill_rate"] is None
+        # All counters must be zero — no KeyError, no crash
+        for key in ("executed", "pending_price", "failed_price", "failed_reconciliation",
+                    "expired", "cancelled", "missing_execution_price",
+                    "buy_created", "buy_executed", "sell_created", "sell_executed",
+                    "pyramid_created", "pyramid_executed"):
+            assert stats[key] == 0, f"{key} should be 0 for empty cohort"
+
+    # 8. Missing execution price counted separately
+    def test_missing_execution_price_counted(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        _make_order_r17(
+            orders, self.STRATEGY, self.SESSION, status=PENDING_PRICE,
+            failure_reason="no execution price for session",
+        )
+        _make_order_r17(
+            orders, self.STRATEGY, self.SESSION, status=PENDING_PRICE,
+            failure_reason="other reason", ticker="MSFT",
+        )
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["pending_price"] == 2
+        assert stats["missing_execution_price"] == 1, "Only 'no execution price' reason is counted"
+
+    # 9. BUY/SELL/PYRAMID_FILL split correctly
+    def test_action_split_buy_sell_pyramid(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        orders = {}
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, action="BUY",          status=EXECUTED, ticker="AAPL")
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, action="BUY",          status=PENDING_PRICE, ticker="MSFT")
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, action="SELL",         status=EXECUTED, ticker="GOOG")
+        _make_order_r17(orders, self.STRATEGY, self.SESSION, action="PYRAMID_FILL", status=PENDING_PRICE, ticker="TSLA")
+        stats = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats["cohort_size"] == 4
+        assert stats["buy_created"] == 2
+        assert stats["buy_executed"] == 1
+        assert stats["buy_fill_rate"] == 0.5
+        assert stats["sell_created"] == 1
+        assert stats["sell_executed"] == 1
+        assert stats["sell_fill_rate"] == 1.0
+        assert stats["pyramid_created"] == 1
+        assert stats["pyramid_executed"] == 0
+        assert stats["pyramid_fill_rate"] == 0.0
+
+    # 10. 0 orders: fill_rate=None, cohort_size=0 — displayed as 0/0 and N/A
+    def test_zero_orders_fill_rate_none(self, tmp_path, monkeypatch):
+        _with_file_r17(tmp_path, monkeypatch)
+        stats = build_execution_stats({}, self.SESSION, self.STRATEGY)
+        assert stats["cohort_size"] == 0
+        assert stats["fill_rate"] is None
+        # _fmt_rate in reporting.py should render this as '0/0 (N/A)'
+        from modules.reporting import _fmt_rate
+        assert _fmt_rate(0, 0) == "0/0 (N/A)"
+        assert _fmt_rate(1, 2) == "1/2 (50%)"
+
+    # 11. expired_this_run shown even for order from prior session
+    def test_expired_this_run_from_prior_session(self, tmp_path, monkeypatch):
+        """expire_stale_orders() expires orders from prior sessions and returns them.
+        The reporting layer must show this count even though those orders are not
+        in the current session's cohort.
+        """
+        _with_file_r17(tmp_path, monkeypatch)
+        PRIOR_SESSION = "2026-08-07"
+        orders = {}
+        # Order from prior session — PENDING_PRICE, never filled
+        prior_order = _make_order_r17(
+            orders, self.STRATEGY, PRIOR_SESSION, status=PENDING_PRICE,
+        )
+        prior_oid = prior_order["order_id"]
+
+        # expire_stale_orders marks it EXPIRED
+        expired = expire_stale_orders(orders, self.SESSION)
+        assert len(expired) == 1
+        assert expired[0]["order_id"] == prior_oid
+        assert orders[prior_oid]["status"] == EXPIRED
+
+        # Session-cohort stats for today show 0 orders (prior session not in cohort)
+        stats_today = build_execution_stats(orders, self.SESSION, self.STRATEGY)
+        assert stats_today["cohort_size"] == 0
+        assert stats_today["expired"] == 0  # not in today's cohort
+
+        # The caller (run_execute) tracks expired_this_run separately
+        expired_by_strategy = {}
+        for o in expired:
+            s = o.get("strategy")
+            if s:
+                expired_by_strategy[s] = expired_by_strategy.get(s, 0) + 1
+        assert expired_by_strategy.get(self.STRATEGY, 0) == 1
+
+    # 12. Recommendations reported consistently per strategy and total
+    def test_recommendations_per_strategy_and_total(self, tmp_path, monkeypatch):
+        """recommendations = candidates_count per strategy from the validated signal-run.
+        Total = sum of per-strategy counts (no deduplication — strategies may share tickers).
+        The _build_actions formatter must show per-strategy and total without hidden double-counting.
+        """
+        from modules.reporting import _build_actions
+        # Build minimal result dicts with exec_stats and recommendations
+        def _make_result(strategy, recs, n=0, ex=0, action="BUY"):
+            return {
+                "strategy": strategy,
+                "buys": [],
+                "sells": [],
+                "recommendations": recs,
+                "expired_this_run": 0,
+                "exec_stats": {
+                    "cohort_size": n,
+                    "executed": ex,
+                    "settling": 0,
+                    "pending_price": n - ex,
+                    "failed_price": 0,
+                    "failed_reconciliation": 0,
+                    "expired": 0,
+                    "cancelled": 0,
+                    "missing_execution_price": 0,
+                    "buy_created": n if action == "BUY" else 0,
+                    "buy_executed": ex if action == "BUY" else 0,
+                    "sell_created": n if action == "SELL" else 0,
+                    "sell_executed": ex if action == "SELL" else 0,
+                    "pyramid_created": 0,
+                    "pyramid_executed": 0,
+                    "fill_rate": (ex / n) if n > 0 else None,
+                    "buy_fill_rate": (ex / n) if n > 0 and action == "BUY" else None,
+                    "sell_fill_rate": (ex / n) if n > 0 and action == "SELL" else None,
+                    "pyramid_fill_rate": None,
+                },
+            }
+
+        results = [
+            _make_result("S1", recs=5, n=3, ex=2),
+            _make_result("S2", recs=5, n=2, ex=2),
+        ]
+        msg = _build_actions(results)
+        # Total recommendations = 5 + 5 = 10
+        assert "10 totalt" in msg, f"Expected '10 totalt' in: {msg}"
+        # Both per-strategy counts visible
+        assert "5 (S1)" in msg
+        assert "5 (S2)" in msg
+        # Overall fill rate = 4/5
+        assert "4/5" in msg

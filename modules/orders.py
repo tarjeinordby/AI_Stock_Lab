@@ -926,6 +926,97 @@ def check_pending_price_guard(
             ) from chain_err
 
 
+def build_execution_stats(orders: dict, session_date: str, strategy_name: str) -> dict:
+    """Build execution statistics for a strategy's session cohort from the persistent order ledger.
+
+    Cohort definition: all orders where
+        intended_execution_session == session_date AND strategy == strategy_name.
+
+    Each order_id is counted exactly once — load_orders() already deduplicates by order_id
+    (last record wins in the append-only JSONL), so retried orders update the same order,
+    not the denominator.
+
+    fill_rate = (executed + settling) / cohort_size.
+    SETTLING counts as executed because the transition to EXECUTED completes within the same
+    run, before this function is called in normal flow.
+
+    recommendations (candidates_count) = number of signal candidates for the strategy from
+    the most recent validated signal-run. Defined externally and passed via the result dict
+    (key: "recommendations"). Included here for documentation only; not computed here.
+    """
+    cohort = [
+        o for o in orders.values()
+        if o.get("intended_execution_session") == session_date
+        and o.get("strategy") == strategy_name
+    ]
+
+    stats: dict = {
+        "cohort_size": len(cohort),
+        "executed": 0,
+        "settling": 0,
+        "pending_price": 0,
+        "failed_price": 0,
+        "failed_reconciliation": 0,
+        "expired": 0,
+        "cancelled": 0,
+        "missing_execution_price": 0,  # PENDING_PRICE with "no execution price" in failure_reason
+        "buy_created": 0,
+        "buy_executed": 0,
+        "sell_created": 0,
+        "sell_executed": 0,
+        "pyramid_created": 0,
+        "pyramid_executed": 0,
+    }
+
+    for o in cohort:
+        status = o.get("status", "")
+        action = o.get("action", "")
+        filled = status in (EXECUTED, SETTLING)
+
+        if status == EXECUTED:
+            stats["executed"] += 1
+        elif status == SETTLING:
+            stats["settling"] += 1
+        elif status == PENDING_PRICE:
+            stats["pending_price"] += 1
+            fr = o.get("failure_reason") or ""
+            if "no execution price" in fr:
+                stats["missing_execution_price"] += 1
+        elif status == FAILED_PRICE:
+            stats["failed_price"] += 1
+        elif status == FAILED_RECONCILIATION:
+            stats["failed_reconciliation"] += 1
+        elif status == EXPIRED:
+            stats["expired"] += 1
+        elif status == CANCELLED:
+            stats["cancelled"] += 1
+
+        if action == "BUY":
+            stats["buy_created"] += 1
+            if filled:
+                stats["buy_executed"] += 1
+        elif action == "SELL":
+            stats["sell_created"] += 1
+            if filled:
+                stats["sell_executed"] += 1
+        elif action == "PYRAMID_FILL":
+            stats["pyramid_created"] += 1
+            if filled:
+                stats["pyramid_executed"] += 1
+
+    n = stats["cohort_size"]
+    ex = stats["executed"] + stats["settling"]
+    stats["fill_rate"] = (ex / n) if n > 0 else None
+    bc = stats["buy_created"]
+    stats["buy_fill_rate"] = (stats["buy_executed"] / bc) if bc > 0 else None
+    sc = stats["sell_created"]
+    stats["sell_fill_rate"] = (stats["sell_executed"] / sc) if sc > 0 else None
+    pc = stats["pyramid_created"]
+    stats["pyramid_fill_rate"] = (stats["pyramid_executed"] / pc) if pc > 0 else None
+
+    return stats
+
+
 def expire_stale_orders(orders: dict, current_session_date: str, *, _now=None) -> list:
     """
     Transition PENDING_PRICE orders to EXPIRED when their session is definitively over.

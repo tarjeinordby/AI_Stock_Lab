@@ -11,15 +11,14 @@ from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
 from modules.exchange_calendar import CalendarUnavailableError, intended_execution_session
 from modules.orders import (
     EXECUTED, EXPIRED, FAILED_PRICE, FAILED_RECONCILIATION, PENDING_PRICE, SETTLING, TERMINAL,  # noqa: F401
+    build_execution_stats,
     check_pending_price_guard,
     expire_stale_orders,
     get_or_create_order,
     get_pending_for_session,
     load_orders,
-
     make_trade_id,
     reconcile_settling_orders,
-
     save_order,
 )
 from modules.versioning import PORTFOLIO_VERSION
@@ -821,14 +820,6 @@ def run_strategy_execution(
     sells = []
     buys = []
     correlation_log = []
-    orders_created = 0
-    orders_executed = 0
-    orders_pending_price = 0
-    orders_failed_price = 0
-    buy_orders_created = 0
-    buy_orders_executed = 0
-    sell_orders_created = 0
-    sell_orders_executed = 0
     # Tracks (order_id, fill_attempt_id, filling_content_hash) for each SETTLING fill
     settling_fills: list[tuple[str, str, str]] = []
     # Capture pre-fill hash (before any trades mutate state) for commit_intent pre/post recovery
@@ -856,8 +847,6 @@ def run_strategy_execution(
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
                 settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 sells.append(trade)
-                orders_executed += 1
-                sell_orders_executed += 1
                 print(f"  [{strategy_name}] RETRY-SELG {ticker}: {order['reason']}")
             else:
                 updated = save_order(
@@ -866,7 +855,6 @@ def run_strategy_execution(
                     failure_reason="no execution price for session (retry attempt)",
                 )
                 orders[order["order_id"]] = updated
-                orders_pending_price += 1
         elif order["action"] == "BUY" and ticker not in state["positions"]:
             candidate = candidates_by_ticker.get(ticker)
             if candidate:
@@ -883,8 +871,6 @@ def run_strategy_execution(
                     _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
                     settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                     buys.append(trade)
-                    orders_executed += 1
-                    buy_orders_executed += 1
                     print(f"  [{strategy_name}] RETRY-KJØP {ticker}: {order['reason']}")
                 else:
                     updated = save_order(
@@ -893,12 +879,9 @@ def run_strategy_execution(
                         failure_reason="no execution price for session (retry attempt)",
                     )
                     orders[order["order_id"]] = updated
-                    orders_pending_price += 1
 
     # --- Helper: get or create order and mark outcome ---
     def _sell_with_order(ticker, reason, signal_price=None, action_origin="signal"):
-        nonlocal orders_created, orders_executed, orders_pending_price
-        nonlocal sell_orders_created, sell_orders_executed
         # Portfolio-safety sells (stop-loss, drawdown protection) have no signal_id.
         # Signal-based sells use the candidate's ledger signal_id if available.
         sell_signal_id = (
@@ -919,8 +902,6 @@ def run_strategy_execution(
             # full lifecycle (created → executed/pending) is always in the JSONL.
             saved = save_order(order)
             orders[order["order_id"]] = saved
-            orders_created += 1
-            sell_orders_created += 1
         cash_before = state["cash"]
         state2, trades2, trade = execute_sell(
             state, trades_df, strategy_name, ticker, reason, execution_price_cache
@@ -929,8 +910,6 @@ def run_strategy_execution(
             _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state2["cash"], execution_version)
             _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
             settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
-            orders_executed += 1
-            sell_orders_executed += 1
         else:
             updated = save_order(
                 orders[order["order_id"]],
@@ -938,7 +917,6 @@ def run_strategy_execution(
                 failure_reason="no execution price for session",
             )
             orders[order["order_id"]] = updated
-            orders_pending_price += 1
         return trade, state2, trades2
 
     # Correlation-based sells: require valid signal (corr_pairs come from signal)
@@ -1050,7 +1028,6 @@ def run_strategy_execution(
                 _annotate_trade(fill, pyr_order["order_id"], orders, signal_run_id, execution_version)
                 settling_fills.append((pyr_order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 pyramid_fills.append(fill)
-                orders_executed += 1
                 print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
             else:
                 # Execution price unavailable or fill conditions not met — keep as PENDING_PRICE
@@ -1060,7 +1037,6 @@ def run_strategy_execution(
                     failure_reason="pyramid fill conditions not met or no execution price",
                 )
                 orders[pyr_order["order_id"]] = updated
-                orders_pending_price += 1
     elif list(state["positions"].values()):
         print(f"  [{strategy_name}] PYRAMID blokkert: signal ugyldig")
 
@@ -1156,8 +1132,6 @@ def run_strategy_execution(
                 # full lifecycle (created → executed/pending) is always in the JSONL.
                 saved = save_order(order)
                 orders[order["order_id"]] = saved
-                orders_created += 1
-                buy_orders_created += 1
 
             buy_cash_before = state["cash"]
             state, trades_df, trade = execute_buy(
@@ -1172,8 +1146,6 @@ def run_strategy_execution(
                 _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
                 settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 buys.append(trade)
-                orders_executed += 1
-                buy_orders_executed += 1
                 print(f"  [{strategy_name}] KJØP 60% {ticker}: {trade['reason']}")
             else:
                 updated = save_order(
@@ -1182,7 +1154,6 @@ def run_strategy_execution(
                     failure_reason="no execution price for session",
                 )
                 orders[order["order_id"]] = updated
-                orders_pending_price += 1
 
     # Build sector map for held positions (for reporting)
     sector_map = {}
@@ -1277,9 +1248,9 @@ def run_strategy_execution(
     relevant_tickers = set(state["positions"].keys()) | {t["ticker"] for t in buys}
     strategy_pm_flags = {t: m for t, m in premarket_flags.items() if t in relevant_tickers}
 
-    buy_fill_rate = (buy_orders_executed / buy_orders_created) if buy_orders_created > 0 else None
-    sell_fill_rate = (sell_orders_executed / sell_orders_created) if sell_orders_created > 0 else None
-    fill_rate = (orders_executed / orders_created) if orders_created > 0 else None
+    # Build ledger-based execution statistics for the session cohort.
+    # Reads the final in-memory order state (after all fills, marks, and terminal writes).
+    exec_stats = build_execution_stats(orders, session_date, strategy_name)
 
     return {
         "strategy": strategy_name,
@@ -1299,17 +1270,11 @@ def run_strategy_execution(
         "sector_map": sector_map,
         "correlation_log": correlation_log,
         "candidates_count": len(candidates),
-        "orders_created": orders_created,
-        "orders_executed": orders_executed,
-        "orders_pending_price": orders_pending_price,
-        "orders_failed_price": orders_failed_price,
-        "buy_orders_created": buy_orders_created,
-        "buy_orders_executed": buy_orders_executed,
-        "sell_orders_created": sell_orders_created,
-        "sell_orders_executed": sell_orders_executed,
-        "buy_fill_rate": buy_fill_rate,
-        "sell_fill_rate": sell_fill_rate,
-        "fill_rate": fill_rate,
+        # recommendations = candidates_count: number of signal candidates per strategy
+        # from the most recent validated signal-run (per-strategy, sum = total across strategies).
+        "recommendations": len(candidates),
+        "exec_stats": exec_stats,
+        "expired_this_run": 0,  # filled in by run_execute() from expire_stale_orders()
     }, trades_df
 
 
@@ -1487,6 +1452,13 @@ def run_execute():
     if expired:
         print(f"Utløpte ordre fra tidligere sesjoner: {len(expired)}")
 
+    # Count expired orders per strategy so reporting can show them separately
+    expired_by_strategy: dict[str, int] = {}
+    for _o in expired:
+        _s = _o.get("strategy")
+        if _s:
+            expired_by_strategy[_s] = expired_by_strategy.get(_s, 0) + 1
+
     results = []
     drawdown_warnings = []
 
@@ -1507,6 +1479,7 @@ def run_execute():
             allow_pyramid=signal_validation.allow_pyramid,
             allow_signal_sells=signal_validation.is_valid,
         )
+        result["expired_this_run"] = expired_by_strategy.get(strategy_name, 0)
         results.append(result)
 
         if result["drawdown"] <= -0.20:

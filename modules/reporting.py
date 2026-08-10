@@ -173,6 +173,13 @@ def _build_correlation_alerts(results):
     return "\n🚫 FILTRERT UT:\n" + "\n".join(lines)
 
 
+def _fmt_rate(executed, created):
+    """Format fill rate as 'ex/n (pct)' or '0/0 (N/A)' when cohort is empty."""
+    if created == 0:
+        return "0/0 (N/A)"
+    return f"{executed}/{created} ({executed / created:.0%})"
+
+
 def _build_actions(results):
     lines = ["📌 DAGENS HANDLINGER"]
     any_action = False
@@ -200,36 +207,73 @@ def _build_actions(results):
     if not any_action:
         lines.append("Ingen kjøp/salg i dag.")
 
-    # Execution statistics across all strategies — split by BUY and SELL
-    total_buy_created  = sum(r.get("buy_orders_created", 0) for r in results)
-    total_buy_executed = sum(r.get("buy_orders_executed", 0) for r in results)
-    total_sell_created  = sum(r.get("sell_orders_created", 0) for r in results)
-    total_sell_executed = sum(r.get("sell_orders_executed", 0) for r in results)
-    total_created  = sum(r.get("orders_created", 0) for r in results)
-    total_executed = sum(r.get("orders_executed", 0) for r in results)
-    total_pending  = sum(r.get("orders_pending_price", 0) for r in results)
-    total_failed   = sum(r.get("orders_failed_price", 0) for r in results)
+    # ── Execution statistics ──────────────────────────────────────────────────
+    # Aggregated from the persistent order ledger (via exec_stats in each result).
+    # Cohort = orders where intended_execution_session == session_date AND strategy.
+    # Each order_id counted once regardless of how many reruns touched it.
+    # recommendations = candidates_count per strategy (sum = total, no dedup across strategies).
 
-    if total_created > 0:
-        overall_rate = total_executed / total_created
-        buy_note  = ""
-        sell_note = ""
-        if total_buy_created > 0:
-            buy_rate = total_buy_executed / total_buy_created
-            buy_note = f"  KJØP: {total_buy_executed}/{total_buy_created} ({buy_rate:.0%})\n"
-        if total_sell_created > 0:
-            sell_rate = total_sell_executed / total_sell_created
-            sell_note = f"  SELG: {total_sell_executed}/{total_sell_created} ({sell_rate:.0%})\n"
-        status_parts = []
-        if total_pending > 0:
-            status_parts.append(f"{total_pending} venter pris")
-        if total_failed > 0:
-            status_parts.append(f"{total_failed} mislyktes")
-        status_str = " | " + " | ".join(status_parts) if status_parts else ""
-        lines.append(
-            f"\n📋 Ordreutførelse: {total_executed}/{total_created} fylt ({overall_rate:.0%}){status_str}\n"
-            f"{buy_note}{sell_note}".rstrip()
+    def _sum(key):
+        return sum(r.get("exec_stats", {}).get(key, 0) for r in results)
+
+    total_n       = _sum("cohort_size")
+    total_ex      = _sum("executed") + _sum("settling")
+    total_pending = _sum("pending_price")
+    total_fp      = _sum("failed_price")
+    total_fr      = _sum("failed_reconciliation")
+    total_expired = _sum("expired")
+    total_cancel  = _sum("cancelled")
+    total_miss    = _sum("missing_execution_price")
+    total_buy_n   = _sum("buy_created")
+    total_buy_ex  = _sum("buy_executed")
+    total_sell_n  = _sum("sell_created")
+    total_sell_ex = _sum("sell_executed")
+    total_pyr_n   = _sum("pyramid_created")
+    total_pyr_ex  = _sum("pyramid_executed")
+
+    # recommendations: per strategy from signal candidates (sum = cross-strategy total)
+    rec_parts = [
+        f"{r.get('recommendations', 0)} ({r['strategy']})" for r in results
+    ]
+    total_rec = sum(r.get("recommendations", 0) for r in results)
+    rec_str = " + ".join(rec_parts) + f" = {total_rec} totalt" if len(results) > 1 else str(total_rec)
+
+    # expired_this_run: orders expired by expire_stale_orders() today (may be from prior sessions)
+    total_expired_run = sum(r.get("expired_this_run", 0) for r in results)
+
+    status_parts = []
+    if total_pending > 0:
+        status_parts.append(f"{total_pending} venter pris")
+    if total_miss > 0:
+        status_parts.append(f"{total_miss} mangler exekveringspris")
+    if total_fp > 0:
+        status_parts.append(f"{total_fp} feilet (pris)")
+    if total_fr > 0:
+        status_parts.append(f"{total_fr} feilet (reconcile)")
+    if total_expired > 0:
+        status_parts.append(f"{total_expired} utløpt")
+    if total_cancel > 0:
+        status_parts.append(f"{total_cancel} kansellert")
+    status_str = "  " + " | ".join(status_parts) if status_parts else ""
+
+    stat_lines = [
+        f"\n📋 ORDREUTFØRELSE (sesjonskohort)",
+        f"  📡 Anbefalinger: {rec_str}",
+        f"  Fylt:   {_fmt_rate(total_ex, total_n)}",
+    ]
+    if status_str:
+        stat_lines.append(status_str)
+    stat_lines += [
+        f"  KJØP:    {_fmt_rate(total_buy_ex, total_buy_n)}",
+        f"  SELG:    {_fmt_rate(total_sell_ex, total_sell_n)}",
+        f"  PYRAMID: {_fmt_rate(total_pyr_ex, total_pyr_n)}",
+    ]
+    if total_expired_run > 0:
+        stat_lines.append(
+            f"  🗑️ Utløpt i dag (fra tidl. sesjoner): {total_expired_run}"
         )
+
+    lines.extend(stat_lines)
 
     return "\n".join(lines)
 
