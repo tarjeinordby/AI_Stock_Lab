@@ -337,3 +337,120 @@ quant_baseline_v1:
       top_candidates_to_report: 5
       score_range_min: 0
       score_range_max: 100
+
+# ============================================================================
+# QUANT BASELINE V2 — Research / Paper Trading (not yet live)
+# ============================================================================
+
+quant_baseline_v2:
+  description: >
+    Four-factor model (momentum, quality, value, safety) with explicit factor
+    coverage tracking and unavailability flags. Three clearly differentiated
+    strategies: Core_Quality_Momentum_V2, Aggressive_Momentum_V2,
+    Defensive_Quality_V2. Two shadow variants (factor-only vs Claude-shadow)
+    allow direct measurement of Claude signal contribution. MegaCap used as
+    optional universe filter, not a scoring penalty. Status: research/paper only.
+  created_at: "2026-08-10"
+  frozen: false
+  status: "research"
+  config_hash: null
+
+  config:
+
+    factors:
+      momentum:
+        sub_factors:
+          ret_12_1:  {weight: 0.40, description: "12-month price return skipping last month"}
+          ret_6_1:   {weight: 0.35, description: "6-month price return skipping last month"}
+          ret_3_1:   {weight: 0.25, description: "3-month price return skipping last month"}
+        normalization: winsorize_2_98_then_rank
+        sector_adjusted: false
+        data_source: "yfinance daily prices"
+        always_available: true
+
+      quality:
+        sub_factors:
+          roe:              {weight: 0.25, description: "Return on equity (trailing 12m)"}
+          gross_margin:     {weight: 0.25, description: "Gross profit / revenue"}
+          debt_equity:      {weight: 0.20, description: "Total debt / equity (lower is better)"}
+          earnings_growth:  {weight: 0.20, description: "YoY EPS growth"}
+          fcf_margin:       {weight: 0.10, description: "Free cash flow / revenue"}
+        normalization: winsorize_2_98_then_rank
+        sector_adjusted: false
+        data_source: "yfinance .info (NOT point-in-time)"
+        always_available: false
+        point_in_time: false
+        backtest_limitation: "yfinance fundamentals are current values, not historical. Backtest scores are biased."
+
+      value:
+        sub_factors:
+          fcf_yield:       {weight: 0.40, description: "FCF / market_cap"}
+          earnings_yield:  {weight: 0.35, description: "1 / forward_pe"}
+          ev_ebitda_inv:   {weight: 0.25, description: "1 / (EV/EBITDA), sector-relative"}
+        normalization: winsorize_2_98_then_rank
+        sector_adjusted: true
+        data_source: "yfinance .info (NOT point-in-time)"
+        always_available: false
+        point_in_time: false
+        backtest_limitation: "Same as quality — current fundamentals used for all historical periods."
+
+      safety:
+        sub_factors:
+          vol60_inv:        {weight: 0.30, description: "1/vol60 (lower vol => higher score)"}
+          downside_vol_inv: {weight: 0.25, description: "1/downside_vol (semi-deviation)"}
+          beta_inv:         {weight: 0.20, description: "1/beta (lower beta => higher score)"}
+          drawdown_inv:     {weight: 0.15, description: "1/max_drawdown_1y (lower drawdown => better)"}
+          volume_score:     {weight: 0.10, description: "log(avg_volume) percentile rank"}
+        normalization: winsorize_2_98_then_rank
+        sector_adjusted: false
+        data_source: "yfinance daily prices"
+        always_available: true
+
+    strategies:
+      Core_Quality_Momentum_V2:
+        score_column: "score_core_v2"
+        base_weights: {momentum: 0.35, quality: 0.30, value: 0.20, safety: 0.15}
+        strategy_id: "CQM_V2"
+
+      Aggressive_Momentum_V2:
+        score_column: "score_aggressive_v2"
+        base_weights: {momentum: 0.50, quality: 0.25, value: 0.15, safety: 0.10}
+        strategy_id: "AGM_V2"
+
+      Defensive_Quality_V2:
+        score_column: "score_defensive_v2"
+        base_weights: {momentum: 0.15, quality: 0.40, value: 0.20, safety: 0.25}
+        strategy_id: "DQV_V2"
+
+      Factor_Only_Core_V2:
+        score_column: "score_core_v2"
+        base_weights: {momentum: 0.35, quality: 0.30, value: 0.20, safety: 0.15}
+        strategy_id: "FOC_V2"
+        shadow_only: true
+
+      Factor_Plus_Claude_Shadow_V2:
+        score_column: "score_core_v2"
+        base_weights: {momentum: 0.35, quality: 0.30, value: 0.20, safety: 0.15}
+        strategy_id: "FCS_V2"
+        shadow_only: true
+        claude_shadow: true
+
+    megacap_filter:
+      mode: "universe_filter"
+      min_market_cap_usd: 50000000000
+      description: >
+        When enabled, restricts the investment universe to companies with
+        market cap >= $50B. Applied as a pre-screening step, not as a
+        per-ticker scoring penalty.
+
+    data_sources:
+      price_data: "yfinance daily period=2y auto_adjust=False"
+      fundamentals: "yfinance .info (current, NOT point-in-time)"
+      macro: "Treasury.gov 10Y-2Y yield curve"
+
+    scoring_output:
+      score_range_min: 0
+      score_range_max: 100
+      track_factor_coverage: true
+      unavailable_sentinel: null
+      missing_data_policy: "unavailable - do not impute with median and treat as real"
