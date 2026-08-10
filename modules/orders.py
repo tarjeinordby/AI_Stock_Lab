@@ -861,7 +861,11 @@ def check_pending_price_guard(
 
     A persisted marker means the order already touched the portfolio at some point.
     Whether the fill chain is valid (complete) or corrupt (broken/missing CI),
-    re-executing would risk a double-fill. Both cases raise RuntimeError (fail-closed).
+    re-executing would risk a double-fill. Both cases write FAILED_RECONCILIATION to
+    the order ledger, update orders[oid] in-place, then raise RuntimeError (fail-closed).
+
+    Writing the terminal status before raising ensures the next run will not see the
+    order as PENDING_PRICE, preventing repeated Telegram alerts for the same order.
 
     Pass send_telegram_fn=send_telegram to notify on block; omit in tests.
     """
@@ -882,18 +886,20 @@ def check_pending_price_guard(
             chain_err = _e
 
         if chain_err is None:
+            failure_reason = (
+                f"gyldig strict persisted fill-chain funnet under PENDING_PRICE "
+                f"— portfolio allerede lagret — selvmotsigende tilstand — fail-closed"
+            )
             msg = (
                 f"⚠️ KRITISK: PENDING_PRICE-ordre {oid!r} ({ticker}) "
                 f"har gyldig strict persisted fill-chain — stopper retry — manual_review\n"
                 f"Strategi: {strategy_name}"
             )
-            if send_telegram_fn is not None:
-                send_telegram_fn(msg)
-            raise RuntimeError(
-                f"PENDING_PRICE-ordre {oid!r} har gyldig strict persisted fill-chain "
-                f"— aldri re-execute — fail-closed"
-            )
         else:
+            failure_reason = (
+                f"persisted-record funnet men korrupt/ufullstendig fill-chain "
+                f"— fail-closed: {chain_err}"
+            )
             msg = (
                 f"⚠️ KRITISK: PENDING_PRICE-ordre {oid!r} ({ticker}) "
                 f"har persisted-record men korrupt/ufullstendig fill-chain "
@@ -901,8 +907,19 @@ def check_pending_price_guard(
                 f"Strategi: {strategy_name}\n"
                 f"Feil: {chain_err}"
             )
-            if send_telegram_fn is not None:
-                send_telegram_fn(msg)
+
+        # Write FAILED_RECONCILIATION BEFORE raising — next run won't see order as pending
+        orders[oid] = save_order(order, status=FAILED_RECONCILIATION, failure_reason=failure_reason)
+
+        if send_telegram_fn is not None:
+            send_telegram_fn(msg)
+
+        if chain_err is None:
+            raise RuntimeError(
+                f"PENDING_PRICE-ordre {oid!r} har gyldig strict persisted fill-chain "
+                f"— aldri re-execute — fail-closed"
+            )
+        else:
             raise RuntimeError(
                 f"PENDING_PRICE-ordre {oid!r} har persisted-record men korrupt fill-chain "
                 f"— aldri re-execute — fail-closed: {chain_err}"

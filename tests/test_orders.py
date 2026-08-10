@@ -6362,3 +6362,294 @@ class TestRound15Regressions:
         assert execute_idx == -1 or execute_idx > guard_idx, (
             "execute_buy must not appear before the guard"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round 16 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound16Regressions:
+    """Regression tests for Round 16 lifecycle bug found in commit 9cb08d8.
+
+    check_pending_price_guard() sent Telegram and raised RuntimeError but left
+    the order as PENDING_PRICE in the ledger. The next run would:
+    - Load the order as PENDING_PRICE again
+    - Re-enter the guard
+    - Send a second Telegram alert
+    - Raise again
+
+    Fix: before raising, write FAILED_RECONCILIATION (+ failure_reason) to the order
+    ledger and update orders[oid] in-place. The terminal status is durable across
+    restarts. get_pending_for_session() will never return the order again.
+    """
+
+    SESSION = "2026-08-10"
+    TICKER = "AAPL"
+    STRATEGY = "s1"
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _make_pending_order(self, orders, tmp_path, monkeypatch):
+        order, _ = get_or_create_order(
+            orders=orders,
+            signal_run_id="run-r16",
+            ticker=self.TICKER,
+            strategy=self.STRATEGY,
+            session_date=self.SESSION,
+            action="BUY",
+            target_value=5000.0,
+            reason="test",
+            signal_price=100.0,
+            execution_version="v1",
+        )
+        orders[order["order_id"]] = save_order(order, status=PENDING_PRICE)
+        return orders[order["order_id"]]
+
+    def _make_strict_filling(self, tmp_path, oid, trade_id):
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=oid, trade_id=trade_id,
+            signal_id=None, signal_run_id="run-r16",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=self.TICKER, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+    def _pre_post_hashes(self):
+        from modules.fills import compute_portfolio_state_hash
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        return pre_h, post_h
+
+    # --- 1. Valid persisted chain → FAILED_RECONCILIATION written durably ---
+
+    def test_valid_persisted_chain_writes_terminal_status(self, tmp_path, monkeypatch):
+        """Valid persisted chain: FAILED_RECONCILIATION persisted before raise.
+
+        After the guard fires:
+        - orders[oid] is FAILED_RECONCILIATION in the in-memory dict
+        - The status is loadable from the order ledger (durable across restarts)
+        - failure_reason describes the inconsistent state
+        - RuntimeError is raised
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent
+
+        orders = {}
+        order = self._make_pending_order(orders, tmp_path, monkeypatch)
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, "trd-r16a")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fill["fill_attempt_id"],
+                    "filling_content_hash": fill["content_hash"]}],
+        )
+        mark_fill_persisted(
+            oid, fill["fill_attempt_id"], fill["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        telegram_calls = []
+        with pytest.raises(RuntimeError, match="gyldig strict persisted fill-chain"):
+            check_pending_price_guard(
+                orders, self.STRATEGY, self.SESSION,
+                send_telegram_fn=telegram_calls.append,
+            )
+
+        # In-memory dict updated
+        assert orders[oid]["status"] == FAILED_RECONCILIATION
+        assert "failure_reason" in orders[oid]
+        assert orders[oid]["failure_reason"]  # non-empty
+
+        # Durable: reload from ledger and verify
+        reloaded = load_orders()
+        assert reloaded[oid]["status"] == FAILED_RECONCILIATION
+        assert "gyldig" in reloaded[oid]["failure_reason"].lower() or \
+               "persisted" in reloaded[oid]["failure_reason"].lower()
+
+        assert telegram_calls, "Telegram must be sent"
+
+    # --- 2. Corrupt persisted chain → FAILED_RECONCILIATION with concrete failure_reason ---
+
+    def test_corrupt_persisted_chain_writes_terminal_status(self, tmp_path, monkeypatch):
+        """Corrupt persisted chain (missing CI): FAILED_RECONCILIATION with chain error in reason."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        import json
+        from modules.fills import _make_content_hash
+
+        orders = {}
+        order = self._make_pending_order(orders, tmp_path, monkeypatch)
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, "trd-r16b")
+        _, post_h = self._pre_post_hashes()
+
+        # Persisted marker references a non-existent commit_id
+        persisted_rec = {
+            "fill_id": fill["fill_id"],
+            "fill_attempt_id": fill["fill_attempt_id"],
+            "order_id": oid,
+            "status": "persisted",
+            "record_version": 2,
+            "filling_content_hash": fill["content_hash"],
+            "post_portfolio_state_hash": post_h,
+            "commit_id": "ci-missing-" + oid[:8],
+            "written_at": f"{self.SESSION}T14:00:00Z",
+        }
+        persisted_rec["content_hash"] = _make_content_hash(persisted_rec)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(persisted_rec) + "\n")
+
+        telegram_calls = []
+        with pytest.raises(RuntimeError, match="korrupt fill-chain"):
+            check_pending_price_guard(
+                orders, self.STRATEGY, self.SESSION,
+                send_telegram_fn=telegram_calls.append,
+            )
+
+        assert orders[oid]["status"] == FAILED_RECONCILIATION
+        # failure_reason must contain enough info for manual review
+        reason = orders[oid]["failure_reason"]
+        assert reason  # non-empty
+        assert "korrupt" in reason.lower() or "chain" in reason.lower() or "commit" in reason.lower()
+
+        reloaded = load_orders()
+        assert reloaded[oid]["status"] == FAILED_RECONCILIATION
+
+    # --- 3. After reload, order is not in get_pending_for_session() ---
+
+    def test_terminal_order_not_returned_by_pending_after_reload(self, tmp_path, monkeypatch):
+        """After guard writes FAILED_RECONCILIATION, reloaded orders exclude the order from pending."""
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent
+
+        orders = {}
+        order = self._make_pending_order(orders, tmp_path, monkeypatch)
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, "trd-r16c")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fill["fill_attempt_id"],
+                    "filling_content_hash": fill["content_hash"]}],
+        )
+        mark_fill_persisted(
+            oid, fill["fill_attempt_id"], fill["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        with pytest.raises(RuntimeError):
+            check_pending_price_guard(orders, self.STRATEGY, self.SESSION)
+
+        # Reload orders from disk and verify get_pending_for_session is empty
+        reloaded = load_orders()
+        assert reloaded[oid]["status"] == FAILED_RECONCILIATION
+        pending = get_pending_for_session(reloaded, self.SESSION, self.STRATEGY)
+        assert not pending, (
+            "FAILED_RECONCILIATION order must not appear in get_pending_for_session after reload"
+        )
+
+    # --- 4. Second run: no new terminal write and no new Telegram alert ---
+
+    def test_second_run_no_duplicate_terminal_or_telegram(self, tmp_path, monkeypatch):
+        """After FAILED_RECONCILIATION is persisted, a second call is a no-op.
+
+        The order is no longer PENDING_PRICE → get_pending_for_session skips it
+        → guard loop body never runs → no new save_order call → no Telegram.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent
+
+        orders = {}
+        order = self._make_pending_order(orders, tmp_path, monkeypatch)
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, "trd-r16d")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fill["fill_attempt_id"],
+                    "filling_content_hash": fill["content_hash"]}],
+        )
+        mark_fill_persisted(
+            oid, fill["fill_attempt_id"], fill["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        # First call — writes FAILED_RECONCILIATION and raises
+        first_telegram = []
+        with pytest.raises(RuntimeError):
+            check_pending_price_guard(
+                orders, self.STRATEGY, self.SESSION,
+                send_telegram_fn=first_telegram.append,
+            )
+        assert first_telegram, "First call must send Telegram"
+        assert orders[oid]["status"] == FAILED_RECONCILIATION
+
+        # Simulate reload: reload orders from disk (as the next run would do)
+        orders2 = load_orders()
+        assert orders2[oid]["status"] == FAILED_RECONCILIATION
+
+        # Second call — order is FAILED_RECONCILIATION, not returned by get_pending_for_session
+        second_telegram = []
+        check_pending_price_guard(
+            orders2, self.STRATEGY, self.SESSION,
+            send_telegram_fn=second_telegram.append,
+        )  # must NOT raise
+
+        assert not second_telegram, "Second run must not send any Telegram alert"
+
+        # Ledger must still have exactly one FAILED_RECONCILIATION snapshot (plus prior states)
+        reloaded = load_orders()
+        assert reloaded[oid]["status"] == FAILED_RECONCILIATION
+
+    # --- 5. Pending without persisted → guard passes, order still pending ---
+
+    def test_pending_without_persisted_passes_guard(self, tmp_path, monkeypatch):
+        """PENDING_PRICE order with only a filling (no persisted marker) → guard is a no-op.
+
+        Same-day retry is safe when there is no persisted marker. The order must
+        remain PENDING_PRICE after the guard call.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        orders = {}
+        order = self._make_pending_order(orders, tmp_path, monkeypatch)
+        oid = order["order_id"]
+        # Only a filling event — no persisted, no CI
+        self._make_strict_filling(tmp_path, oid, "trd-r16e")
+
+        telegram_calls = []
+        check_pending_price_guard(
+            orders, self.STRATEGY, self.SESSION,
+            send_telegram_fn=telegram_calls.append,
+        )  # must NOT raise
+
+        assert orders[oid]["status"] == PENDING_PRICE, (
+            "Order must remain PENDING_PRICE when no persisted marker exists"
+        )
+        assert not telegram_calls
