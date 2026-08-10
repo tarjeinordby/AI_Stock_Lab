@@ -559,9 +559,10 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
         res: dict = {
             "valid": True,
             "fail_reason": None,
-            "hash_result": None,   # "post" | "pre" | "no_pre" | "neither"
+            "hash_result": None,   # "post" | "pre" | "neither"
             "filling_by_order": {},  # oid → (fill_ref, filling_event)
             "needs_reconstruction": set(),  # oids without persisted markers
+            "executed_oids": set(),  # fill_refs whose order is EXECUTED with valid chain
         }
 
         # 1a. Commit_intent version must be exactly int 2
@@ -659,6 +660,7 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                         res["fail_reason"] = str(_re)
                         break
                     # EXECUTED with valid chain: already done — Phase 2 will not touch it
+                    res["executed_oids"].add(oid)
 
                 else:
                     # Unexpected status: PENDING_PRICE, EXPIRED, FAILED_PRICE, etc.
@@ -669,16 +671,38 @@ def reconcile_settling_orders(orders: dict, strategy_name: str, state: dict) -> 
                     )
                     break
 
-        # 1c. Hash classification (same pre/post for all orders in a batch)
+        # 1c. Hash classification with consistency matrix.
+        # pre-hash is only safe for retry when NO fill_ref in the batch has a
+        # persisted marker and NO fill_ref's order is EXECUTED.  A persisted
+        # marker or EXECUTED order asserts the portfolio WAS saved to post-hash;
+        # current==pre contradicts that (external revert?) → fail-closed.
+        # Strict v2 CIs always have pre_hash (enforced by load_fill_events);
+        # the explicit "no pre_hash" branch is defense-in-depth.
         if res["valid"]:
             _post_h = ci.get("post_portfolio_state_hash", "")
             _pre_h = ci.get("pre_portfolio_state_hash", "")
+            _settling_oids = {order["order_id"] for order in batch_orders}
             if current_hash == _post_h:
                 res["hash_result"] = "post"
             elif _pre_h and current_hash == _pre_h:
-                res["hash_result"] = "pre"
-            elif not _pre_h and current_hash != _post_h:
-                res["hash_result"] = "no_pre"
+                _settling_with_persisted = _settling_oids - res["needs_reconstruction"]
+                if _settling_with_persisted or res["executed_oids"]:
+                    res["valid"] = False
+                    res["fail_reason"] = (
+                        f"portfolio er på pre-hash men batch {cid!r} inneholder "
+                        f"persisted-records {sorted(_settling_with_persisted)!r} "
+                        f"og/eller EXECUTED-ordre {sorted(res['executed_oids'])!r} "
+                        f"— selvmotsigende tilstand (portfolio revertert?) "
+                        f"— fail-closed (manual_review)"
+                    )
+                else:
+                    res["hash_result"] = "pre"
+            elif not _pre_h:
+                res["valid"] = False
+                res["fail_reason"] = (
+                    f"commit_intent {cid!r} mangler pre_portfolio_state_hash "
+                    f"— strict v2-skjema krever pre_hash — fail-closed"
+                )
             else:
                 res["valid"] = False
                 res["fail_reason"] = (

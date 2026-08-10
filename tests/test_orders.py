@@ -5747,3 +5747,359 @@ class TestRound13Regressions:
         except_handler = fn_body[except_idx:handler_end + len("raise")]
         assert "send_telegram" in except_handler
         assert "raise" in except_handler
+
+
+# ---------------------------------------------------------------------------
+# Round 14 regression tests
+# ---------------------------------------------------------------------------
+
+class TestRound14Regressions:
+    """Regression tests for Round 14 bug found in commit cd7420b.
+
+    Phase 1 validated the persisted chain in isolation (resolve_fill strict passed),
+    then classified current_hash as "pre" and set hash_result="pre". Phase 2 gave
+    PENDING_PRICE to all batch_orders unconditionally — without checking that the
+    batch already contained persisted markers or EXECUTED orders.
+
+    A persisted marker means the portfolio WAS durably saved to post_hash.
+    current_hash == pre_hash is a contradiction (portfolio reverted externally).
+    The correct response is FAILED_RECONCILIATION + manual_review, never PENDING_PRICE.
+
+    Fix: Phase 1 section 1c checks consistency before setting hash_result="pre".
+    If any SETTLING order in the batch has a persisted marker (not in needs_reconstruction),
+    or any fill_ref is EXECUTED with a valid chain (executed_oids), the batch is
+    fail-closed instead of retried.
+
+    Also added: defense-in-depth in stock_bot.py before the PENDING_PRICE retry loop.
+    A PENDING_PRICE order with a valid strict persisted fill-chain (complete chain
+    confirmed by resolve_fill strict) triggers Telegram + RuntimeError before
+    execute_buy/execute_sell/pyramid_fill is ever called.
+    """
+
+    SESSION = "2026-08-07"
+    TICKER_A = "AAPL"
+    TICKER_B = "MSFT"
+    STRATEGY = "s1"
+
+    def _patch_fills(self, tmp_path, monkeypatch):
+        import modules.fills as fills_mod
+        monkeypatch.setattr(fills_mod, "FILLS_FILE", tmp_path / "fills.jsonl")
+        monkeypatch.setattr(fills_mod, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+    def _make_strict_filling(self, tmp_path, oid, ticker, trade_id):
+        from modules.fills import write_fill_event
+        return write_fill_event(
+            order_id=oid, trade_id=trade_id,
+            signal_id=None, signal_run_id="run-r14",
+            portfolio_id="p1", portfolio_version="v1",
+            strategy=self.STRATEGY, ticker=ticker, action="BUY",
+            intended_execution_session=self.SESSION,
+            actual_execution_session=self.SESSION,
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp=f"{self.SESSION}T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+    def _create_order_settling(self, orders, signal_run_id, ticker, trade_id):
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id=signal_run_id, ticker=ticker,
+            strategy=self.STRATEGY, session_date=self.SESSION, action="BUY",
+            target_value=5000.0, reason="test", signal_price=100.0,
+            execution_version=EXEC_VERSION,
+        )
+        orders[order["order_id"]] = save_order(
+            save_order(order), status=SETTLING, trade_id=trade_id
+        )
+        return orders[order["order_id"]]
+
+    def _pre_post_hashes(self):
+        from modules.fills import compute_portfolio_state_hash
+        pre_h = compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+        return pre_h, post_h
+
+    # --- 1. SETTLING + valid persisted chain + current==pre → FAILED_RECONCILIATION ---
+
+    def test_settling_with_persisted_plus_pre_hash_fails_closed(self, tmp_path, monkeypatch):
+        """SETTLING order with strict persisted chain + current==pre_hash → FAILED_RECONCILIATION.
+
+        Pre-Round-14: Phase 1 validated the chain, classified pre_hash, and Phase 2
+        gave PENDING_PRICE — allowing indefinite retry of an already-persisted fill.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent,
+        )
+
+        orders = {}
+        order = self._create_order_settling(orders, "run-r14a", self.TICKER_A, "trd-r14a")
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, self.TICKER_A, "trd-r14a")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fill["fill_attempt_id"],
+                    "filling_content_hash": fill["content_hash"]}],
+        )
+
+        # Portfolio saved (persisted marker written), but portfolio reverted to pre_hash
+        mark_fill_persisted(
+            oid, fill["fill_attempt_id"], fill["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        # current matches PRE_HASH (portfolio reverted externally)
+        state_pre = {"cash": 10000.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+
+        assert orders[oid]["status"] == FAILED_RECONCILIATION, (
+            "must be FAILED_RECONCILIATION when persisted chain exists but current==pre"
+        )
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+        assert len(persisted) == 1, "no new persisted records must be written"
+
+    # --- 2. Two-order batch: A SETTLING no persisted + B EXECUTED valid chain + current==pre ---
+
+    def test_batch_with_executed_b_and_pre_hash_fails_closed(self, tmp_path, monkeypatch):
+        """A SETTLING (no persisted) + B EXECUTED (valid strict chain) + current==pre → fail-closed.
+
+        Even though A itself has no persisted marker, B's EXECUTED status + valid chain
+        in the same CI proves the portfolio was already saved to post_hash.
+        current==pre is a contradiction for this batch → both fail-closed.
+        A must never become PENDING_PRICE.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent,
+        )
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r14b1", self.TICKER_A, "trd-r14b1")
+        order_b = self._create_order_settling(orders, "run-r14b2", self.TICKER_B, "trd-r14b2")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r14b1")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r14b2")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        # B is already persisted and EXECUTED (other order was not reached before crash)
+        mark_fill_persisted(
+            oid_b, fill_b["fill_attempt_id"], fill_b["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+        orders[oid_b] = save_order(orders[oid_b], status=EXECUTED)
+
+        # current matches pre_hash — portfolio reverted
+        state_pre = {"cash": 10000.0, "positions": {}}
+        with pytest.raises(RuntimeError, match="failed_reconciliation"):
+            reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+
+        assert orders[oid_a]["status"] == FAILED_RECONCILIATION, (
+            "A must be FAILED_RECONCILIATION — B's EXECUTED chain proves post_hash was saved"
+        )
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        a_new_persisted = [e for e in events.get(oid_a, []) if e.get("status") == "persisted"]
+        assert not a_new_persisted, "no persisted record must be written for A"
+
+    # --- 3. SETTLING with valid persisted + current==post → EXECUTED (positive case) ---
+
+    def test_settling_with_persisted_plus_post_hash_executes(self, tmp_path, monkeypatch):
+        """SETTLING order with strict persisted chain + current==post_hash → EXECUTED, no duplicate.
+
+        This is the normal crash-recovery path: portfolio was saved, persisted marker
+        was written, but the EXECUTED status update was lost in a crash. Reconcile
+        completes the transition correctly.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            compute_portfolio_state_hash, mark_fill_persisted, write_commit_intent,
+        )
+
+        orders = {}
+        order = self._create_order_settling(orders, "run-r14c", self.TICKER_A, "trd-r14c")
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, self.TICKER_A, "trd-r14c")
+
+        pre_h, post_h = self._pre_post_hashes()
+        ci = write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{"order_id": oid,
+                    "fill_attempt_id": fill["fill_attempt_id"],
+                    "filling_content_hash": fill["content_hash"]}],
+        )
+        mark_fill_persisted(
+            oid, fill["fill_attempt_id"], fill["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        # current matches POST_HASH — normal recovery
+        state_post = {"cash": 9500.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        assert orders[oid]["status"] == EXECUTED
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        persisted = [e for e in events.get(oid, []) if e.get("status") == "persisted"]
+        assert len(persisted) == 1, "exactly one persisted record — no duplicate written"
+
+    # --- 4. Two SETTLING without persisted + current==pre → both PENDING_PRICE ---
+
+    def test_two_settling_no_persisted_pre_hash_both_pending(self, tmp_path, monkeypatch):
+        """Two SETTLING orders with no persisted markers + current==pre → both PENDING_PRICE.
+
+        No contradiction: no evidence the portfolio was ever saved to post_hash.
+        This is a clean crash-before-save scenario → safe to retry.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import compute_portfolio_state_hash, write_commit_intent
+
+        orders = {}
+        order_a = self._create_order_settling(orders, "run-r14d1", self.TICKER_A, "trd-r14d1")
+        order_b = self._create_order_settling(orders, "run-r14d2", self.TICKER_B, "trd-r14d2")
+        oid_a = order_a["order_id"]
+        oid_b = order_b["order_id"]
+
+        fill_a = self._make_strict_filling(tmp_path, oid_a, self.TICKER_A, "trd-r14d1")
+        fill_b = self._make_strict_filling(tmp_path, oid_b, self.TICKER_B, "trd-r14d2")
+
+        pre_h, post_h = self._pre_post_hashes()
+        write_commit_intent(
+            strategy=self.STRATEGY, portfolio_id="p1", portfolio_version="v1",
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[
+                {"order_id": oid_a, "fill_attempt_id": fill_a["fill_attempt_id"],
+                 "filling_content_hash": fill_a["content_hash"]},
+                {"order_id": oid_b, "fill_attempt_id": fill_b["fill_attempt_id"],
+                 "filling_content_hash": fill_b["content_hash"]},
+            ],
+        )
+
+        state_pre = {"cash": 10000.0, "positions": {}}
+        reconcile_settling_orders(orders, self.STRATEGY, state_pre)
+
+        assert orders[oid_a]["status"] == PENDING_PRICE, "A must be PENDING_PRICE — safe crash-before-save"
+        assert orders[oid_b]["status"] == PENDING_PRICE, "B must be PENDING_PRICE — safe crash-before-save"
+
+        from modules.fills import load_fill_events
+        events, _ = load_fill_events()
+        for oid in (oid_a, oid_b):
+            assert not [e for e in events.get(oid, []) if e.get("status") == "persisted"], (
+                f"no persisted record for {oid} in pre-hash case"
+            )
+
+    # --- 5. Defense-in-depth: stock_bot checks persisted chain before retry ---
+
+    def test_pending_retry_guard_exists_in_stock_bot(self):
+        """stock_bot must check persisted chain before execute_buy/sell/pyramid is called.
+
+        Source inspection: verify that the defense-in-depth guard runs before the
+        retry loop, sends Telegram, and raises RuntimeError on a live persisted chain.
+        """
+        with open("stock_bot.py") as f:
+            src = f.read()
+        fn_start = src.find("def run_strategy_execution(")
+        fn_end = src.find("\ndef ", fn_start + 10)
+        fn_body = src[fn_start:fn_end]
+
+        # Guard must appear before the actual retry loop
+        guard_idx = fn_body.find("persisted fill-chain")
+        retry_loop_idx = fn_body.find("Retry pending orders from today's session")
+        assert guard_idx != -1, "defense-in-depth guard for persisted chain must exist"
+        assert retry_loop_idx != -1, "retry loop comment must exist"
+        assert guard_idx < retry_loop_idx, (
+            "persisted chain guard must come BEFORE the same-day retry loop"
+        )
+
+        # Must load fill events and call resolve_fill for the check
+        guard_section = fn_body[max(0, guard_idx - 600):retry_loop_idx]
+        assert "resolve_fill" in guard_section or "rf_guard" in guard_section, (
+            "guard must call resolve_fill to verify chain"
+        )
+
+        # Must send Telegram and raise RuntimeError on valid chain
+        assert "send_telegram" in guard_section
+        assert "raise RuntimeError" in guard_section
+
+    # --- 6. Strict CI without pre_hash: load_fill_events rejects → fail-closed, no retry ---
+
+    def test_strict_ci_without_pre_hash_is_fail_closed(self, tmp_path, monkeypatch):
+        """A strict CI missing pre_portfolio_state_hash causes load_fill_events to raise.
+
+        reconcile_settling_orders propagates the RuntimeError — the order is never
+        retried with PENDING_PRICE and no writes occur.
+        """
+        self._patch_fills(tmp_path, monkeypatch)
+        _with_file(tmp_path, monkeypatch)
+
+        from modules.fills import (
+            _make_content_hash, make_fill_id, write_fill_event,
+        )
+
+        orders = {}
+        order = self._create_order_settling(orders, "run-r14f", self.TICKER_A, "trd-r14f")
+        oid = order["order_id"]
+        fill = self._make_strict_filling(tmp_path, oid, self.TICKER_A, "trd-r14f")
+
+        _, post_h = self._pre_post_hashes()
+
+        # Write a raw strict CI that is missing pre_portfolio_state_hash
+        import json, uuid as _uuid
+        cid = "ci-r14-nopre-" + _uuid.uuid4().hex[:8]
+        raw_ci = {
+            "commit_id": cid,
+            "strategy": self.STRATEGY,
+            "portfolio_id": "p1",
+            "portfolio_version": "v1",
+            "record_version": 2,
+            # NO pre_portfolio_state_hash — deliberately missing
+            "post_portfolio_state_hash": post_h,
+            "fills": [{"order_id": oid,
+                       "fill_attempt_id": fill["fill_attempt_id"],
+                       "filling_content_hash": fill["content_hash"]}],
+            "status": "commit_intent",
+            "written_at": "2026-08-07T13:30:00Z",
+        }
+        raw_ci["content_hash"] = _make_content_hash(raw_ci)
+        with open(tmp_path / "fills.jsonl", "a") as f:
+            f.write(json.dumps(raw_ci) + "\n")
+
+        # load_fill_events rejects the missing-field CI → reconcile raises
+        state_post = {"cash": 9500.0, "positions": {}}
+        with pytest.raises(RuntimeError):
+            reconcile_settling_orders(orders, self.STRATEGY, state_post)
+
+        # Order must remain SETTLING (no status written — the raise was from load_fill_events)
+        assert orders[oid]["status"] == SETTLING, (
+            "order must stay SETTLING — error came from load, before any Phase 2 writes"
+        )

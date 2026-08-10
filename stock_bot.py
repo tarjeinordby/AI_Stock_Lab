@@ -836,6 +836,35 @@ def run_strategy_execution(
     portfolio_id = state.get("portfolio_id", strategy_name)
     portfolio_version = PORTFOLIO_VERSION  # schema version from versioning.py, not created_at
 
+    # --- Defense-in-depth: PENDING_PRICE order with valid strict persisted chain must never retry ---
+    # A persisted marker means the portfolio was already durably saved. If the order is still
+    # PENDING_PRICE, the state is internally inconsistent — do not re-execute.
+    from modules.fills import (  # noqa: PLC0415
+        load_fill_events as _lfe_guard,
+        resolve_fill as _rf_guard,
+    )
+    _guard_events, _guard_cis = _lfe_guard()
+    for _g_order in get_pending_for_session(orders, session_date, strategy_name):
+        _g_oid = _g_order["order_id"]
+        _g_ev = _guard_events.get(_g_oid, [])
+        if any(e.get("status") == "persisted" for e in _g_ev):
+            _g_chain_ok = False
+            try:
+                _rf_guard(_g_oid, _g_ev, _guard_cis, strict=True)
+                _g_chain_ok = True
+            except RuntimeError:
+                pass
+            if _g_chain_ok:
+                send_telegram(
+                    f"⚠️ KRITISK: PENDING_PRICE-ordre {_g_oid!r} ({_g_order.get('ticker')}) "
+                    f"har gyldig strict persisted fill-chain — stopper retry — manual_review\n"
+                    f"Strategi: {strategy_name}"
+                )
+                raise RuntimeError(
+                    f"PENDING_PRICE-ordre {_g_oid!r} har gyldig strict persisted fill-chain "
+                    f"— aldri re-execute — fail-closed"
+                )
+
     # --- Retry pending orders from today's session (same-day retry) ---
     for order in get_pending_for_session(orders, session_date, strategy_name):
         ticker = order["ticker"]
