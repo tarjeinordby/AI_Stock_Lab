@@ -852,6 +852,7 @@ def run_strategy_execution(
                 updated = save_order(
                     orders[order["order_id"]],
                     status=PENDING_PRICE,
+                    failure_code="missing_execution_price",
                     failure_reason="no execution price for session (retry attempt)",
                 )
                 orders[order["order_id"]] = updated
@@ -876,6 +877,7 @@ def run_strategy_execution(
                     updated = save_order(
                         orders[order["order_id"]],
                         status=PENDING_PRICE,
+                        failure_code="missing_execution_price",
                         failure_reason="no execution price for session (retry attempt)",
                     )
                     orders[order["order_id"]] = updated
@@ -914,6 +916,7 @@ def run_strategy_execution(
             updated = save_order(
                 orders[order["order_id"]],
                 status=PENDING_PRICE,
+                failure_code="missing_execution_price",
                 failure_reason="no execution price for session",
             )
             orders[order["order_id"]] = updated
@@ -1016,7 +1019,6 @@ def run_strategy_execution(
             if pyr_is_new:
                 saved = save_order(pyr_order)
                 orders[pyr_order["order_id"]] = saved
-                orders_created += 1
 
             # NOW execute portfolio mutation — order ledger already committed
             pyr_cash_before = state["cash"]
@@ -1034,6 +1036,7 @@ def run_strategy_execution(
                 updated = save_order(
                     orders[pyr_order["order_id"]],
                     status=PENDING_PRICE,
+                    failure_code="missing_execution_price",
                     failure_reason="pyramid fill conditions not met or no execution price",
                 )
                 orders[pyr_order["order_id"]] = updated
@@ -1151,6 +1154,7 @@ def run_strategy_execution(
                 updated = save_order(
                     orders[order["order_id"]],
                     status=PENDING_PRICE,
+                    failure_code="missing_execution_price",
                     failure_reason="no execution price for session",
                 )
                 orders[order["order_id"]] = updated
@@ -1181,8 +1185,10 @@ def run_strategy_execution(
 
     # Write commit_intent BEFORE portfolio save — proves what we intended to persist.
     # On crash recovery: if portfolio hash matches this intent → save completed.
+    # portfolio_id and portfolio_version are authoritative from line 828-829 (not re-read from
+    # state here — state.get("portfolio_version","") returned "" for old states without the field,
+    # causing a mismatch against filling events that use PORTFOLIO_VERSION).
     portfolio_id = state.get("portfolio_id", strategy_name)
-    portfolio_version = state.get("portfolio_version", "")
     fills_for_intent = [
         {"order_id": oid, "fill_attempt_id": fa_id, "filling_content_hash": ch}
         for oid, fa_id, ch in settling_fills
@@ -1249,13 +1255,20 @@ def run_strategy_execution(
     strategy_pm_flags = {t: m for t, m in premarket_flags.items() if t in relevant_tickers}
 
     # Build ledger-based execution statistics for the session cohort.
-    # Reads the final in-memory order state (after all fills, marks, and terminal writes).
-    exec_stats = build_execution_stats(orders, session_date, strategy_name)
+    # portfolio_id and portfolio_version are the authoritative values from lines 828-829.
+    # Cohort scoped to (session_date, strategy, portfolio_id, portfolio_version).
+    exec_stats = build_execution_stats(
+        orders, session_date, strategy_name,
+        portfolio_id=portfolio_id,
+        portfolio_version=portfolio_version,
+    )
 
     return {
         "strategy": strategy_name,
         "description": config["description"],
         "portfolio_value": total_after,
+        "portfolio_id": portfolio_id,
+        "portfolio_version": portfolio_version,
         "cash": state["cash"],
         "positions_value": positions_value_after,
         "return_pct": return_pct,
@@ -1452,12 +1465,16 @@ def run_execute():
     if expired:
         print(f"Utløpte ordre fra tidligere sesjoner: {len(expired)}")
 
-    # Count expired orders per strategy so reporting can show them separately
-    expired_by_strategy: dict[str, int] = {}
+    # Count expired orders per (strategy, portfolio_id, portfolio_version) so reporting
+    # can show them separately, scoped to the same cohort as exec_stats.
+    expired_by_key: dict[tuple[str, str, str], int] = {}
     for _o in expired:
-        _s = _o.get("strategy")
-        if _s:
-            expired_by_strategy[_s] = expired_by_strategy.get(_s, 0) + 1
+        _key = (
+            _o.get("strategy", ""),
+            _o.get("portfolio_id", ""),
+            _o.get("portfolio_version", ""),
+        )
+        expired_by_key[_key] = expired_by_key.get(_key, 0) + 1
 
     results = []
     drawdown_warnings = []
@@ -1479,7 +1496,8 @@ def run_execute():
             allow_pyramid=signal_validation.allow_pyramid,
             allow_signal_sells=signal_validation.is_valid,
         )
-        result["expired_this_run"] = expired_by_strategy.get(strategy_name, 0)
+        _exp_key = (strategy_name, result.get("portfolio_id", ""), result.get("portfolio_version", ""))
+        result["expired_this_run"] = expired_by_key.get(_exp_key, 0)
         results.append(result)
 
         if result["drawdown"] <= -0.20:

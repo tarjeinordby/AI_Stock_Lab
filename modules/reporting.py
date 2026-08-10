@@ -217,7 +217,7 @@ def _build_actions(results):
         return sum(r.get("exec_stats", {}).get(key, 0) for r in results)
 
     total_n       = _sum("cohort_size")
-    total_ex      = _sum("executed") + _sum("settling")
+    total_ex      = _sum("executed")  # terminal EXECUTED only; SETTLING shown separately
     total_pending = _sum("pending_price")
     total_fp      = _sum("failed_price")
     total_fr      = _sum("failed_reconciliation")
@@ -256,13 +256,27 @@ def _build_actions(results):
         status_parts.append(f"{total_cancel} kansellert")
     status_str = "  " + " | ".join(status_parts) if status_parts else ""
 
+    total_settling = _sum("settling")
+    total_unclassified = _sum("unclassified_status") + _sum("unclassified_action")
+    total_safety = _sum("safety_created")
+
+    # fill_rate = terminal EXECUTED only / cohort_size (SETTLING shown separately)
+    fill_rate_str = _fmt_rate(total_ex, total_n)
+
     stat_lines = [
         f"\n📋 ORDREUTFØRELSE (sesjonskohort)",
         f"  📡 Anbefalinger: {rec_str}",
-        f"  Fylt:   {_fmt_rate(total_ex, total_n)}",
+        f"  Opprettede: {total_n}",
+        f"  Fylt (EXECUTED): {fill_rate_str}",
     ]
+    if total_settling > 0:
+        stat_lines.append(f"  Under filling (SETTLING): {total_settling}")
     if status_str:
         stat_lines.append(status_str)
+    if total_safety > 0:
+        stat_lines.append(f"  herav sikkerhetssalg: {total_safety}")
+    if total_unclassified > 0:
+        stat_lines.append(f"  ⚠️ Ukjent status/action: {total_unclassified} (manual_review)")
     stat_lines += [
         f"  KJØP:    {_fmt_rate(total_buy_ex, total_buy_n)}",
         f"  SELG:    {_fmt_rate(total_sell_ex, total_sell_n)}",

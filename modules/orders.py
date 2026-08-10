@@ -142,6 +142,7 @@ def build_order(
         "created_at": now_utc().isoformat(),
         "updated_at": now_utc().isoformat(),
         "attempted_at": None,
+        "failure_code": None,
         "failure_reason": None,
         "trade_id": None,
     }
@@ -268,18 +269,26 @@ def save_order(
     order: dict,
     *,
     status: str | None = None,
+    failure_code: str | None = None,
     failure_reason: str | None = None,
     trade_id: str | None = None,
 ) -> dict:
     """
     Persist an order snapshot with optional field overrides.
     Returns the updated order dict.
+
+    failure_code is a stable machine-readable tag (e.g. "missing_execution_price") that
+    persists through all status transitions. failure_reason may be overwritten (e.g. by
+    expire_stale_orders); failure_code survives because save_order copies the full order
+    dict and only overwrites fields explicitly passed.
     """
     updated = dict(order)
     updated["updated_at"] = now_utc().isoformat()
     updated["attempted_at"] = now_utc().isoformat()
     if status is not None:
         updated["status"] = status
+    if failure_code is not None:
+        updated["failure_code"] = failure_code
     if failure_reason is not None:
         updated["failure_reason"] = failure_reason
     if trade_id is not None:
@@ -926,28 +935,52 @@ def check_pending_price_guard(
             ) from chain_err
 
 
-def build_execution_stats(orders: dict, session_date: str, strategy_name: str) -> dict:
+def build_execution_stats(
+    orders: dict,
+    session_date: str,
+    strategy_name: str,
+    portfolio_id: str = "",
+    portfolio_version: str = "",
+) -> dict:
     """Build execution statistics for a strategy's session cohort from the persistent order ledger.
 
-    Cohort definition: all orders where
-        intended_execution_session == session_date AND strategy == strategy_name.
+    Cohort definition:
+        intended_execution_session == session_date
+        AND strategy == strategy_name
+        AND portfolio_id matches (when non-empty)
+        AND portfolio_version matches (when non-empty)
 
-    Each order_id is counted exactly once — load_orders() already deduplicates by order_id
+    Each order_id is counted exactly once — load_orders() deduplicates by order_id
     (last record wins in the append-only JSONL), so retried orders update the same order,
     not the denominator.
 
-    fill_rate = (executed + settling) / cohort_size.
-    SETTLING counts as executed because the transition to EXECUTED completes within the same
-    run, before this function is called in normal flow.
+    Status invariant: every order in the cohort is counted in exactly one status bucket.
+    Unrecognised statuses go to "unclassified_status". Unknown actions go to "unclassified_action".
 
-    recommendations (candidates_count) = number of signal candidates for the strategy from
-    the most recent validated signal-run. Defined externally and passed via the result dict
-    (key: "recommendations"). Included here for documentation only; not computed here.
+    fill_rate = executed / cohort_size (terminal EXECUTED only — SETTLING is shown separately).
+    SETTLING orders are in-flight; they transition to EXECUTED within the same run before
+    this function is called in normal flow. Counting them in fill_rate would overstate
+    the rate on crash-recovery paths where some orders stayed SETTLING.
+
+    missing_execution_price: checked via failure_code (structural, survives expiry) with
+    fallback to failure_reason substring for orders written before failure_code was added.
+    Tracked across all statuses (PENDING_PRICE and EXPIRED both count).
+
+    recommendations (candidates_count) = signal candidates for the strategy from today's
+    validated signal-run. Passed via the result dict key "recommendations"; not computed here.
     """
+    def _is_missing_exec_price(o: dict) -> bool:
+        if o.get("failure_code") == "missing_execution_price":
+            return True
+        fr = o.get("failure_reason") or ""
+        return "no execution price" in fr
+
     cohort = [
         o for o in orders.values()
         if o.get("intended_execution_session") == session_date
         and o.get("strategy") == strategy_name
+        and (not portfolio_id or o.get("portfolio_id", "") == portfolio_id)
+        and (not portfolio_version or o.get("portfolio_version", "") == portfolio_version)
     ]
 
     stats: dict = {
@@ -959,19 +992,23 @@ def build_execution_stats(orders: dict, session_date: str, strategy_name: str) -
         "failed_reconciliation": 0,
         "expired": 0,
         "cancelled": 0,
-        "missing_execution_price": 0,  # PENDING_PRICE with "no execution price" in failure_reason
+        "unclassified_status": 0,  # unknown status — must be investigated
+        "missing_execution_price": 0,  # failure_code="missing_execution_price" (survives expiry)
         "buy_created": 0,
         "buy_executed": 0,
         "sell_created": 0,
         "sell_executed": 0,
         "pyramid_created": 0,
         "pyramid_executed": 0,
+        "unclassified_action": 0,   # unknown action
+        "safety_created": 0,        # action_origin == "portfolio_safety"
+        "safety_executed": 0,
     }
 
     for o in cohort:
         status = o.get("status", "")
         action = o.get("action", "")
-        filled = status in (EXECUTED, SETTLING)
+        terminal_executed = status == EXECUTED
 
         if status == EXECUTED:
             stats["executed"] += 1
@@ -979,9 +1016,6 @@ def build_execution_stats(orders: dict, session_date: str, strategy_name: str) -
             stats["settling"] += 1
         elif status == PENDING_PRICE:
             stats["pending_price"] += 1
-            fr = o.get("failure_reason") or ""
-            if "no execution price" in fr:
-                stats["missing_execution_price"] += 1
         elif status == FAILED_PRICE:
             stats["failed_price"] += 1
         elif status == FAILED_RECONCILIATION:
@@ -990,23 +1024,34 @@ def build_execution_stats(orders: dict, session_date: str, strategy_name: str) -
             stats["expired"] += 1
         elif status == CANCELLED:
             stats["cancelled"] += 1
+        else:
+            stats["unclassified_status"] += 1
+
+        if _is_missing_exec_price(o):
+            stats["missing_execution_price"] += 1
 
         if action == "BUY":
             stats["buy_created"] += 1
-            if filled:
+            if terminal_executed:
                 stats["buy_executed"] += 1
         elif action == "SELL":
             stats["sell_created"] += 1
-            if filled:
+            if terminal_executed:
                 stats["sell_executed"] += 1
         elif action == "PYRAMID_FILL":
             stats["pyramid_created"] += 1
-            if filled:
+            if terminal_executed:
                 stats["pyramid_executed"] += 1
+        else:
+            stats["unclassified_action"] += 1
+
+        if o.get("action_origin") == "portfolio_safety":
+            stats["safety_created"] += 1
+            if terminal_executed:
+                stats["safety_executed"] += 1
 
     n = stats["cohort_size"]
-    ex = stats["executed"] + stats["settling"]
-    stats["fill_rate"] = (ex / n) if n > 0 else None
+    stats["fill_rate"] = (stats["executed"] / n) if n > 0 else None
     bc = stats["buy_created"]
     stats["buy_fill_rate"] = (stats["buy_executed"] / bc) if bc > 0 else None
     sc = stats["sell_created"]

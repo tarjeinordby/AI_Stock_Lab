@@ -6925,3 +6925,515 @@ class TestRound17Regressions:
         assert "5 (S2)" in msg
         # Overall fill rate = 4/5
         assert "4/5" in msg
+
+# ===========================================================================
+# Round 18 — Four confirmed bugs: orphaned counter, portfolio_version,
+#             cohort scoping, failure_code, reporting invariants
+# ===========================================================================
+
+import sys
+from unittest.mock import MagicMock, patch
+
+
+def _with_file_r18(tmp_path, monkeypatch):
+    import modules.orders as om
+    import modules.fills as fm
+    monkeypatch.setattr(om, "ORDERS_FILE", str(tmp_path / "orders.jsonl"))
+    monkeypatch.setattr(om, "_ORDERS_LOCK_FILE", str(tmp_path / "orders.jsonl.lock"))
+    monkeypatch.setattr(fm, "FILLS_FILE", tmp_path / "fills.jsonl")
+    monkeypatch.setattr(fm, "_FILLS_LOCK_FILE", tmp_path / "fills.jsonl.lock")
+
+
+# ---------------------------------------------------------------------------
+# Issue 1 — pyr_is_new=True path must not raise NameError (orders_created removed)
+# ---------------------------------------------------------------------------
+
+class TestRound18Issue1PyramidNameError:
+    """pyr_is_new=True code path must not reference the removed orders_created counter."""
+
+    def test_pyramid_pyr_is_new_no_nameerror(self, tmp_path, monkeypatch):
+        """Integration: partial position in portfolio, pyr_is_new=True, no NameError.
+
+        Verifies that:
+        - The pyramid PYRAMID_FILL order is created and saved (pyr_is_new=True path).
+        - execute_pyramid_fill is called (fill attempted).
+        - No NameError/UnboundLocalError is raised from the removed orders_created counter.
+        """
+        _with_file_r18(tmp_path, monkeypatch)
+
+        # Make stock_bot importable by mocking anthropic
+        if "anthropic" not in sys.modules:
+            sys.modules["anthropic"] = MagicMock()
+
+        import stock_bot as sb
+        import modules.state as st_mod
+        import modules.fills as fm
+        import modules.orders as om
+        import modules.portfolio as pf
+        from modules.versioning import PORTFOLIO_VERSION
+
+        strategy = "MegaCap_AI"
+        session_date = "2026-08-10"
+        pid = "p-r18-pyramid"
+
+        portfolio_state = {
+            "strategy": strategy,
+            "portfolio_id": pid,
+            "portfolio_version": PORTFOLIO_VERSION,
+            "cash": 8500.0,
+            "positions": {
+                "AAPL": {
+                    "shares": 10,
+                    "avg_price": 150.0,
+                    "last_price": 150.0,
+                    "market_value": 1500.0,
+                    "is_partial": True,
+                    "pyramid_remaining_value": 600.0,
+                }
+            },
+            "highest_portfolio_value": 10000.0,
+            "weekly_meta": {"iso_week": "", "buys_this_week": 0},
+            "cooldowns": {},
+            "last_execution_date": None,
+        }
+
+        pyramid_called = []
+
+        def mock_execute_pyramid(state, trades_df, strategy_name, ticker, exec_cache):
+            pyramid_called.append(ticker)
+            return dict(state), trades_df, None  # no fill
+
+        # All functions imported via "from module import fn" at stock_bot top-level
+        # must be patched on the sb namespace, not their source modules.
+        monkeypatch.setattr(sb, "save_strategy_state", lambda *a, **kw: None)
+        monkeypatch.setattr(sb, "execute_pyramid_fill", mock_execute_pyramid)
+        monkeypatch.setattr(sb, "current_portfolio_value",
+                            lambda s, *a, **kw: (10000.0, 1500.0, s))
+        monkeypatch.setattr(sb, "get_portfolio_drawdown", lambda *a, **kw: 0.0)
+        monkeypatch.setattr(sb, "drawdown_protection_message", lambda *a, **kw: "")
+        monkeypatch.setattr(sb, "reconcile_settling_orders", lambda *a, **kw: [])
+        monkeypatch.setattr(sb, "check_pending_price_guard", lambda *a, **kw: None)
+        monkeypatch.setattr(sb, "spy_is_recovering", lambda *a, **kw: False)
+        monkeypatch.setattr(sb, "build_target_weights", lambda *a, **kw: {})
+        monkeypatch.setattr(sb, "filter_correlated_sells", lambda *a, **kw: [])
+        monkeypatch.setattr(sb, "check_sub_sector_concentration", lambda *a, **kw: (False, "", 0))
+        monkeypatch.setattr(sb, "check_correlation_against_held", lambda *a, **kw: (False, "", 0.0))
+        # compute_portfolio_state_hash is imported locally inside run_strategy_execution
+        monkeypatch.setattr(fm, "compute_portfolio_state_hash", lambda s: "hash-r18-ok")
+        monkeypatch.setattr(fm, "mark_fill_persisted", lambda *a, **kw: None)
+        monkeypatch.setattr(fm, "write_commit_intent", lambda *a, **kw: None)
+
+        # Patch load_strategy_state to return our test state (not the real disk file)
+        call_count = {"n": 0}
+        def _load_state(name):
+            call_count["n"] += 1
+            return dict(portfolio_state)
+        monkeypatch.setattr(sb, "load_strategy_state", _load_state)
+
+        signal = {
+            "strategies": {strategy: {"candidates": []}},
+            "regime": {"regime": "bullish"},
+            "corr_pairs": [],
+        }
+        orders = {}
+
+        # Must not raise NameError — this is the reproduction of Issue 1
+        result, _ = sb.run_strategy_execution(
+            strategy, signal, None, {}, {},
+            orders=orders,
+            signal_run_id="run-r18-pyr",
+            session_date=session_date,
+            execution_version="v1",
+            allow_pyramid=True,
+            allow_new_buys=False,
+            allow_signal_sells=False,
+        )
+
+        assert "AAPL" in pyramid_called, "execute_pyramid_fill must be called for partial AAPL"
+        # Pyramid order must be present in orders dict (created and saved)
+        pyramid_orders = [
+            o for o in orders.values()
+            if o.get("action") == "PYRAMID_FILL" and o.get("ticker") == "AAPL"
+        ]
+        assert pyramid_orders, "PYRAMID_FILL order for AAPL must be in orders dict"
+        assert pyramid_orders[0]["status"] == PENDING_PRICE, (
+            "No fill (empty exec cache) → order must remain PENDING_PRICE"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue 2 — portfolio_version consistency across order/filling/commit_intent
+# ---------------------------------------------------------------------------
+
+class TestRound18Issue2PortfolioVersion:
+    """portfolio_version must be consistent: orders, filling, commit_intent use PORTFOLIO_VERSION."""
+
+    def test_initial_state_has_portfolio_version(self):
+        """initial_strategy_state() must include portfolio_version = PORTFOLIO_VERSION."""
+        from modules.state import initial_strategy_state
+        from modules.versioning import PORTFOLIO_VERSION
+        state = initial_strategy_state("test_r18_pv")
+        assert "portfolio_version" in state, "initial_strategy_state must include portfolio_version"
+        assert state["portfolio_version"] == PORTFOLIO_VERSION
+
+    def test_load_strategy_state_migrates_old_state(self, tmp_path, monkeypatch):
+        """load_strategy_state() must add portfolio_version to old states that lack it."""
+        import modules.state as st_mod
+        from modules.versioning import PORTFOLIO_VERSION
+
+        state_file = tmp_path / "old_strategy.json"
+        import json as _json
+        old_state = {
+            "strategy": "old_strategy",
+            "portfolio_id": "p-old",
+            "cash": 10000.0,
+            "positions": {},
+            # portfolio_version intentionally absent (old format)
+        }
+        state_file.write_text(_json.dumps(old_state))
+        monkeypatch.setattr(st_mod, "STATE_DIR", str(tmp_path))
+
+        loaded = st_mod.load_strategy_state("old_strategy")
+        assert "portfolio_version" in loaded, "load_strategy_state must migrate portfolio_version"
+        assert loaded["portfolio_version"] == PORTFOLIO_VERSION
+
+    def test_wal_chain_portfolio_version_consistent(self, tmp_path, monkeypatch):
+        """Integration: start from an old state (no portfolio_version), perform first fill,
+        write the full WAL chain (filling → commit_intent → persisted), reload with strict
+        validation. The chain must be accepted (no portfolio_version mismatch).
+        """
+        _with_file_r18(tmp_path, monkeypatch)
+        import modules.state as st_mod
+        import modules.fills as fm
+        import modules.orders as om
+        from modules.versioning import PORTFOLIO_VERSION
+
+        # Old state without portfolio_version (simulates pre-migration file on disk)
+        import json as _json
+        old_state = {
+            "strategy": "s1",
+            "portfolio_id": "p-wal-r18",
+            "cash": 10000.0,
+            "positions": {},
+            "highest_portfolio_value": 10000.0,
+            "weekly_meta": {"iso_week": "", "buys_this_week": 0},
+            "cooldowns": {},
+            "last_execution_date": None,
+            # portfolio_version intentionally absent
+        }
+        state_file = tmp_path / "s1.json"
+        state_file.write_text(_json.dumps(old_state))
+        monkeypatch.setattr(st_mod, "STATE_DIR", str(tmp_path))
+
+        # load_strategy_state must migrate and return portfolio_version
+        state = st_mod.load_strategy_state("s1")
+        assert state["portfolio_version"] == PORTFOLIO_VERSION
+
+        pid = state["portfolio_id"]
+        pv = state["portfolio_version"]
+
+        # Create order and filling with PORTFOLIO_VERSION
+        orders = {}
+        order, _ = om.get_or_create_order(
+            orders=orders, signal_run_id="run-r18-wal",
+            ticker="AAPL", strategy="s1", session_date="2026-08-10",
+            action="BUY", target_value=5000.0, reason="r18",
+            signal_price=100.0, execution_version="v1",
+            portfolio_id=pid, portfolio_version=pv,
+        )
+        orders[order["order_id"]] = om.save_order(order)
+        oid = order["order_id"]
+
+        # Write filling event with portfolio_version = PORTFOLIO_VERSION
+        fill_ev = fm.write_fill_event(
+            order_id=oid, trade_id="trd-r18", signal_id=None,
+            signal_run_id="run-r18-wal", portfolio_id=pid, portfolio_version=pv,
+            strategy="s1", ticker="AAPL", action="BUY",
+            intended_execution_session="2026-08-10", actual_execution_session="2026-08-10",
+            shares=5.0, execution_price=100.0,
+            execution_price_timestamp="2026-08-10T13:30:00Z",
+            cash_before=10000.0, cash_after=9500.0,
+        )
+
+        pre_h = fm.compute_portfolio_state_hash({"cash": 10000.0, "positions": {}})
+        post_h = fm.compute_portfolio_state_hash({"cash": 9500.0, "positions": {}})
+
+        # Write commit_intent with portfolio_version = PORTFOLIO_VERSION (same as filling)
+        ci = fm.write_commit_intent(
+            strategy="s1", portfolio_id=pid, portfolio_version=pv,
+            pre_portfolio_state_hash=pre_h, post_portfolio_state_hash=post_h,
+            fills=[{
+                "order_id": oid,
+                "fill_attempt_id": fill_ev["fill_attempt_id"],
+                "filling_content_hash": fill_ev["content_hash"],
+            }],
+        )
+
+        fm.mark_fill_persisted(
+            oid, fill_ev["fill_attempt_id"], fill_ev["content_hash"],
+            post_portfolio_state_hash=post_h, commit_id=ci["commit_id"],
+        )
+
+        # load_fill_events() must accept this chain — no portfolio_version mismatch
+        fill_events, commit_intents = fm.load_fill_events()
+        assert oid in fill_events, "Order must appear in fill events"
+        assert len(fill_events[oid]) >= 2, "Must have filling + persisted events"
+
+        # resolve_fill strict=True must succeed (chain complete and version consistent).
+        # It raises RuntimeError on any chain error — returning without raising proves validity.
+        from modules.fills import resolve_fill
+        filling_ev, _persisted, _ci = resolve_fill(oid, fill_events[oid], commit_intents, strict=True)
+        assert filling_ev.get("status") == "filling", f"Expected filling event: {filling_ev}"
+
+
+# ---------------------------------------------------------------------------
+# Issue 3 — cohort scoping by portfolio_id/portfolio_version + failure_code
+# ---------------------------------------------------------------------------
+
+class TestRound18Issue3CohortAndFailureCode:
+    """Cohort scoped by portfolio_id + portfolio_version; failure_code survives expiry."""
+
+    def test_two_portfolios_same_strategy_separate_cohorts(self, tmp_path, monkeypatch):
+        """Two portfolios (P1, P2) with same strategy/session stay in separate cohorts.
+
+        Direct reproduction: P1 and P2 both have one order on the same session_date.
+        build_execution_stats for P1 must return cohort_size=1, not 2.
+        """
+        _with_file_r18(tmp_path, monkeypatch)
+        orders = {}
+
+        def _make(pid, pv, ticker):
+            o, _ = get_or_create_order(
+                orders=orders, signal_run_id=f"run-{pid}",
+                ticker=ticker, strategy="s1", session_date="2026-08-10",
+                action="BUY", target_value=5000.0, reason="r18",
+                signal_price=100.0, execution_version="v1",
+                portfolio_id=pid, portfolio_version=pv,
+            )
+            orders[o["order_id"]] = save_order(o)
+            return o
+
+        _make("p1-r18", "v1", "AAPL")
+        _make("p2-r18", "v1", "MSFT")
+
+        stats_p1 = build_execution_stats(orders, "2026-08-10", "s1", portfolio_id="p1-r18", portfolio_version="v1")
+        stats_p2 = build_execution_stats(orders, "2026-08-10", "s1", portfolio_id="p2-r18", portfolio_version="v1")
+
+        assert stats_p1["cohort_size"] == 1, f"P1 must see only its own order, got {stats_p1['cohort_size']}"
+        assert stats_p2["cohort_size"] == 1, f"P2 must see only its own order, got {stats_p2['cohort_size']}"
+
+    def test_failure_code_preserved_through_expiry(self, tmp_path, monkeypatch):
+        """PENDING_PRICE with failure_code='missing_execution_price' stays counted after EXPIRED.
+
+        Reproduces: expire_stale_orders() overwrites failure_reason but preserves failure_code
+        via dict(order) copy. missing_execution_price count must remain 1 after expiry.
+        """
+        _with_file_r18(tmp_path, monkeypatch)
+        orders = {}
+
+        # Create order with missing_execution_price failure_code
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r18-fc",
+            ticker="AAPL", strategy="s1", session_date="2026-08-07",
+            action="BUY", target_value=5000.0, reason="r18-fc",
+            signal_price=100.0, execution_version="v1",
+        )
+        saved = save_order(
+            order,
+            status=PENDING_PRICE,
+            failure_code="missing_execution_price",
+            failure_reason="no execution price for session",
+        )
+        orders[saved["order_id"]] = saved
+        oid = saved["order_id"]
+
+        # Before expiry: missing_execution_price counted in pending_price
+        stats_before = build_execution_stats(orders, "2026-08-07", "s1")
+        assert stats_before["pending_price"] == 1
+        assert stats_before["missing_execution_price"] == 1
+
+        # Expire the order (overrides failure_reason, must preserve failure_code)
+        expired = expire_stale_orders(orders, "2026-08-10")
+        assert len(expired) == 1
+        assert orders[oid]["status"] == EXPIRED
+        assert orders[oid].get("failure_code") == "missing_execution_price", (
+            "failure_code must survive expire_stale_orders() transition"
+        )
+        assert "no execution price" not in (orders[oid].get("failure_reason") or ""), (
+            "failure_reason should have been overwritten by expire_stale_orders"
+        )
+
+        # After expiry: order is in 'expired' bucket but missing_execution_price still 1
+        stats_after = build_execution_stats(orders, "2026-08-07", "s1")
+        assert stats_after["expired"] == 1
+        assert stats_after["pending_price"] == 0
+        assert stats_after["missing_execution_price"] == 1, (
+            "missing_execution_price must remain 1 after PENDING_PRICE → EXPIRED transition"
+        )
+
+    def test_failure_code_legacy_fallback(self, tmp_path, monkeypatch):
+        """Old orders without failure_code are detected via failure_reason substring (legacy)."""
+        _with_file_r18(tmp_path, monkeypatch)
+        orders = {}
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r18-legacy",
+            ticker="AAPL", strategy="s1", session_date="2026-08-10",
+            action="BUY", target_value=5000.0, reason="r18-legacy",
+            signal_price=100.0, execution_version="v1",
+        )
+        # Simulate old-format order: no failure_code field, only failure_reason text
+        import json as _json
+        raw = dict(order)
+        raw.pop("failure_code", None)
+        raw["status"] = PENDING_PRICE
+        raw["failure_reason"] = "no execution price for session"
+        # Write raw (without failure_code) directly to ledger
+        import modules.orders as om
+        om._append(raw)
+        orders[raw["order_id"]] = raw
+
+        stats = build_execution_stats(orders, "2026-08-10", "s1")
+        assert stats["missing_execution_price"] == 1, (
+            "Legacy orders with 'no execution price' in failure_reason must be counted"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue 4 — Reporting invariants
+# ---------------------------------------------------------------------------
+
+class TestRound18Issue4ReportingInvariants:
+    """Reporting invariants: cohort_size explicit, SETTLING separate, fill_rate=EXECUTED only,
+    all orders in one status category, unclassified tracked."""
+
+    def _make_exec_stats(self, **overrides):
+        base = {
+            "cohort_size": 0,
+            "executed": 0,
+            "settling": 0,
+            "pending_price": 0,
+            "failed_price": 0,
+            "failed_reconciliation": 0,
+            "expired": 0,
+            "cancelled": 0,
+            "unclassified_status": 0,
+            "missing_execution_price": 0,
+            "buy_created": 0,
+            "buy_executed": 0,
+            "sell_created": 0,
+            "sell_executed": 0,
+            "pyramid_created": 0,
+            "pyramid_executed": 0,
+            "unclassified_action": 0,
+            "safety_created": 0,
+            "safety_executed": 0,
+            "fill_rate": None,
+            "buy_fill_rate": None,
+            "sell_fill_rate": None,
+            "pyramid_fill_rate": None,
+        }
+        base.update(overrides)
+        return base
+
+    def _make_result(self, strategy="S1", recs=5, exec_stats=None, expired_this_run=0):
+        if exec_stats is None:
+            exec_stats = self._make_exec_stats()
+        return {
+            "strategy": strategy,
+            "buys": [],
+            "sells": [],
+            "recommendations": recs,
+            "expired_this_run": expired_this_run,
+            "exec_stats": exec_stats,
+        }
+
+    def test_settling_shown_separately_not_in_fill_rate(self, tmp_path, monkeypatch):
+        """SETTLING must appear as its own line; not included in fill_rate numerator."""
+        from modules.reporting import _build_actions
+        exec_stats = self._make_exec_stats(
+            cohort_size=3, executed=1, settling=1, pending_price=1,
+            buy_created=3, buy_executed=1,
+            fill_rate=1/3,  # EXECUTED only
+        )
+        results = [self._make_result(exec_stats=exec_stats)]
+        msg = _build_actions(results)
+        assert "SETTLING" in msg or "Under filling" in msg, "SETTLING must be visible in output"
+        assert "1/3" in msg, "fill_rate must use only EXECUTED (1/3), not including SETTLING"
+        assert "2/3" not in msg, "SETTLING must NOT be counted in fill_rate"
+
+    def test_all_orders_in_exactly_one_status_bucket(self, tmp_path, monkeypatch):
+        """Status invariant: executed + settling + pending + failed_* + expired + cancelled + unclassified = cohort_size."""
+        _with_file_r18(tmp_path, monkeypatch)
+        orders = {}
+        session = "2026-08-10"
+        strategy = "s1-inv-r18"
+
+        def _add(action, status, ticker, failure_code=None, failure_reason=None):
+            o, _ = get_or_create_order(
+                orders=orders, signal_run_id=f"run-inv-{ticker}",
+                ticker=ticker, strategy=strategy, session_date=session,
+                action=action, target_value=5000.0, reason="inv-test",
+                signal_price=100.0, execution_version="v1",
+            )
+            o = save_order(o, status=status, failure_code=failure_code, failure_reason=failure_reason)
+            orders[o["order_id"]] = o
+
+        _add("BUY", EXECUTED, "AAPL")
+        _add("SELL", SETTLING, "MSFT")
+        _add("BUY", PENDING_PRICE, "GOOG", failure_code="missing_execution_price", failure_reason="no execution price for session")
+        _add("SELL", FAILED_PRICE, "TSLA")
+        _add("BUY", FAILED_RECONCILIATION, "NVDA")
+        _add("SELL", EXPIRED, "AMZN")
+        _add("PYRAMID_FILL", CANCELLED, "META")
+
+        stats = build_execution_stats(orders, session, strategy)
+        counted = (
+            stats["executed"] + stats["settling"] + stats["pending_price"]
+            + stats["failed_price"] + stats["failed_reconciliation"]
+            + stats["expired"] + stats["cancelled"] + stats["unclassified_status"]
+        )
+        assert counted == stats["cohort_size"], (
+            f"Status counts must sum to cohort_size: "
+            f"{counted} != {stats['cohort_size']}"
+        )
+        assert stats["cohort_size"] == 7
+
+    def test_unclassified_status_shown_in_reporting(self, tmp_path, monkeypatch):
+        """Unknown order status goes to unclassified_status and is shown in reporting output."""
+        from modules.reporting import _build_actions
+        exec_stats = self._make_exec_stats(cohort_size=2, executed=1, unclassified_status=1)
+        results = [self._make_result(exec_stats=exec_stats)]
+        msg = _build_actions(results)
+        assert "Ukjent" in msg or "manual_review" in msg, "Unclassified must be visible in output"
+
+    def test_cohort_size_shown_explicitly(self, tmp_path, monkeypatch):
+        """Reporting must explicitly show 'Opprettede: N' (cohort_size), not only as denominator."""
+        from modules.reporting import _build_actions
+        exec_stats = self._make_exec_stats(
+            cohort_size=5, executed=3, pending_price=2,
+            buy_created=5, buy_executed=3,
+            fill_rate=3/5,
+        )
+        results = [self._make_result(exec_stats=exec_stats)]
+        msg = _build_actions(results)
+        assert "Opprettede: 5" in msg, f"'Opprettede: 5' must appear in output. Got:\n{msg}"
+
+    def test_fill_rate_zero_for_no_executed(self, tmp_path, monkeypatch):
+        """fill_rate must be 0/N (not None) when there are orders but none are EXECUTED."""
+        _with_file_r18(tmp_path, monkeypatch)
+        orders = {}
+        session = "2026-08-10"
+        strategy = "s1-fillrate-r18"
+        order, _ = get_or_create_order(
+            orders=orders, signal_run_id="run-r18-fr",
+            ticker="AAPL", strategy=strategy, session_date=session,
+            action="BUY", target_value=5000.0, reason="r18-fr",
+            signal_price=100.0, execution_version="v1",
+        )
+        # SETTLING — not EXECUTED, so fill_rate numerator excludes it
+        orders[order["order_id"]] = save_order(order, status=SETTLING)
+        stats = build_execution_stats(orders, session, strategy)
+        assert stats["cohort_size"] == 1
+        assert stats["settling"] == 1
+        assert stats["executed"] == 0
+        assert stats["fill_rate"] == 0.0, "fill_rate must be 0.0 (not None) when settling but not executed"

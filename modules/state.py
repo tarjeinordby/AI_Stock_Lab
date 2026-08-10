@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from modules.versioning import PORTFOLIO_VERSION as _PORTFOLIO_VERSION
+
 OSLO = ZoneInfo("Europe/Oslo")
 NY = ZoneInfo("America/New_York")
 
@@ -182,6 +184,7 @@ def initial_strategy_state(strategy_name):
         "strategy": strategy_name,
         "created_at": now_utc().isoformat(),
         "portfolio_id": str(uuid.uuid4()),
+        "portfolio_version": _PORTFOLIO_VERSION,
         "cash": START_CAPITAL,
         "positions": {},
         "highest_portfolio_value": START_CAPITAL,
@@ -221,6 +224,8 @@ def load_strategy_state(strategy_name):
         state["weekly_meta"] = {"iso_week": "", "buys_this_week": 0}
     if "portfolio_id" not in state:
         state["portfolio_id"] = str(uuid.uuid4())
+    if "portfolio_version" not in state:
+        state["portfolio_version"] = _PORTFOLIO_VERSION
     return state
 
 
