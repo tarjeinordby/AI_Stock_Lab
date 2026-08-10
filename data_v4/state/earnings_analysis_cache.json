@@ -14,16 +14,16 @@
   },
   "BILL": {
     "beat_probability": 0.82,
-    "expected_reaction": "Positive if EPS beats and revenue stabilizes; muted/negative if revenue decline continues or guidance weak",
-    "fetched_at": "2026-08-07T01:01:05.747308+00:00",
+    "expected_reaction": "positive if beat continues, but muted given decelerating revenue; upside surprise likely on EPS",
+    "fetched_at": "2026-08-10T21:38:08.323067+00:00",
     "key_metrics_to_watch": [
-      "Total payment volume (TPV) & take rate",
-      "Revenue trajectory and forward guidance",
-      "Operating margin / non-GAAP EPS trend"
+      "Total payment volume (TPV) growth",
+      "Take rate & revenue guidance",
+      "Operating margin / FCF expansion"
     ],
-    "position_recommendation": "add_before",
-    "reasoning": "4 straight beats averaging +22% surprise supports upside, but declining revenue trend and high consensus create guidance risk\u2014size position modestly.",
-    "risk_level": "high"
+    "position_recommendation": "hold",
+    "reasoning": "4 straight beats avg +22% suggests strong EPS surprise likelihood, but flat-to-declining revenue signals top-line risk capping upside",
+    "risk_level": "medium"
   },
   "CELH": {
     "beat_probability": 0.78,
@@ -65,16 +65,16 @@
     "risk_level": "high"
   },
   "SE": {
-    "beat_probability": 0.4,
-    "expected_reaction": "Likely negative to neutral; declining revenue trend and mixed beat history pressure sentiment, though last quarter beat ",
-    "fetched_at": "2026-08-07T21:35:44.950501+00:00",
+    "beat_probability": 0.42,
+    "expected_reaction": "Volatile; downside risk given declining revenue and mixed beat history",
+    "fetched_at": "2026-08-10T21:38:12.730035+00:00",
     "key_metrics_to_watch": [
-      "Revenue trajectory / sequential decline",
-      "EPS vs $5.25 consensus",
-      "Forward guidance"
+      "Revenue trajectory/guidance",
+      "Margin trends",
+      "EPS vs $5.25 consensus"
     ],
     "position_recommendation": "reduce_before",
-    "reasoning": "4 straight quarters of falling revenue ($7.1B to $5.26B) and 3 of 4 misses signal weakness; consensus $5.25 vs recent sub-$1 actuals looks inconsistent, raising uncertainty.",
+    "reasoning": "Revenue in clear decline ($7.1B\u2192$5.26B), inconsistent beats with major misses. EPS consensus $5.25 vs recent sub-$1 actuals suggests data inconsistency, raising uncertainty.",
     "risk_level": "high"
   },
   "U": {
