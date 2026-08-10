@@ -1331,7 +1331,7 @@ class TestMatchedPeriodAlignment:
         idx = self._strat_idx(300)
         r = pd.Series([0.001] * 300, index=idx)
         spy_r = pd.Series([0.001] * 300, index=idx)
-        m = compute_metrics(r, {"SPY": spy_r}, "S", "in_sample",
+        m = compute_metrics(r, {"SPY": spy_r}, "S", "retrospective_holdout",
                             factor_coverage=0.80, requires_pit_fundamentals=False)
         assert m.sufficient_evidence
 
@@ -1401,3 +1401,150 @@ class TestMatchedPeriodAlignment:
         rank_a = row_a["rank"]
         assert rank_a is None or (isinstance(rank_a, float) and math.isnan(rank_a)), \
             f"Insufficient-evidence must have rank=None, got {rank_a}"
+
+
+# ---------------------------------------------------------------------------
+# Z. Period consistency and factor coverage gating (Round 5)
+# ---------------------------------------------------------------------------
+
+class TestPeriodConsistencyAndCoverageGating:
+    """Regression: period-mismatch data and missing coverage must block sufficient_evidence."""
+
+    def _r(self, start: str, n: int = 300) -> pd.Series:
+        """Helper: deterministic return series on a DatetimeIndex."""
+        idx = pd.date_range(start, periods=n, freq="B")
+        return pd.Series([0.001] * n, index=idx)
+
+    # ---- Period consistency ----
+
+    def test_2023_data_labeled_in_sample_rejected(self):
+        """2023 return dates are outside in_sample (2015-2020) → sufficient_evidence=False."""
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2023-01-01")
+        spy = self._r("2023-01-01")
+        m = compute_metrics(r, {"SPY": spy}, "S", "in_sample",
+                            factor_coverage=0.80, requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "period_mismatch" in m.evidence_note
+
+    def test_2019_data_labeled_in_sample_accepted(self):
+        """2019 return dates are within in_sample (2015-2020) → can be sufficient."""
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")  # 300 biz days from 2016-01-04 ends ~2017-03
+        spy = self._r("2016-01-01")
+        m = compute_metrics(r, {"SPY": spy}, "S", "in_sample",
+                            factor_coverage=0.80, requires_pit_fundamentals=False)
+        assert m.sufficient_evidence, f"evidence_note: {m.evidence_note}"
+
+    def test_range_index_cannot_give_sufficient_evidence(self):
+        """RangeIndex has no dates — period bounds cannot be verified."""
+        from modules.v2_evaluation import compute_metrics
+        r = pd.Series([0.001] * 300)  # RangeIndex
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=0.80, requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "invalid_datetime_index" in m.evidence_note
+
+    def test_tz_aware_utc_data_in_correct_period_accepted(self):
+        """UTC-aware DatetimeIndex within in_sample bounds is accepted after normalization."""
+        from modules.v2_evaluation import compute_metrics
+        idx = pd.date_range("2016-01-04", periods=300, freq="B", tz="UTC")
+        r = pd.Series([0.001] * 300, index=idx)
+        spy = pd.Series([0.001] * 300, index=idx)
+        m = compute_metrics(r, {"SPY": spy}, "S", "in_sample",
+                            factor_coverage=0.80, requires_pit_fundamentals=False)
+        assert m.sufficient_evidence, f"evidence_note: {m.evidence_note}"
+
+    def test_tz_aware_data_outside_period_rejected(self):
+        """UTC-aware DatetimeIndex with 2023 data labeled in_sample is rejected."""
+        from modules.v2_evaluation import compute_metrics
+        idx = pd.date_range("2023-01-03", periods=300, freq="B", tz="UTC")
+        r = pd.Series([0.001] * 300, index=idx)
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=0.80, requires_pit_fundamentals=False,
+                            requires_factor_coverage=False)
+        assert not m.sufficient_evidence
+        assert "period_mismatch" in m.evidence_note
+
+    # ---- Factor coverage validation ----
+
+    def test_factor_coverage_none_rejected(self):
+        """factor_coverage=None blocks sufficient_evidence when requires_factor_coverage=True."""
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=None, requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "missing_factor_coverage" in m.evidence_note
+
+    def test_factor_coverage_nan_rejected(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=float("nan"), requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "invalid_factor_coverage" in m.evidence_note
+
+    def test_factor_coverage_inf_rejected(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=float("inf"), requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "invalid_factor_coverage" in m.evidence_note
+
+    def test_factor_coverage_negative_rejected(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=-0.1, requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "invalid_factor_coverage" in m.evidence_note
+
+    def test_factor_coverage_above_one_rejected(self):
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=1.1, requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "invalid_factor_coverage" in m.evidence_note
+
+    def test_factor_coverage_low_rejected(self):
+        """0.10 factor coverage is below the 0.30 evidence threshold."""
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=0.10, requires_pit_fundamentals=False)
+        assert not m.sufficient_evidence
+        assert "low_factor_coverage" in m.evidence_note
+
+    def test_factor_coverage_adequate_accepted_for_price_only(self):
+        """0.80 coverage + correct period + price-only → sufficient_evidence=True."""
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        spy = self._r("2016-01-01")
+        m = compute_metrics(r, {"SPY": spy}, "S", "in_sample",
+                            factor_coverage=0.80, requires_pit_fundamentals=False)
+        assert m.sufficient_evidence, f"evidence_note: {m.evidence_note}"
+
+    def test_benchmark_exempt_from_coverage_check(self):
+        """requires_factor_coverage=False allows None coverage (for SPY/QQQ benchmarks)."""
+        from modules.v2_evaluation import compute_metrics
+        r = self._r("2016-01-01")
+        spy = self._r("2016-01-01")
+        m = compute_metrics(r, {"SPY": spy}, "SPY_benchmark", "in_sample",
+                            factor_coverage=None,
+                            requires_pit_fundamentals=False,
+                            requires_factor_coverage=False)
+        assert m.sufficient_evidence, f"Benchmark exemption must work: {m.evidence_note}"
+
+    def test_benchmark_exemption_does_not_leak_to_strategies(self):
+        """requires_factor_coverage=False on benchmark has no effect on strategy calls."""
+        from modules.v2_evaluation import compute_metrics
+        # Strategy call without coverage — must still fail
+        r = self._r("2016-01-01")
+        m = compute_metrics(r, {}, "S", "in_sample",
+                            factor_coverage=None, requires_pit_fundamentals=False,
+                            requires_factor_coverage=True)
+        assert not m.sufficient_evidence
+        assert "missing_factor_coverage" in m.evidence_note

@@ -197,6 +197,7 @@ def compute_metrics(
     activity_data: dict | None = None,
     requires_pit_fundamentals: bool = True,
     min_factor_coverage: float = 0.30,
+    requires_factor_coverage: bool = True,
 ) -> EvaluationMetrics:
     """
     Compute evaluation metrics from a daily return series.
@@ -208,7 +209,11 @@ def compute_metrics(
       Set False only for explicit price-only (momentum + safety) models. When True and
       point_in_time_fundamentals=False, sufficient_evidence is blocked.
     min_factor_coverage: minimum factor_coverage for sufficient_evidence (default 0.30).
-      Only applied when factor_coverage is not None.
+      This is the evidence threshold — the promotion threshold (0.60) is separate and
+      enforced by check_promotion_criteria().
+    requires_factor_coverage: True (default) for strategy models. Set False only for
+      pure price benchmarks (SPY, QQQ). When True, factor_coverage=None or any
+      invalid/out-of-range value blocks sufficient_evidence.
 
     activity_data: optional dict with position-level fields that cannot be
       computed from returns alone. Supported keys:
@@ -321,15 +326,88 @@ def compute_metrics(
 
     m.factor_coverage = factor_coverage
 
-    # sufficient_evidence requires: minimum data, valid Sharpe, known period,
-    # adequate factor coverage, and PIT fundamentals for fundamental-factor models.
-    known_period = period in EVALUATION_PERIODS
-    coverage_ok = factor_coverage is None or factor_coverage >= min_factor_coverage
+    # --- Period consistency ---
+    # Validates that the index is a DatetimeIndex and ALL observations lie within the
+    # declared EVALUATION_PERIODS[period] bounds. Does not clip or relabel observations.
+    period_ok = True
+    period_fail_reason: str | None = None
+
+    if period not in EVALUATION_PERIODS:
+        period_ok = False
+        period_fail_reason = f"unknown_period: '{period}'"
+    elif not isinstance(r.index, pd.DatetimeIndex):
+        period_ok = False
+        period_fail_reason = (
+            "invalid_datetime_index: index must be DatetimeIndex to verify period bounds"
+        )
+    else:
+        idx_norm = r.index
+        if idx_norm.tz is not None:
+            idx_norm = idx_norm.tz_convert("UTC").tz_localize(None)
+        p_def = EVALUATION_PERIODS[period]
+        p_start = p_def["start"]
+        p_end = p_def["end"]  # None for prospective_out_of_sample (open-ended)
+        obs_min = idx_norm.min()
+        obs_max = idx_norm.max()
+        if obs_min < p_start:
+            period_ok = False
+            period_fail_reason = (
+                f"period_mismatch: earliest observation {obs_min.date()} "
+                f"is before '{period}' start {p_start.date()}"
+            )
+        elif p_end is not None and obs_max > p_end:
+            period_ok = False
+            period_fail_reason = (
+                f"period_mismatch: latest observation {obs_max.date()} "
+                f"is after '{period}' end {p_end.date()}"
+            )
+
+    # --- Factor coverage validation ---
+    # factor_coverage=None is not treated as sufficient coverage.
+    # Use requires_factor_coverage=False only for pure price benchmarks (SPY, QQQ).
+    # min_factor_coverage is the evidence threshold; 0.60 is the separate promotion threshold.
+    coverage_ok = True
+    coverage_fail_reason: str | None = None
+
+    if requires_factor_coverage:
+        if factor_coverage is None:
+            coverage_ok = False
+            coverage_fail_reason = (
+                "missing_factor_coverage: factor_coverage=None "
+                "(use requires_factor_coverage=False for pure benchmarks)"
+            )
+        else:
+            try:
+                fc = float(factor_coverage)
+                if not math.isfinite(fc):
+                    coverage_ok = False
+                    coverage_fail_reason = (
+                        f"invalid_factor_coverage: {factor_coverage} (not finite)"
+                    )
+                elif fc < 0 or fc > 1:
+                    coverage_ok = False
+                    coverage_fail_reason = (
+                        f"invalid_factor_coverage: {factor_coverage} (must be in [0, 1])"
+                    )
+                elif fc < min_factor_coverage:
+                    coverage_ok = False
+                    coverage_fail_reason = (
+                        f"low_factor_coverage: {fc} "
+                        f"(evidence threshold: {min_factor_coverage}+; "
+                        f"promotion threshold: 0.60)"
+                    )
+            except (TypeError, ValueError):
+                coverage_ok = False
+                coverage_fail_reason = (
+                    f"invalid_factor_coverage: {factor_coverage} (not numeric)"
+                )
+
+    # --- Sufficient evidence ---
     pit_ok = (not requires_pit_fundamentals) or m.point_in_time_fundamentals
     m.sufficient_evidence = (
         n >= TRADING_DAYS_PER_YEAR
         and m.sharpe_ratio is not None
-        and known_period
+        and period_ok
         and coverage_ok
         and pit_ok
     )
@@ -339,10 +417,10 @@ def compute_metrics(
             reasons.append(f"insufficient_data: {n} days (need {TRADING_DAYS_PER_YEAR}+)")
         if m.sharpe_ratio is None:
             reasons.append("sharpe_unavailable")
-        if not known_period:
-            reasons.append(f"unknown_period: '{period}'")
-        if not coverage_ok:
-            reasons.append(f"low_factor_coverage: {factor_coverage} (need {min_factor_coverage}+)")
+        if period_fail_reason:
+            reasons.append(period_fail_reason)
+        if coverage_fail_reason:
+            reasons.append(coverage_fail_reason)
         if not pit_ok:
             reasons.append(
                 "point_in_time_fundamentals=False blocks sufficient_evidence "
