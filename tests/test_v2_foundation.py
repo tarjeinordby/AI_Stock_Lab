@@ -494,33 +494,70 @@ class TestBacktestIntegrity:
 
 
 # ---------------------------------------------------------------------------
-# K. Evaluation period definitions
+# K. Period definitions (4-period structure)
 # ---------------------------------------------------------------------------
 
-class TestEvaluationPeriods:
+class TestPeriodDefinitions:
 
-    def test_oos_is_locked(self):
+    def test_four_periods_defined(self):
         from modules.v2_evaluation import EVALUATION_PERIODS
-        assert EVALUATION_PERIODS["out_of_sample"].get("locked") is True
+        expected = {"in_sample", "validation", "retrospective_holdout", "prospective_out_of_sample"}
+        assert set(EVALUATION_PERIODS.keys()) == expected
+
+    def test_prospective_oos_is_locked(self):
+        from modules.v2_evaluation import EVALUATION_PERIODS
+        assert EVALUATION_PERIODS["prospective_out_of_sample"].get("locked") is True
+
+    def test_retrospective_holdout_is_locked(self):
+        from modules.v2_evaluation import EVALUATION_PERIODS
+        assert EVALUATION_PERIODS["retrospective_holdout"].get("locked") is True
 
     def test_in_sample_ends_before_validation(self):
         from modules.v2_evaluation import EVALUATION_PERIODS
-        assert (pd.Timestamp(EVALUATION_PERIODS["in_sample"]["end"])
-                < pd.Timestamp(EVALUATION_PERIODS["validation"]["start"]))
+        assert (EVALUATION_PERIODS["in_sample"]["end"]
+                < EVALUATION_PERIODS["validation"]["start"])
 
-    def test_validation_ends_before_oos(self):
+    def test_validation_ends_before_retrospective(self):
         from modules.v2_evaluation import EVALUATION_PERIODS
-        assert (pd.Timestamp(EVALUATION_PERIODS["validation"]["end"])
-                < pd.Timestamp(EVALUATION_PERIODS["out_of_sample"]["start"]))
+        assert (EVALUATION_PERIODS["validation"]["end"]
+                < EVALUATION_PERIODS["retrospective_holdout"]["start"])
+
+    def test_retrospective_ends_before_prospective(self):
+        from modules.v2_evaluation import EVALUATION_PERIODS
+        assert (EVALUATION_PERIODS["retrospective_holdout"]["end"]
+                < EVALUATION_PERIODS["prospective_out_of_sample"]["start"])
+
+    def test_prospective_oos_starts_after_registration(self):
+        from modules.v2_evaluation import EVALUATION_PERIODS, MODEL_REGISTRATION_DATE
+        assert EVALUATION_PERIODS["prospective_out_of_sample"]["start"] > MODEL_REGISTRATION_DATE
+
+    def test_prospective_oos_end_is_none(self):
+        from modules.v2_evaluation import EVALUATION_PERIODS
+        assert EVALUATION_PERIODS["prospective_out_of_sample"]["end"] is None
+
+    def test_model_registration_date_is_2026_08_10(self):
+        from modules.v2_evaluation import MODEL_REGISTRATION_DATE
+        assert MODEL_REGISTRATION_DATE == pd.Timestamp("2026-08-10")
+
+    def test_get_prospective_oos_months_before_lock(self):
+        from modules.v2_evaluation import get_prospective_oos_months
+        months = get_prospective_oos_months(as_of=pd.Timestamp("2026-08-05"))
+        assert months == 0
+
+    def test_get_prospective_oos_months_after_lock(self):
+        from modules.v2_evaluation import get_prospective_oos_months
+        months = get_prospective_oos_months(as_of=pd.Timestamp("2027-02-11"))
+        assert months >= 6
 
     def test_benchmarks_include_spy_and_qqq(self):
         from modules.v2_evaluation import BENCHMARKS
         assert "SPY" in BENCHMARKS
         assert "QQQ" in BENCHMARKS
 
-    def test_promotion_requires_oos_period(self):
+    def test_promotion_criteria_key_is_prospective_oos_months(self):
         from modules.v2_evaluation import PROMOTION_CRITERIA
-        assert PROMOTION_CRITERIA["min_out_of_sample_months"] >= 3
+        assert "min_prospective_oos_months" in PROMOTION_CRITERIA
+        assert PROMOTION_CRITERIA["min_prospective_oos_months"] >= 6
 
 
 # ---------------------------------------------------------------------------
@@ -546,3 +583,418 @@ class TestV2VersionConstants:
         from modules.v2_strategy import V2_MODEL_VERSION, V2_PORTFOLIO_VERSION
         assert V2_MODEL_VERSION in get_model_registry()
         assert V2_PORTFOLIO_VERSION in get_portfolio_registry()
+
+
+# ---------------------------------------------------------------------------
+# M. Config / code parity
+# ---------------------------------------------------------------------------
+
+class TestConfigCodeParity:
+
+    def test_safety_beta_data_source_mentions_spy(self):
+        from modules.versioning import get_model_registry
+        safety = get_model_registry()["quant_baseline_v2"]["config"]["factors"]["safety"]
+        assert "SPY" in safety["beta_data_source"]
+
+    def test_safety_min_overlap_days_matches_code(self):
+        from modules.versioning import get_model_registry
+        safety = get_model_registry()["quant_baseline_v2"]["config"]["factors"]["safety"]
+        # Code: len(common_idx) >= 60 in build_safety_factor
+        assert safety["min_overlap_days"] == 60
+
+    def test_value_sector_min_group_size_matches_code(self):
+        from modules.versioning import get_model_registry
+        from modules.v2_strategy import _SECTOR_MIN_GROUP_SIZE
+        value = get_model_registry()["quant_baseline_v2"]["config"]["factors"]["value"]
+        assert value["sector_min_group_size"] == _SECTOR_MIN_GROUP_SIZE
+
+    def test_value_sector_fallback_mentions_cross_sectional(self):
+        from modules.versioning import get_model_registry
+        value = get_model_registry()["quant_baseline_v2"]["config"]["factors"]["value"]
+        assert "cross_sectional" in value["sector_fallback"]
+
+
+# ---------------------------------------------------------------------------
+# N. NaN / inf / non-numeric handling
+# ---------------------------------------------------------------------------
+
+class TestNaNInfHandling:
+
+    def test_nan_roe_gives_quality_unavailable(self):
+        from modules.v2_strategy import build_quality_factor
+        import math
+        result = build_quality_factor({"TICK": {"returnOnEquity": float("nan")}})
+        row = result.iloc[0]
+        assert row["quality_roe_available"] is False or row["quality_roe_available"] == False
+
+    def test_inf_roe_gives_quality_unavailable(self):
+        from modules.v2_strategy import build_quality_factor
+        result = build_quality_factor({"TICK": {"returnOnEquity": float("inf")}})
+        row = result.iloc[0]
+        assert row["quality_roe_available"] is False or row["quality_roe_available"] == False
+
+    def test_neg_inf_gives_quality_unavailable(self):
+        from modules.v2_strategy import build_quality_factor
+        result = build_quality_factor({"TICK": {"returnOnEquity": float("-inf")}})
+        row = result.iloc[0]
+        assert row["quality_roe_available"] is False or row["quality_roe_available"] == False
+
+    def test_non_numeric_string_gives_quality_unavailable(self):
+        from modules.v2_strategy import build_quality_factor
+        result = build_quality_factor({"TICK": {"returnOnEquity": "N/A"}})
+        row = result.iloc[0]
+        assert row["quality_roe_available"] is False or row["quality_roe_available"] == False
+
+    def test_nan_mktcap_gives_value_fcf_yield_unavailable(self):
+        from modules.v2_strategy import build_value_factor
+        result = build_value_factor({"TICK": {
+            "freeCashflow": 1_000_000, "marketCap": float("nan")
+        }})
+        row = result.iloc[0]
+        assert row["value_fcf_yield_available"] is False or row["value_fcf_yield_available"] == False
+
+    def test_inf_fpe_gives_earnings_yield_unavailable(self):
+        from modules.v2_strategy import build_value_factor
+        result = build_value_factor({"TICK": {"forwardPE": float("inf")}})
+        row = result.iloc[0]
+        assert row["value_earnings_yield_available"] is False or row["value_earnings_yield_available"] == False
+
+    def test_all_nan_gives_null_composite_not_fifty(self):
+        from modules.v2_strategy import build_quality_factor
+        result = build_quality_factor({"TICK": {
+            "returnOnEquity": float("nan"),
+            "grossMargins": float("nan"),
+            "debtToEquity": float("nan"),
+            "earningsGrowth": float("nan"),
+            "freeCashflow": float("nan"),
+            "totalRevenue": float("nan"),
+        }})
+        row = result.iloc[0]
+        assert row["quality_available"] == False
+        assert _is_null(row.get("quality_score"))
+
+
+# ---------------------------------------------------------------------------
+# O. Empty universe
+# ---------------------------------------------------------------------------
+
+class TestEmptyUniverse:
+
+    def test_all_empty_inputs_returns_stable_schema(self):
+        from modules.v2_strategy import build_v2_factor_scores, EMPTY_SCORE_SCHEMA
+        result = build_v2_factor_scores(
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.columns) == EMPTY_SCORE_SCHEMA
+        assert len(result) == 0
+
+    def test_empty_price_data_dict_returns_empty_momentum(self):
+        from modules.v2_strategy import build_momentum_factor
+        result = build_momentum_factor({}, as_of=pd.Timestamp("2026-01-01"))
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+    def test_empty_fundamentals_dict_returns_empty_quality(self):
+        from modules.v2_strategy import build_quality_factor
+        result = build_quality_factor({})
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# P. Timezone handling
+# ---------------------------------------------------------------------------
+
+class TestTimezone:
+
+    def test_tz_aware_as_of_with_naive_momentum_no_type_error(self):
+        from modules.v2_strategy import build_momentum_factor
+        df = _make_price_df(300)  # naive DatetimeIndex
+        as_of = pd.Timestamp("2022-12-31", tz="UTC")
+        # Must not raise TypeError comparing tz-aware vs tz-naive
+        result = build_momentum_factor({"TICK": df}, as_of=as_of)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1
+
+    def test_tz_aware_as_of_with_naive_safety_no_type_error(self):
+        from modules.v2_strategy import build_safety_factor
+        df = _make_price_df(300)
+        as_of = pd.Timestamp("2022-12-31", tz="US/Eastern")
+        result = build_safety_factor({"TICK": df}, as_of=as_of)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1
+
+    def test_tz_aware_as_of_momentum_correct_cutoff(self):
+        from modules.v2_strategy import build_momentum_factor
+        df = _make_price_df(300)
+        # as_of pointing to the last date in the series — data should be available
+        last = df.index[-1]
+        as_of_utc = pd.Timestamp(last).tz_localize("UTC")
+        result = build_momentum_factor({"TICK": df}, as_of=as_of_utc)
+        assert result.iloc[0]["momentum_available"] == True
+
+
+# ---------------------------------------------------------------------------
+# Q. Momentum history threshold (252 days)
+# ---------------------------------------------------------------------------
+
+class TestMomentumHistoryThreshold:
+
+    def test_exactly_252_days_gives_available(self):
+        from modules.v2_strategy import build_momentum_factor
+        df = _make_price_df(252)
+        result = build_momentum_factor({"TICK": df}, as_of=df.index[-1])
+        assert result.iloc[0]["momentum_available"] == True
+
+    def test_251_days_gives_unavailable(self):
+        from modules.v2_strategy import build_momentum_factor
+        df = _make_price_df(251)
+        result = build_momentum_factor({"TICK": df}, as_of=df.index[-1])
+        assert result.iloc[0]["momentum_available"] == False
+
+    def test_300_days_gives_available(self):
+        from modules.v2_strategy import build_momentum_factor
+        df = _make_price_df(300)
+        result = build_momentum_factor({"TICK": df}, as_of=df.index[-1])
+        assert result.iloc[0]["momentum_available"] == True
+
+
+# ---------------------------------------------------------------------------
+# R. Promotion criteria (real SPY comparison)
+# ---------------------------------------------------------------------------
+
+class TestCheckPromotionCriteria:
+
+    def _make_metrics(self, sharpe=0.80, drawdown=-0.15, alpha_frac=0.60,
+                      strategy_name="Core_V2", period="prospective_out_of_sample"):
+        from modules.v2_evaluation import EvaluationMetrics
+        m = EvaluationMetrics(strategy_name=strategy_name, period=period)
+        m.sharpe_ratio = sharpe
+        m.max_drawdown = drawdown
+        m._positive_alpha_months_fraction = alpha_frac
+        m.factor_coverage = 0.85
+        m.survivorship_bias_note = "survivorship bias present — current universe only"
+        m.sufficient_evidence = True
+        return m
+
+    def test_all_criteria_pass_with_strong_strategy(self):
+        from modules.v2_evaluation import check_promotion_criteria
+        strat = self._make_metrics(sharpe=1.20, drawdown=-0.12, alpha_frac=0.62)
+        spy = self._make_metrics(sharpe=0.90, drawdown=-0.20, strategy_name="SPY")
+        # NOT promoting (backtest_not_blocking_promotion always False in V2A)
+        results = check_promotion_criteria(strat, spy, oos_months=8, min_factor_coverage=0.6)
+        assert results["min_prospective_oos_months"] is True
+        assert results["min_sharpe_above_spy"] is True
+        assert results["max_drawdown_ratio_vs_spy"] is True
+        assert results["min_positive_alpha_months_fraction"] is True
+        assert results["must_report_survivorship_bias"] is True
+        assert results["must_report_factor_coverage"] is True
+        # Promotion still blocked due to backtest constraint
+        assert results["backtest_not_blocking_promotion"] is False
+
+    def test_insufficient_oos_months_fails(self):
+        from modules.v2_evaluation import check_promotion_criteria
+        strat = self._make_metrics(sharpe=1.20)
+        spy = self._make_metrics(sharpe=0.90, strategy_name="SPY")
+        results = check_promotion_criteria(strat, spy, oos_months=3)
+        assert results["min_prospective_oos_months"] is False
+
+    def test_sharpe_too_close_to_spy_fails(self):
+        from modules.v2_evaluation import check_promotion_criteria
+        strat = self._make_metrics(sharpe=0.95)
+        spy = self._make_metrics(sharpe=0.90, strategy_name="SPY")
+        # Difference is only 0.05, below threshold of 0.10
+        results = check_promotion_criteria(strat, spy, oos_months=8)
+        assert results["min_sharpe_above_spy"] is False
+
+    def test_worse_drawdown_than_spy_fails(self):
+        from modules.v2_evaluation import check_promotion_criteria
+        strat = self._make_metrics(drawdown=-0.35)
+        spy = self._make_metrics(drawdown=-0.20, strategy_name="SPY")
+        # abs(strat_dd) / abs(spy_dd) = 0.35/0.20 = 1.75 > 1.25
+        results = check_promotion_criteria(strat, spy, oos_months=8)
+        assert results["max_drawdown_ratio_vs_spy"] is False
+
+    def test_low_alpha_fraction_fails(self):
+        from modules.v2_evaluation import check_promotion_criteria
+        strat = self._make_metrics(sharpe=1.20, alpha_frac=0.45)
+        spy = self._make_metrics(sharpe=0.90, strategy_name="SPY")
+        results = check_promotion_criteria(strat, spy, oos_months=8)
+        assert results["min_positive_alpha_months_fraction"] is False
+
+    def test_missing_sharpe_fails_sharpe_criterion(self):
+        from modules.v2_evaluation import check_promotion_criteria
+        strat = self._make_metrics()
+        strat.sharpe_ratio = None
+        spy = self._make_metrics(strategy_name="SPY")
+        results = check_promotion_criteria(strat, spy, oos_months=8)
+        assert results["min_sharpe_above_spy"] is False
+
+
+# ---------------------------------------------------------------------------
+# S. Backtest status
+# ---------------------------------------------------------------------------
+
+class TestBacktestStatus:
+
+    def test_full_four_factor_backtest_unsupported(self):
+        from modules.v2_evaluation import BACKTEST_STATUS
+        assert BACKTEST_STATUS["full_four_factor"] == "unsupported"
+
+    def test_momentum_safety_backtest_supported(self):
+        from modules.v2_evaluation import BACKTEST_STATUS
+        assert BACKTEST_STATUS["momentum_and_safety_only"] == "supported"
+
+    def test_promotion_blocked(self):
+        from modules.v2_evaluation import BACKTEST_STATUS
+        assert BACKTEST_STATUS["promotion_blocked"] is True
+
+    def test_run_v2_backtest_raises_not_implemented(self):
+        from modules.v2_evaluation import run_v2_backtest
+        with pytest.raises(NotImplementedError):
+            run_v2_backtest()
+
+    def test_run_v2_backtest_with_args_raises_not_implemented(self):
+        from modules.v2_evaluation import run_v2_backtest
+        with pytest.raises(NotImplementedError):
+            run_v2_backtest("some_arg", strategy="Core_V2")
+
+
+# ---------------------------------------------------------------------------
+# T. Hardened Claude shadow provenance
+# ---------------------------------------------------------------------------
+
+class TestClaudeShadowHardened:
+
+    def _valid_raw(self):
+        return {
+            "signal_direction": "bullish",
+            "evidence_strength": "strong",
+            "guidance_change": "raised",
+            "estimate_revision_direction": "upward",
+            "margin_trend": "improving",
+            "earnings_quality": "high",
+            "capital_allocation_quality": "high",
+            "thesis_risks": ["macro risk"],
+            "catalyst_strength": "strong",
+            "uncertainty": "low",
+            "source_ids": ["s1", "s2"],
+            "source_published_at": ["2026-08-01T09:00:00+00:00", "2026-08-05T14:30:00+00:00"],
+            "model_id": "claude-sonnet-5",
+            "prompt_version": "shadow_v1",
+            "generated_at": "2026-08-10T12:00:00+00:00",
+            "data_cutoff_at": "2026-08-09T16:00:00+00:00",
+        }
+
+    def test_valid_provenance_gives_provenance_valid_true(self):
+        from modules.v2_claude_shadow import validate_claude_shadow_output
+        result = validate_claude_shadow_output(self._valid_raw())
+        assert result["provenance_valid"] is True
+        assert result["provenance_failures"] == []
+
+    def test_missing_generated_at_fails_provenance(self):
+        from modules.v2_claude_shadow import validate_claude_shadow_output
+        raw = self._valid_raw()
+        raw.pop("generated_at")
+        result = validate_claude_shadow_output(raw)
+        assert result["provenance_valid"] is False
+        assert any("generated_at" in f for f in result["provenance_failures"])
+
+    def test_missing_timezone_on_generated_at_fails(self):
+        from modules.v2_claude_shadow import validate_claude_shadow_output
+        raw = self._valid_raw()
+        raw["generated_at"] = "2026-08-10T12:00:00"  # no timezone
+        result = validate_claude_shadow_output(raw)
+        assert result["provenance_valid"] is False
+        assert any("generated_at" in f for f in result["provenance_failures"])
+
+    def test_generated_at_before_cutoff_fails(self):
+        from modules.v2_claude_shadow import validate_claude_shadow_output
+        raw = self._valid_raw()
+        raw["generated_at"] = "2026-08-08T00:00:00+00:00"  # before data_cutoff_at
+        raw["data_cutoff_at"] = "2026-08-09T16:00:00+00:00"
+        result = validate_claude_shadow_output(raw)
+        assert result["provenance_valid"] is False
+        assert any("before data_cutoff_at" in f for f in result["provenance_failures"])
+
+    def test_parallel_list_length_mismatch_fails(self):
+        from modules.v2_claude_shadow import validate_claude_shadow_output
+        raw = self._valid_raw()
+        raw["source_ids"] = ["s1", "s2", "s3"]  # 3 ids but 2 timestamps
+        result = validate_claude_shadow_output(raw)
+        assert result["provenance_valid"] is False
+        assert any("source_ids length" in f for f in result["provenance_failures"])
+
+    def test_source_published_after_cutoff_fails(self):
+        from modules.v2_claude_shadow import validate_claude_shadow_output
+        raw = self._valid_raw()
+        # source published AFTER data_cutoff_at
+        raw["source_published_at"] = ["2026-08-10T20:00:00+00:00", "2026-08-05T14:30:00+00:00"]
+        raw["data_cutoff_at"] = "2026-08-09T16:00:00+00:00"
+        result = validate_claude_shadow_output(raw)
+        assert result["provenance_valid"] is False
+        assert any("after data_cutoff_at" in f for f in result["provenance_failures"])
+
+    def test_source_published_missing_timezone_fails(self):
+        from modules.v2_claude_shadow import validate_claude_shadow_output
+        raw = self._valid_raw()
+        raw["source_published_at"] = ["2026-08-01T09:00:00", "2026-08-05T14:30:00+00:00"]
+        result = validate_claude_shadow_output(raw)
+        assert result["provenance_valid"] is False
+        assert any("source_published_at[0]" in f for f in result["provenance_failures"])
+
+    def test_shadow_unavailable_has_provenance_fields(self):
+        from modules.v2_claude_shadow import shadow_unavailable
+        result = shadow_unavailable("not_requested")
+        assert "provenance_valid" in result
+        assert "provenance_failures" in result
+        assert result["provenance_valid"] is False
+        assert isinstance(result["provenance_failures"], list)
+
+    def test_schema_dict_exported(self):
+        from modules.v2_claude_shadow import CLAUDE_SHADOW_JSON_SCHEMA
+        assert isinstance(CLAUDE_SHADOW_JSON_SCHEMA, dict)
+        assert "properties" in CLAUDE_SHADOW_JSON_SCHEMA
+        assert CLAUDE_SHADOW_JSON_SCHEMA["properties"]["order_creation_blocked"]["const"] is True
+
+
+# ---------------------------------------------------------------------------
+# U. Config hash validation
+# ---------------------------------------------------------------------------
+
+class TestConfigHashValidation:
+
+    def test_v2_model_config_hash_validates(self):
+        from modules.versioning import validate_model_config_hash
+        # Should not raise
+        validate_model_config_hash("quant_baseline_v2")
+
+    def test_v2_portfolio_config_hash_validates(self):
+        from modules.versioning import validate_portfolio_config_hash
+        validate_portfolio_config_hash("risk_managed_factor_v2")
+
+    def test_v1_model_config_hash_still_validates(self):
+        from modules.versioning import validate_model_config_hash
+        validate_model_config_hash("quant_baseline_v1")
+
+    def test_v1_portfolio_config_hash_still_validates(self):
+        from modules.versioning import validate_portfolio_config_hash
+        validate_portfolio_config_hash("risk_parity_pyramid_v1")
+
+    def test_v2_model_hash_is_not_placeholder(self):
+        from modules.versioning import get_model_registry
+        entry = get_model_registry()["quant_baseline_v2"]
+        h = entry.get("model_config_hash", "")
+        assert h not in ("", "placeholder", "PLACEHOLDER", None, "n/a")
+        assert len(str(h)) == 64  # SHA-256 hex digest
+
+    def test_v2_portfolio_hash_is_not_placeholder(self):
+        from modules.versioning import get_portfolio_registry
+        entry = get_portfolio_registry()["risk_managed_factor_v2"]
+        h = entry.get("portfolio_config_hash", "")
+        assert h not in ("", "placeholder", "PLACEHOLDER", None, "n/a")
+        assert len(str(h)) == 64

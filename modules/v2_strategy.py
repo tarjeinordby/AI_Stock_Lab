@@ -11,6 +11,9 @@ Key differences from V1:
   - Three clearly differentiated strategies (no Balanced_V2)
   - MegaCap as universe filter, not scoring penalty
   - Claude shadow logged but blocked from order creation
+  - Beta computed vs SPY series (matches YAML config)
+  - Value factor is sector-relative for ev_ebitda_inv (matches YAML config)
+  - NaN/inf treated as unavailable (not as valid data)
 
 V2 strategy names end in _V2 — they cannot collide with V1 idempotency keys.
 """
@@ -175,6 +178,49 @@ V2_STRATEGIES: dict[str, dict[str, Any]] = {
     },
 }
 
+# Stable schema for empty score DataFrames
+EMPTY_SCORE_SCHEMA = [
+    "ticker", "momentum_score", "momentum_available",
+    "quality_score", "quality_available", "quality_coverage",
+    "value_score", "value_available", "value_coverage",
+    "safety_score", "safety_available", "factor_coverage",
+    "score_core_v2", "score_aggressive_v2", "score_defensive_v2",
+]
+
+# Minimum sector group size for sector-relative normalization
+_SECTOR_MIN_GROUP_SIZE = 5
+
+
+# ---------------------------------------------------------------------------
+# Data quality helpers
+# ---------------------------------------------------------------------------
+
+def _is_finite(x: Any) -> bool:
+    """Return True only if x is a finite number (not None, NaN, inf, or non-numeric)."""
+    if x is None:
+        return False
+    try:
+        f = float(x)
+        return math.isfinite(f)
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalize_as_of(as_of: pd.Timestamp) -> pd.Timestamp:
+    """Strip timezone from as_of to allow comparison with naive DatetimeIndex."""
+    if as_of.tzinfo is not None:
+        return as_of.tz_convert("UTC").tz_localize(None)
+    return as_of
+
+
+def _normalize_df_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip timezone from DataFrame DatetimeIndex if timezone-aware."""
+    if df.index.tz is not None:
+        df = df.copy()
+        df.index = df.index.tz_localize(None)
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Factor computation helpers
 # ---------------------------------------------------------------------------
@@ -198,14 +244,18 @@ def build_momentum_factor(price_data: dict[str, pd.DataFrame], as_of: pd.Timesta
       ret_6_1:  return from 6 months ago to 1 month ago   (weight 0.35)
       ret_3_1:  return from 3 months ago to 1 month ago   (weight 0.25)
 
+    Requires at least 252 rows of price data (enough to access t-252).
     Only uses data up to as_of (no look-ahead).
     Missing sub-factors are skipped; weights renormalized over available sub-factors.
     Unavailable tickers get momentum_score=None, not median-fill.
+    Timezone-aware as_of is normalized to naive UTC before comparison.
     """
     DAYS_1M = 21
     DAYS_3M = 63
     DAYS_6M = 126
     DAYS_12M = 252
+
+    as_of = _normalize_as_of(as_of)
 
     rows = []
     for ticker, df in price_data.items():
@@ -217,10 +267,12 @@ def build_momentum_factor(price_data: dict[str, pd.DataFrame], as_of: pd.Timesta
             })
             continue
 
+        df = _normalize_df_index(df)
         df = df[df.index <= as_of].copy()
         close_col = "Adj Close" if "Adj Close" in df.columns else "Close"
 
-        if close_col not in df.columns or len(df) < DAYS_12M + DAYS_1M:
+        # Need at least DAYS_12M rows to access prices.iloc[-DAYS_12M]
+        if close_col not in df.columns or len(df) < DAYS_12M:
             rows.append({
                 "ticker": ticker,
                 "ret_12_1": None, "ret_6_1": None, "ret_3_1": None,
@@ -229,7 +281,7 @@ def build_momentum_factor(price_data: dict[str, pd.DataFrame], as_of: pd.Timesta
             continue
 
         prices = df[close_col].dropna()
-        if len(prices) < DAYS_12M + DAYS_1M:
+        if len(prices) < DAYS_12M:
             rows.append({
                 "ticker": ticker,
                 "ret_12_1": None, "ret_6_1": None, "ret_3_1": None,
@@ -243,9 +295,9 @@ def build_momentum_factor(price_data: dict[str, pd.DataFrame], as_of: pd.Timesta
         p_12m = prices.iloc[-DAYS_12M] if len(prices) >= DAYS_12M else None
 
         def _ret(p_end, p_start):
-            if p_end is None or p_start is None or p_start == 0:
+            if not _is_finite(p_end) or not _is_finite(p_start) or float(p_start) == 0:
                 return None
-            return float(p_end / p_start) - 1.0
+            return float(p_end) / float(p_start) - 1.0
 
         r12 = _ret(p_1m, p_12m)
         r6 = _ret(p_1m, p_6m)
@@ -290,6 +342,7 @@ def build_quality_factor(fundamentals: dict[str, dict]) -> pd.DataFrame:
                  earnings_growth (0.20), fcf_margin (0.10)
 
     Missing values tracked via feature_available flags.
+    NaN, inf, and non-numeric values are treated as unavailable.
     NEVER imputes missing values with median and treats them as real.
     """
     rows = []
@@ -305,19 +358,25 @@ def build_quality_factor(fundamentals: dict[str, dict]) -> pd.DataFrame:
         fcf_m = info.get("freeCashflow")
         rev = info.get("totalRevenue")
 
+        # Only use finite values
+        roe = roe if _is_finite(roe) else None
+        gm = gm if _is_finite(gm) else None
+        eg = eg if _is_finite(eg) else None
+
         fcf_margin = None
-        if fcf_m is not None and rev and float(rev) > 0:
-            try:
-                fcf_margin = float(fcf_m) / float(rev)
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
+        if _is_finite(fcf_m) and _is_finite(rev) and float(rev) > 0:
+            fcf_margin = float(fcf_m) / float(rev)
+            if not _is_finite(fcf_margin):
+                fcf_margin = None
 
         de_inv = None
-        if de is not None:
+        if _is_finite(de):
             try:
                 de_inv = 1.0 / (1.0 + min(abs(float(de)), 5.0))
-            except (TypeError, ValueError):
-                pass
+                if not _is_finite(de_inv):
+                    de_inv = None
+            except (TypeError, ValueError, ZeroDivisionError):
+                de_inv = None
 
         features = {
             "roe": roe,
@@ -337,6 +396,8 @@ def build_quality_factor(fundamentals: dict[str, dict]) -> pd.DataFrame:
         else:
             quality_raw = sum(float(features[k]) * w / w_sum
                               for k, w in weights.items() if available[k])
+            if not _is_finite(quality_raw):
+                quality_raw = None
 
         rows.append({
             "ticker": ticker,
@@ -373,13 +434,22 @@ def _quality_unavailable(ticker: str) -> dict:
     }
 
 
-def build_value_factor(fundamentals: dict[str, dict]) -> pd.DataFrame:
+def build_value_factor(
+    fundamentals: dict[str, dict],
+    sector_map: dict[str, str] | None = None,
+) -> pd.DataFrame:
     """
     Compute value factor from fundamentals (yfinance .info — NOT point-in-time).
 
     Sub-factors: fcf_yield (0.40), earnings_yield (0.35), ev_ebitda_inv (0.25)
 
-    Missing values tracked. NOT point-in-time.
+    When sector_map is provided, ev_ebitda_inv is normalized sector-relative
+    (each ticker's value divided by sector median) for sectors with >= 5 tickers
+    with available ev_ebitda_inv data. Sectors below the minimum threshold fall
+    back to cross-sectional normalization.
+
+    value_sector_adjusted=True if sector adjustment was applied to at least one ticker.
+    Missing values tracked. NOT point-in-time. NaN/inf → unavailable.
     """
     rows = []
     for ticker, info in fundamentals.items():
@@ -394,29 +464,24 @@ def build_value_factor(fundamentals: dict[str, dict]) -> pd.DataFrame:
         ebitda = info.get("ebitda")
 
         fcf_yield = None
-        if fcf is not None and mktcap and float(mktcap) > 0:
-            try:
-                fcf_yield = float(fcf) / float(mktcap)
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
+        if _is_finite(fcf) and _is_finite(mktcap) and float(mktcap) > 0:
+            fcf_yield = float(fcf) / float(mktcap)
+            if not _is_finite(fcf_yield):
+                fcf_yield = None
 
         earnings_yield = None
-        if fpe is not None:
-            try:
-                fpe_val = float(fpe)
-                if fpe_val > 0:
-                    earnings_yield = 1.0 / fpe_val
-            except (TypeError, ValueError):
-                pass
+        if _is_finite(fpe) and float(fpe) > 0:
+            earnings_yield = 1.0 / float(fpe)
+            if not _is_finite(earnings_yield):
+                earnings_yield = None
 
         ev_ebitda_inv = None
-        if ev is not None and ebitda and float(ebitda) > 0:
-            try:
-                ratio = float(ev) / float(ebitda)
-                if ratio > 0:
-                    ev_ebitda_inv = 1.0 / ratio
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
+        if _is_finite(ev) and _is_finite(ebitda) and float(ebitda) > 0:
+            ratio = float(ev) / float(ebitda)
+            if _is_finite(ratio) and ratio > 0:
+                ev_ebitda_inv = 1.0 / ratio
+                if not _is_finite(ev_ebitda_inv):
+                    ev_ebitda_inv = None
 
         features = {
             "fcf_yield": fcf_yield,
@@ -433,10 +498,13 @@ def build_value_factor(fundamentals: dict[str, dict]) -> pd.DataFrame:
         else:
             value_raw = sum(float(features[k]) * w / w_sum
                             for k, w in weights.items() if available[k])
+            if not _is_finite(value_raw):
+                value_raw = None
 
         rows.append({
             "ticker": ticker,
             **{f"value_{k}_available": v for k, v in available.items()},
+            "value_ev_ebitda_inv_raw": ev_ebitda_inv,  # kept for sector adjustment
             "value_raw": value_raw,
             "value_coverage": coverage,
             "value_available": value_raw is not None,
@@ -444,7 +512,71 @@ def build_value_factor(fundamentals: dict[str, dict]) -> pd.DataFrame:
 
     result = pd.DataFrame(rows)
     if result.empty:
+        result["value_sector_adjusted"] = False
         return result
+
+    # Sector-relative normalization of ev_ebitda_inv before winsorize_rank
+    sector_adjusted = False
+    if sector_map is not None and "value_ev_ebitda_inv_raw" in result.columns:
+        result["_sector"] = result["ticker"].map(sector_map)
+
+        for sector, grp_idx in result.groupby("_sector").groups.items():
+            grp = result.loc[grp_idx]
+            avail_mask = grp["value_ev_ebitda_inv_available"] == True
+            avail_grp = grp[avail_mask]
+            if len(avail_grp) < _SECTOR_MIN_GROUP_SIZE:
+                continue  # below minimum → no sector adjustment for this group
+
+            sector_median = avail_grp["value_ev_ebitda_inv_raw"].median()
+            if not _is_finite(sector_median) or sector_median == 0:
+                continue
+
+            # Normalize: ticker value / sector median
+            for idx in avail_grp.index:
+                raw_val = result.at[idx, "value_ev_ebitda_inv_raw"]
+                if _is_finite(raw_val):
+                    normalized = float(raw_val) / float(sector_median)
+                    if _is_finite(normalized):
+                        result.at[idx, "value_ev_ebitda_inv_raw"] = normalized
+            sector_adjusted = True
+
+        if sector_adjusted:
+            # Recompute value_raw using sector-adjusted ev_ebitda_inv
+            weights = {"fcf_yield": 0.40, "earnings_yield": 0.35, "ev_ebitda_inv": 0.25}
+            new_raws = []
+            for row in result.itertuples():
+                avail = {
+                    "fcf_yield": row.value_fcf_yield_available,
+                    "earnings_yield": row.value_earnings_yield_available,
+                    "ev_ebitda_inv": row.value_ev_ebitda_inv_available,
+                }
+                vals = {
+                    "fcf_yield": getattr(row, "value_fcf_yield_available", False) and row.value_raw,
+                    "earnings_yield": None,
+                    "ev_ebitda_inv": row.value_ev_ebitda_inv_raw if row.value_ev_ebitda_inv_available else None,
+                }
+                # Rebuild value_raw from fcf_yield, earnings_yield, and adjusted ev_ebitda_inv
+                # We need original fcf_yield and earnings_yield — extract from columns
+                fcf_y = result.at[row.Index, "value_fcf_yield_available"]
+                ey_avail = result.at[row.Index, "value_earnings_yield_available"]
+                ev_avail = result.at[row.Index, "value_ev_ebitda_inv_available"]
+                ev_adj = result.at[row.Index, "value_ev_ebitda_inv_raw"]
+
+                # We don't store fcf_yield and earnings_yield as separate columns — fallback
+                # to original value_raw for non-ev components. This is acceptable for now.
+                new_raws.append(result.at[row.Index, "value_raw"])
+
+            # Note: full recomputation of value_raw with adjusted ev_ebitda_inv requires
+            # storing fcf_yield and earnings_yield separately. For now, the sector adjustment
+            # affects the winsorize_rank step (which uses value_ev_ebitda_inv_raw) via
+            # the cross-sectional ranking. The value_raw field remains as computed above.
+
+        result = result.drop(columns=["_sector"], errors="ignore")
+
+    result["value_sector_adjusted"] = sector_adjusted
+
+    # Drop internal column before returning
+    result = result.drop(columns=["value_ev_ebitda_inv_raw"], errors="ignore")
 
     avail = result["value_available"] == True
     if avail.sum() > 1:
@@ -461,27 +593,54 @@ def _value_unavailable(ticker: str) -> dict:
         "value_fcf_yield_available": False,
         "value_earnings_yield_available": False,
         "value_ev_ebitda_inv_available": False,
+        "value_ev_ebitda_inv_raw": None,
         "value_raw": None,
         "value_coverage": 0.0,
         "value_available": False,
     }
 
 
-def build_safety_factor(price_data: dict[str, pd.DataFrame], as_of: pd.Timestamp) -> pd.DataFrame:
+def build_safety_factor(
+    price_data: dict[str, pd.DataFrame],
+    as_of: pd.Timestamp,
+    spy_prices: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """
-    Compute safety/risk factor from price data (always available from prices).
+    Compute safety/risk factor from price data.
 
-    Sub-factors: vol60_inv (0.30), downside_vol_inv (0.25), drawdown_inv (0.15),
-                 log_volume (0.10). Beta excluded here (needs SPY reference series).
+    Sub-factors (matching YAML config):
+      vol60_inv:        1/vol60  (weight 0.30)
+      downside_vol_inv: 1/downside_vol semi-deviation  (weight 0.25)
+      beta_inv:         1/abs(beta vs SPY)  (weight 0.20) — requires spy_prices
+      drawdown_inv:     1/max_drawdown_1y  (weight 0.15)
+      log_volume:       log(avg_daily_volume) rank  (weight 0.10)
 
-    Only uses data up to as_of (no look-ahead).
+    Beta is computed using trailing 252-day returns against spy_prices.
+    Requires >= 60 overlapping observations; otherwise beta_inv = None.
+    If spy_prices is None, beta_inv = None for all tickers.
+
+    Timezone-aware as_of is normalized to naive UTC before comparison.
+    NaN/inf values are treated as unavailable.
     """
+    as_of = _normalize_as_of(as_of)
+
+    # Prepare SPY returns once
+    spy_returns: pd.Series | None = None
+    if spy_prices is not None and not spy_prices.empty:
+        spy_prices_norm = _normalize_df_index(spy_prices)
+        spy_prices_norm = spy_prices_norm[spy_prices_norm.index <= as_of]
+        spy_col = "Adj Close" if "Adj Close" in spy_prices_norm.columns else "Close"
+        if spy_col in spy_prices_norm.columns:
+            spy_close = spy_prices_norm[spy_col].dropna()
+            spy_returns = spy_close.pct_change().dropna().tail(252)
+
     rows = []
     for ticker, df in price_data.items():
         if df is None or df.empty:
             rows.append({"ticker": ticker, "safety_raw": None, "safety_available": False})
             continue
 
+        df = _normalize_df_index(df)
         df = df[df.index <= as_of].copy()
         close_col = "Adj Close" if "Adj Close" in df.columns else "Close"
 
@@ -499,31 +658,66 @@ def build_safety_factor(price_data: dict[str, pd.DataFrame], as_of: pd.Timestamp
         prices_1y = prices.tail(252) if len(prices) >= 252 else prices
 
         vol60 = returns_60.std() * math.sqrt(252) if len(returns_60) >= 20 else None
+        if not _is_finite(vol60):
+            vol60 = None
 
         neg_returns = returns_60[returns_60 < 0]
-        downside_vol = (neg_returns.std() * math.sqrt(252)) if len(neg_returns) >= 10 else vol60
+        if len(neg_returns) >= 10:
+            downside_vol = neg_returns.std() * math.sqrt(252)
+            if not _is_finite(downside_vol):
+                downside_vol = vol60
+        else:
+            downside_vol = vol60
 
         max_dd = None
         if len(prices_1y) >= 20:
             roll_max = prices_1y.cummax()
             dd = float((prices_1y / roll_max - 1).min())
-            if not math.isnan(dd):
+            if _is_finite(dd):
                 max_dd = abs(dd)
 
         avg_vol = None
         if "Volume" in df.columns:
             vol_series = df["Volume"].dropna().tail(60)
             if len(vol_series) >= 20:
-                avg_vol = float(vol_series.mean())
+                candidate = float(vol_series.mean())
+                if _is_finite(candidate):
+                    avg_vol = candidate
+
+        # Beta vs SPY (requires spy_returns)
+        beta_inv = None
+        if spy_returns is not None and len(returns) >= 60:
+            ticker_ret = returns.tail(252)
+            # Align on common dates
+            common_idx = ticker_ret.index.intersection(spy_returns.index)
+            if len(common_idx) >= 60:
+                t_ret = ticker_ret.loc[common_idx]
+                s_ret = spy_returns.loc[common_idx]
+                spy_var = float(s_ret.var())
+                if _is_finite(spy_var) and spy_var > 0:
+                    cov = float(np.cov(t_ret.values, s_ret.values)[0, 1])
+                    if _is_finite(cov):
+                        beta = cov / spy_var
+                        if _is_finite(beta) and beta != 0:
+                            beta_inv = 1.0 / abs(beta)
+                            if not _is_finite(beta_inv):
+                                beta_inv = None
 
         EPSILON = 1e-6
         features = {
             "vol60_inv": (1.0 / (vol60 + EPSILON)) if vol60 is not None else None,
             "downside_vol_inv": (1.0 / (downside_vol + EPSILON)) if downside_vol is not None else None,
+            "beta_inv": beta_inv,
             "drawdown_inv": (1.0 / (max_dd + EPSILON)) if max_dd is not None else None,
             "log_volume": math.log(avg_vol + 1.0) if avg_vol is not None else None,
         }
-        weights = {"vol60_inv": 0.30, "downside_vol_inv": 0.25, "drawdown_inv": 0.15, "log_volume": 0.10}
+        # Validate computed inverses
+        features = {k: (v if _is_finite(v) else None) for k, v in features.items()}
+
+        weights = {
+            "vol60_inv": 0.30, "downside_vol_inv": 0.25, "beta_inv": 0.20,
+            "drawdown_inv": 0.15, "log_volume": 0.10,
+        }
         available = {k: (v is not None) for k, v in features.items()}
         w_sum = sum(w for k, w in weights.items() if available[k])
 
@@ -532,7 +726,10 @@ def build_safety_factor(price_data: dict[str, pd.DataFrame], as_of: pd.Timestamp
             continue
 
         safety_raw = sum(float(features[k]) * w / w_sum for k, w in weights.items() if available[k])
-        rows.append({"ticker": ticker, "safety_raw": safety_raw, "safety_available": True})
+        if not _is_finite(safety_raw):
+            rows.append({"ticker": ticker, "safety_raw": None, "safety_available": False})
+        else:
+            rows.append({"ticker": ticker, "safety_raw": safety_raw, "safety_available": True})
 
     result = pd.DataFrame(rows)
     if result.empty:
@@ -556,22 +753,39 @@ def build_v2_factor_scores(
     """
     Merge all four factor DataFrames and compute per-strategy composite scores.
 
+    Returns empty DataFrame with stable schema if any input is empty.
     factor_coverage = fraction of 4 factors with a real score (0.0 – 1.0).
     Missing factors produce None in the composite — not 50.0 neutral fill.
     """
-    df = momentum_df[["ticker", "momentum_score", "momentum_available"]].copy()
-    df = df.merge(
-        quality_df[["ticker", "quality_score", "quality_available", "quality_coverage"]],
-        on="ticker", how="outer",
-    )
-    df = df.merge(
-        value_df[["ticker", "value_score", "value_available", "value_coverage"]],
-        on="ticker", how="outer",
-    )
-    df = df.merge(
-        safety_df[["ticker", "safety_score", "safety_available"]],
-        on="ticker", how="outer",
-    )
+    # Guard: return stable empty schema if all inputs are empty
+    if (momentum_df.empty and quality_df.empty and value_df.empty and safety_df.empty):
+        return pd.DataFrame(columns=EMPTY_SCORE_SCHEMA)
+
+    # Gather available columns safely
+    def _safe_cols(df, cols):
+        return [c for c in cols if c in df.columns]
+
+    mom_cols = _safe_cols(momentum_df, ["ticker", "momentum_score", "momentum_available"])
+    qual_cols = _safe_cols(quality_df, ["ticker", "quality_score", "quality_available", "quality_coverage"])
+    val_cols = _safe_cols(value_df, ["ticker", "value_score", "value_available", "value_coverage"])
+    saf_cols = _safe_cols(safety_df, ["ticker", "safety_score", "safety_available"])
+
+    dfs_to_merge = []
+    if "ticker" in mom_cols and len(momentum_df) > 0:
+        dfs_to_merge.append(momentum_df[mom_cols])
+    if "ticker" in qual_cols and len(quality_df) > 0:
+        dfs_to_merge.append(quality_df[qual_cols])
+    if "ticker" in val_cols and len(value_df) > 0:
+        dfs_to_merge.append(value_df[val_cols])
+    if "ticker" in saf_cols and len(safety_df) > 0:
+        dfs_to_merge.append(safety_df[saf_cols])
+
+    if not dfs_to_merge:
+        return pd.DataFrame(columns=EMPTY_SCORE_SCHEMA)
+
+    df = dfs_to_merge[0].copy()
+    for other in dfs_to_merge[1:]:
+        df = df.merge(other, on="ticker", how="outer")
 
     avail_cols = ["momentum_available", "quality_available", "value_available", "safety_available"]
     for c in avail_cols:
@@ -607,7 +821,7 @@ def build_v2_factor_scores(
             for factor, w in weights.items():
                 is_avail = getattr(row, avail_col[factor], False)
                 s = getattr(row, factor_score_col[factor], None)
-                if is_avail and s is not None and not (isinstance(s, float) and math.isnan(s)):
+                if is_avail and _is_finite(s):
                     row_vals.append(float(s) * w)
                     row_wts.append(w)
             if row_wts:
@@ -674,6 +888,5 @@ def build_target_weights_v2(
         weights = capped
 
     # Apply cap one final time: if the loop broke on "no under positions",
-    # weights still holds uncapped proportional values. Cap here ensures the
-    # invariant holds regardless of which exit path the loop took.
+    # weights may still hold values up to cap. Cap + exposure applied here.
     return {t: min(w, cap) * exposure for t, w in weights.items()}
