@@ -1527,3 +1527,90 @@ class TestRepresentsAllScoredInContentHash:
         kw["intended_execution_session"] = VALID_SESSION_ALT
         ev_false = create_observation(**kw, ticker_records_represents_all_scored=False)
         assert ev_false["ticker_records_represents_all_scored"] is False
+
+
+# ---------------------------------------------------------------------------
+# T29 — Round 5: fast-path duplicate detection (valid index + key in other partition)
+# ---------------------------------------------------------------------------
+
+
+class TestFastPathDuplicateDetection:
+    """
+    Reproduces the remaining Round 4 issue: _resolve_partition_for_key trusted
+    the index fast path (key found in indexed partition) and returned immediately
+    without checking other partitions. A valid index + duplicate JSONL entry in
+    another month was silently accepted instead of raising CorruptionError.
+    """
+
+    def _duplicate_key_to(self, tmp_ledger: Path, src_yyyymm: str, dst_yyyymm: str) -> None:
+        src = tmp_ledger / f"{src_yyyymm}_v2b_observations.jsonl"
+        dst = tmp_ledger / f"{dst_yyyymm}_v2b_observations.jsonl"
+        dst.write_text(src.read_text())
+
+    def test_valid_index_plus_duplicate_raises_on_get_status(self, tmp_ledger):
+        """Valid index → 2026-08 + duplicate in 2026-09 → get_observation_status raises."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        # Verify the index is still correct (not tampered)
+        idx = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert idx.get(key) == "2026-08", "Precondition: index must point to 2026-08"
+        # Fast path finds key in 2026-08, must then find it also in 2026-09 → CorruptionError
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            get_observation_status(key)
+
+    def test_valid_index_plus_duplicate_raises_on_get_events(self, tmp_ledger):
+        """Valid index + duplicate in other partition → get_observation_events raises."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            get_observation_events(key)
+
+    def test_valid_index_plus_duplicate_raises_on_transition(self, tmp_ledger):
+        """Valid index + duplicate → transition_observation raises before writing any event."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            transition_observation(key, "COLLECTING")
+        # No transition written — both files still have exactly the original CREATED event
+        for yyyymm in ("2026-08", "2026-09"):
+            p = tmp_ledger / f"{yyyymm}_v2b_observations.jsonl"
+            lines = [ln for ln in p.read_text().splitlines() if ln.strip()]
+            types = [json.loads(ln)["event_type"] for ln in lines]
+            assert types == ["OBSERVATION_CREATED"], (
+                f"{yyyymm}: expected only OBSERVATION_CREATED, got {types}"
+            )
+
+    def test_single_partition_valid_index_works_normally(self, tmp_ledger):
+        """Control: one partition, correct index — fast path must succeed without error."""
+        ev = _create()
+        key = ev["observation_key"]
+        assert get_observation_status(key) == "CREATED"
+        assert len(get_observation_events(key)) == 1
+
+    def test_duplicate_detected_when_other_partition_is_alphabetically_earlier(self, tmp_ledger):
+        """Duplicate in a file sorted BEFORE the indexed partition must also be detected."""
+        ev = _create(session="2026-09-01", cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        # Duplicate from 2026-09 → 2026-08 (sorts earlier alphabetically)
+        self._duplicate_key_to(tmp_ledger, "2026-09", "2026-08")
+        idx = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert idx.get(key) == "2026-09", "Precondition: index must point to 2026-09"
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            get_observation_status(key)
+
+    def test_index_repair_cannot_hide_duplicate(self, tmp_ledger):
+        """Repairing the index to one partition must not suppress the duplicate check."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        # Manually point index to the duplicate partition (2026-09)
+        idx_path = tmp_ledger / "v2b_idx.json"
+        idx = json.loads(idx_path.read_text())
+        idx[key] = "2026-09"
+        idx_path.write_text(json.dumps(idx))
+        # Fast path: finds key in 2026-09, scans 2026-08 (also has it) → CorruptionError
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            get_observation_status(key)

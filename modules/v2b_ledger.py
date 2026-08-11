@@ -61,8 +61,12 @@ INDEX CONTRACT:
   _update_idx_locked always rebuilds from JSONL when the index is corrupt (so a
   new create never replaces a corrupt index with only its own key).
 
-  If an observation_key is found in more than one partition during a scan,
-  CorruptionError is raised immediately (fail-closed).
+  Global uniqueness is ALWAYS enforced — even on the fast path:
+    Fast path (index maps key → valid partition that contains key): the remaining
+    partitions are scanned for the same key; CorruptionError if found elsewhere.
+    Slow path (index absent/stale/wrong): _find_key_in_jsonl scans all partitions
+    and raises CorruptionError if the key appears in more than one.
+  A valid index entry must never be used to skip the uniqueness check.
 
 RUN-LEVEL COUNTS SEMANTICS:
   universe_count           — total tickers in the scoring universe before any filtering
@@ -964,9 +968,9 @@ def _update_idx_locked(observation_key: str, yyyymm: str) -> None:
 
 def _find_key_in_jsonl(observation_key: str) -> str | None:
     """
-    Scan all monthly JSONL files looking for this observation_key.
-    Returns the YYYY-MM partition if found in exactly one partition.
-    Raises CorruptionError if the key appears in more than one partition.
+    Scan ALL monthly JSONL files for this observation_key.
+    Returns the partition YYYYMM if found in exactly one file.
+    Raises CorruptionError if found in more than one partition.
     Returns None if not found anywhere.
     """
     found_in: list[str] = []
@@ -983,18 +987,44 @@ def _find_key_in_jsonl(observation_key: str) -> str | None:
     return found_in[0] if found_in else None
 
 
+def _check_no_other_partitions(observation_key: str, known_yyyymm: str) -> None:
+    """
+    Scan all partitions EXCEPT known_yyyymm for observation_key.
+    Raises CorruptionError immediately if the key appears anywhere else.
+
+    Called by the fast path in _resolve_partition_for_key so that a valid index
+    mapping does not bypass the global uniqueness invariant.
+    """
+    for p in sorted(LEDGER_DIR.glob("*_v2b_observations.jsonl")):
+        if p.name[:7] == known_yyyymm:
+            continue
+        events = _read_events_raw(p)
+        if any(e.get("observation_key") == observation_key for e in events):
+            raise CorruptionError(
+                f"v2b_ledger: observation_key {observation_key[:16]}… found in multiple "
+                f"partitions: [{known_yyyymm!r}, {p.name[:7]!r}] — data integrity violation"
+            )
+
+
 def _resolve_partition_for_key(
     observation_key: str,
 ) -> tuple[str | None, list[dict]]:
     """
-    Locate the partition and events for an observation_key, validating the index mapping.
+    Locate the canonical partition and events for an observation_key.
 
-    Fast path: index has a valid YYYYMM mapping AND the mapped partition contains the key.
-    Slow path: index is absent, has invalid format, or the mapped partition does not
-               contain the key → full JSONL scan, atomically repair the index.
+    Fast path: index has a valid YYYYMM mapping AND the mapped partition contains
+               the key → verify global uniqueness across all OTHER partitions, then
+               return. CorruptionError if the key exists elsewhere.
+
+    Slow path: index absent, invalid YYYYMM format, or mapped partition does not
+               contain the key → full JSONL scan via _find_key_in_jsonl (which also
+               enforces global uniqueness), then atomically repair the index.
+
+    Global uniqueness is always enforced — a valid index mapping never bypasses the
+    cross-partition check. The index is a cache; the JSONL files are authoritative.
 
     Returns (yyyymm, key_events).
-    yyyymm is None and key_events is [] if the key does not exist anywhere.
+    yyyymm is None and key_events is [] if the key genuinely does not exist.
     Raises CorruptionError if the key is found in more than one partition.
     """
     idx = _load_idx_or_rebuild()
@@ -1005,10 +1035,13 @@ def _resolve_partition_for_key(
         all_events = _read_events_raw(path)  # Returns [] if file does not exist
         key_events = _find_events_for_key(observation_key, all_events)
         if key_events:
+            # Key found in the indexed partition. Still check all OTHER partitions
+            # for the same key — a valid index must not bypass global uniqueness.
+            _check_no_other_partitions(observation_key, known_yyyymm=cached_yyyymm)
             return cached_yyyymm, key_events
         # Mapped partition does not contain the key — stale or wrong mapping
 
-    # Full scan — also detects multi-partition duplicates
+    # Slow path: full scan (also enforces uniqueness across all partitions)
     real_yyyymm = _find_key_in_jsonl(observation_key)
     if real_yyyymm is None:
         return None, []
