@@ -5,7 +5,9 @@
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10024.205996664914,
-  "last_execution_date": "2026-08-10",
+  "last_execution_date": "2026-08-11",
+  "portfolio_id": "2eefca27-3d7f-40cd-9c50-0257a219e3e3",
+  "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
     "TSM": {
       "avg_price": 462.2200012207031,
@@ -13,8 +15,8 @@
       "buy_score": 89.3,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 422.25,
-      "market_value": 2169.8081006470516,
+      "last_price": 424.20001220703125,
+      "market_value": 2179.828591548596,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 1583.47,
       "shares": 5.1386811146170555
