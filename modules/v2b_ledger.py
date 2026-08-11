@@ -896,7 +896,11 @@ def _load_idx_raw() -> dict[str, str]:
 def _rebuild_idx() -> dict[str, str]:
     """
     Rebuild the index by scanning all JSONL files.
-    Raises CorruptionError if any file has mid-file corruption or broken hash chain.
+
+    Fail-closed: raises CorruptionError if the same observation_key appears in
+    more than one partition (last-write-wins is not acceptable here — it would
+    silently hide the cross-partition duplicate). Also raises on mid-file
+    corruption or broken hash chain in any partition.
     """
     idx: dict[str, str] = {}
     for jsonl_path in sorted(LEDGER_DIR.glob("*_v2b_observations.jsonl")):
@@ -906,6 +910,12 @@ def _rebuild_idx() -> dict[str, str]:
             if ev.get("event_type") == "OBSERVATION_CREATED":
                 key = ev.get("observation_key")
                 if key:
+                    if key in idx:
+                        raise CorruptionError(
+                            f"v2b_ledger: observation_key {key[:16]}… found in multiple "
+                            f"partitions during index rebuild: [{idx[key]!r}, {yyyymm!r}] "
+                            f"— data integrity violation"
+                        )
                     idx[key] = yyyymm
     return idx
 
@@ -1148,6 +1158,11 @@ def create_observation(
     Linearizability:
       All read-check-write decisions happen inside an exclusive monthly lock.
       Index update happens AFTER the monthly lock is released (see lock ordering docs).
+
+    Global uniqueness:
+      Before any decision (idempotent / new / conflict), the key is checked against
+      all OTHER partitions. CorruptionError is raised immediately if the key exists
+      elsewhere — no event is written, no index is updated.
     """
     # ── Input validation ──────────────────────────────────────────────────
     if not model_version or not isinstance(model_version, str):
@@ -1195,10 +1210,27 @@ def create_observation(
     content_hash = make_content_hash(canonical)
 
     # ── Atomically read-then-write under the monthly lock ─────────────────
+    #
+    # Global uniqueness check (locking safety):
+    #   _check_no_other_partitions scans other JSONL files under the monthly
+    #   lock of the EXPECTED partition. Reading other files never acquires
+    #   their monthly lock — no deadlock is possible.
+    #
+    #   observation_key is a deterministic function of (model_version,
+    #   model_config_hash, intended_execution_session), which also determines
+    #   yyyymm. Therefore any concurrent LEGITIMATE create for the same key
+    #   targets THIS partition and is serialized by THIS lock. A cross-partition
+    #   duplicate can only arise from data corruption, not from concurrent API
+    #   calls — so fail-closed is correct and the TOCTOU window is acceptable.
+    #
     _event_result: dict | None = None
     _is_idempotent = False
 
     with _monthly_lock(yyyymm):
+        # Fail immediately if the key already exists in any other partition.
+        # Must happen before any read-check-write decision in this partition.
+        _check_no_other_partitions(observation_key, known_yyyymm=yyyymm)
+
         all_events = _read_events_raw(path)
         key_events = _find_events_for_key(observation_key, all_events)
 

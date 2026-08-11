@@ -1614,3 +1614,149 @@ class TestFastPathDuplicateDetection:
         # Fast path: finds key in 2026-09, scans 2026-08 (also has it) → CorruptionError
         with pytest.raises(CorruptionError, match="multiple partitions"):
             get_observation_status(key)
+
+
+# ---------------------------------------------------------------------------
+# T30 — Round 6: create_observation global uniqueness + _rebuild_idx fail-closed
+# ---------------------------------------------------------------------------
+
+
+class TestCreateObservationDuplicateDetection:
+    """
+    Reproduces the remaining Round 5 issue: create_observation trusted that only
+    the expected partition matters and never checked other partitions for the same
+    key. A duplicate JSONL entry silently produced IDEMPOTENT_MATCH or CONFLICT
+    instead of CorruptionError.
+
+    Also covers _rebuild_idx fail-closed: silent last-write-wins was replaced by
+    an immediate CorruptionError when the same key appears in multiple partitions.
+    """
+
+    def _duplicate_key_to(self, tmp_ledger: Path, src_yyyymm: str, dst_yyyymm: str) -> None:
+        src = tmp_ledger / f"{src_yyyymm}_v2b_observations.jsonl"
+        dst = tmp_ledger / f"{dst_yyyymm}_v2b_observations.jsonl"
+        dst.write_text(src.read_text())
+
+    # ── create_observation ────────────────────────────────────────────────
+
+    def test_valid_index_duplicate_identical_payload_raises_not_idempotent(self, tmp_ledger):
+        """Same key in expected partition + another partition → CorruptionError, not IDEMPOTENT_MATCH."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        # Before fix: returned IDEMPOTENT_MATCH silently
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            _create(session=VALID_SESSION, cfg_hash="a" * 64)
+
+    def test_key_only_in_wrong_partition_create_raises_no_new_event(self, tmp_ledger):
+        """Key exists only in a non-canonical partition → CorruptionError, no new event written."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        # Move: copy to wrong month, then delete from correct month
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        (tmp_ledger / "2026-08_v2b_observations.jsonl").unlink()
+        # create targets "2026-08"; cross-partition check finds key in "2026-09" → CorruptionError
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        # "2026-08" must not have been created
+        assert not (tmp_ledger / "2026-08_v2b_observations.jsonl").exists()
+
+    def test_duplicate_partition_different_payload_raises_not_conflict(self, tmp_ledger):
+        """Duplicate + different universe_count → CorruptionError, not ConflictError."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        # Would normally trigger CONFLICT (different content_hash)
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            _create(session=VALID_SESSION, cfg_hash="a" * 64, universe_count=999)
+
+    def test_duplicate_check_does_not_mutate_jsonl_or_index(self, tmp_ledger):
+        """CorruptionError must leave JSONL files and the index completely unchanged."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        idx_before = (tmp_ledger / "v2b_idx.json").read_text()
+        content_aug = (tmp_ledger / "2026-08_v2b_observations.jsonl").read_text()
+        content_sep = (tmp_ledger / "2026-09_v2b_observations.jsonl").read_text()
+        with pytest.raises(CorruptionError):
+            _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        assert (tmp_ledger / "v2b_idx.json").read_text() == idx_before, "Index was modified"
+        assert (tmp_ledger / "2026-08_v2b_observations.jsonl").read_text() == content_aug
+        assert (tmp_ledger / "2026-09_v2b_observations.jsonl").read_text() == content_sep
+
+    def test_no_conflict_event_written_when_duplicate_found(self, tmp_ledger):
+        """A CONFLICT event must NOT be written when a cross-partition duplicate is detected."""
+        _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        with pytest.raises(CorruptionError):
+            _create(session=VALID_SESSION, cfg_hash="a" * 64, universe_count=999)
+        # Exactly one event (the original CREATED) in the canonical partition
+        lines = [
+            ln for ln in
+            (tmp_ledger / "2026-08_v2b_observations.jsonl").read_text().splitlines()
+            if ln.strip()
+        ]
+        assert len(lines) == 1
+        assert json.loads(lines[0])["event_type"] == "OBSERVATION_CREATED"
+
+    def test_idempotent_create_single_partition_still_works(self, tmp_ledger):
+        """Control: idempotent create in one partition must still return IDEMPOTENT_MATCH."""
+        _create()
+        ev2 = _create()
+        assert ev2["event_type"] == "IDEMPOTENT_MATCH"
+
+    def test_conflict_single_partition_still_works(self, tmp_ledger):
+        """Control: conflict with changed payload in one partition must still raise ConflictError."""
+        _create()
+        with pytest.raises(ConflictError):
+            _create(universe_count=999)
+
+    def test_concurrent_creates_still_produce_exactly_one_event(self, tmp_ledger):
+        """Duplicate check must not break concurrent identical creates."""
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(_create())
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Unexpected errors: {errors}"
+        files = list(tmp_ledger.glob("*_v2b_observations.jsonl"))
+        lines = [ln for ln in files[0].read_text().splitlines() if ln.strip()]
+        types = [json.loads(ln)["event_type"] for ln in lines]
+        assert types.count("OBSERVATION_CREATED") == 1
+
+    # ── _rebuild_idx fail-closed ──────────────────────────────────────────
+
+    def test_missing_index_with_duplicate_raises_on_rebuild(self, tmp_ledger):
+        """Missing index + key in two partitions → _rebuild_idx raises CorruptionError."""
+        _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        (tmp_ledger / "v2b_idx.json").unlink()
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            get_observation_status("0" * 64)  # Triggers _load_idx_or_rebuild → _rebuild_idx
+
+    def test_corrupt_index_with_duplicate_raises_on_rebuild(self, tmp_ledger):
+        """Corrupt index + key in two partitions → _rebuild_idx raises CorruptionError."""
+        _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        self._duplicate_key_to(tmp_ledger, "2026-08", "2026-09")
+        (tmp_ledger / "v2b_idx.json").write_text("{not valid json")
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            get_observation_status("0" * 64)  # Triggers _load_idx_or_rebuild → _rebuild_idx
+
+    def test_rebuild_idx_single_partition_produces_correct_index(self, tmp_ledger):
+        """_rebuild_idx with no duplicates must return a correct single-entry mapping."""
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        # Test _rebuild_idx directly — it must find the key in the correct partition.
+        # (get_observation_status uses an in-memory rebuild for the fast path and does
+        # not guarantee writing the index file; that's verified via T09.)
+        idx = ledger._rebuild_idx()
+        assert idx.get(key) == "2026-08"
+        assert len(idx) == 1
