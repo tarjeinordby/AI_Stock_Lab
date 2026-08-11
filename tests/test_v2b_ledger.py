@@ -1051,3 +1051,306 @@ class TestNoV1SideEffects:
         for p in v1_paths:
             files = list(p.glob("**/*")) if p.exists() else []
             assert not files, f"V1 path was written: {p}"
+
+
+# ---------------------------------------------------------------------------
+# T23 — Issue 1: Crash window — index gap recovery
+# ---------------------------------------------------------------------------
+
+
+class TestCrashWindowRecovery:
+    """
+    Reproduces Issue 1: crash between JSONL append and index update leaves the
+    key absent from the index. All lookup paths must fall back to JSONL scan
+    and repair the index entry.
+    """
+
+    def _remove_from_idx(self, tmp_ledger: Path, key: str) -> None:
+        idx_path = tmp_ledger / "v2b_idx.json"
+        idx = json.loads(idx_path.read_text())
+        del idx[key]
+        idx_path.write_text(json.dumps(idx))
+
+    def test_get_status_finds_via_jsonl_scan_on_index_miss(self, tmp_ledger):
+        """get_observation_status must return CREATED even when key is absent from index."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._remove_from_idx(tmp_ledger, key)
+        # Before fix: returned None. After fix: scans JSONL and returns "CREATED".
+        status = get_observation_status(key)
+        assert status == "CREATED"
+
+    def test_get_status_repairs_index_after_jsonl_scan(self, tmp_ledger):
+        """After a crash-recovery lookup, the index entry must be restored."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._remove_from_idx(tmp_ledger, key)
+        get_observation_status(key)  # Triggers repair
+        idx = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert key in idx, "Index was not repaired after crash-recovery lookup"
+
+    def test_get_events_finds_via_jsonl_scan_on_index_miss(self, tmp_ledger):
+        """get_observation_events must return events via JSONL scan when key absent from index."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._remove_from_idx(tmp_ledger, key)
+        events = get_observation_events(key)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "OBSERVATION_CREATED"
+
+    def test_idempotent_retry_repairs_index(self, tmp_ledger):
+        """An idempotent create must repair the index even when the key was missing from it."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._remove_from_idx(tmp_ledger, key)
+        # Before fix: IDEMPOTENT_MATCH returned but index not repaired.
+        # After fix: IDEMPOTENT_MATCH AND key back in index.
+        ev2 = _create()
+        assert ev2["event_type"] == "IDEMPOTENT_MATCH"
+        idx = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert key in idx, "Idempotent retry did not repair the index"
+
+    def test_transition_finds_via_jsonl_scan_on_index_miss(self, tmp_ledger):
+        """transition_observation must find the observation via JSONL scan when index is stale."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._remove_from_idx(tmp_ledger, key)
+        transition_observation(key, "COLLECTING")
+        assert get_observation_status(key) == "COLLECTING"
+
+
+# ---------------------------------------------------------------------------
+# T24 — Issue 2: Corrupt index must not erase existing mappings
+# ---------------------------------------------------------------------------
+
+
+class TestCorruptIndexPreservesExistingMappings:
+    """
+    Reproduces Issue 2: _update_idx_locked used _load_idx_raw() which returned {}
+    on corruption. A new create then saved only its own key, making all prior
+    observations invisible.
+    """
+
+    def test_corrupt_index_create_preserves_existing_key(self, tmp_ledger):
+        """Creating B after index corruption must not erase A's mapping."""
+        ev_a = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key_a = ev_a["observation_key"]
+
+        # Corrupt the index — simulates a partial write or fs corruption
+        (tmp_ledger / "v2b_idx.json").write_text("{not valid json")
+
+        # Creating B must rebuild from JSONL (preserving A) then add B
+        ev_b = _create(session=VALID_SESSION_ALT, cfg_hash="b" * 64)
+        key_b = ev_b["observation_key"]
+
+        idx = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert key_a in idx, "Key A was erased when corrupt index was replaced"
+        assert key_b in idx, "Key B not in index after recovery"
+
+    def test_corrupt_index_get_status_then_create_preserves_all(self, tmp_ledger):
+        """After a get_observation_status repair, a subsequent create still sees both keys."""
+        ev_a = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key_a = ev_a["observation_key"]
+        (tmp_ledger / "v2b_idx.json").write_text("{not valid json")
+
+        # Repair via lookup
+        get_observation_status(key_a)
+
+        # Now create a new observation — index must already be repaired with A
+        ev_b = _create(session=VALID_SESSION_ALT, cfg_hash="b" * 64)
+        key_b = ev_b["observation_key"]
+
+        idx = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert key_a in idx
+        assert key_b in idx
+
+
+# ---------------------------------------------------------------------------
+# T25 — Issue 3: Hash fields are mandatory for record_version="2"
+# ---------------------------------------------------------------------------
+
+
+class TestMandatoryHashFields:
+    """
+    Reproduces Issue 3: event_hash and previous_event_hash were only checked
+    if present. For record_version="2" both fields are mandatory.
+    Missing, wrong-type, or wrong-length values must raise CorruptionError.
+    Unsupported or missing record_version is fail-closed.
+    """
+
+    def _tamper(self, tmp_ledger: Path, modifier) -> None:
+        """Read JSONL first line, apply modifier, write back WITHOUT recomputing event_hash."""
+        files = list(tmp_ledger.glob("*_v2b_observations.jsonl"))
+        raw = files[0].read_text().strip()
+        ev = json.loads(raw)
+        modifier(ev)
+        files[0].write_text(json.dumps(ev) + "\n")
+
+    def test_missing_event_hash_raises_corruption(self, tmp_ledger):
+        """event_hash field absent → CorruptionError (was silently skipped before fix)."""
+        ev = _create()
+        self._tamper(tmp_ledger, lambda e: e.pop("event_hash"))
+        with pytest.raises(CorruptionError, match="event_hash"):
+            get_observation_events(ev["observation_key"])
+
+    def test_missing_previous_event_hash_raises_corruption(self, tmp_ledger):
+        """previous_event_hash field absent → CorruptionError (was silently skipped before fix)."""
+        ev = _create()
+        self._tamper(tmp_ledger, lambda e: e.pop("previous_event_hash"))
+        with pytest.raises(CorruptionError, match="previous_event_hash"):
+            get_observation_events(ev["observation_key"])
+
+    def test_missing_record_version_raises_corruption(self, tmp_ledger):
+        """Absent record_version is fail-closed: unsupported value raises CorruptionError."""
+        ev = _create()
+        self._tamper(tmp_ledger, lambda e: e.pop("record_version"))
+        with pytest.raises(CorruptionError, match="record_version"):
+            get_observation_events(ev["observation_key"])
+
+    def test_unsupported_record_version_raises_corruption(self, tmp_ledger):
+        """record_version='1' is not in supported set → fail-closed CorruptionError."""
+        ev = _create()
+        self._tamper(tmp_ledger, lambda e: e.update({"record_version": "1"}))
+        with pytest.raises(CorruptionError, match="record_version"):
+            get_observation_events(ev["observation_key"])
+
+    def test_event_hash_wrong_length_raises_corruption(self, tmp_ledger):
+        """event_hash with < 64 chars → CorruptionError."""
+        ev = _create()
+        self._tamper(tmp_ledger, lambda e: e.update({"event_hash": "abc"}))
+        with pytest.raises(CorruptionError, match="event_hash"):
+            get_observation_events(ev["observation_key"])
+
+    def test_previous_event_hash_wrong_type_raises_corruption(self, tmp_ledger):
+        """previous_event_hash as integer → CorruptionError."""
+        ev = _create()
+        self._tamper(tmp_ledger, lambda e: e.update({"previous_event_hash": 42}))
+        with pytest.raises(CorruptionError, match="previous_event_hash"):
+            get_observation_events(ev["observation_key"])
+
+
+# ---------------------------------------------------------------------------
+# T26 — Issue 4: Complete ticker schema must be validated
+# ---------------------------------------------------------------------------
+
+
+class TestTickerSchemaCompleteness:
+    """
+    Reproduces Issue 4: _validate_ticker_records used .get() for all fields
+    so a dict with only {"ticker": "AAPL"} was accepted. All 13 documented
+    fields must now be required and type-validated.
+    """
+
+    def test_minimal_ticker_dict_rejected(self):
+        """{"ticker": "AAPL"} alone must be rejected — all required fields must be present."""
+        with pytest.raises(ValidationError, match="missing required fields"):
+            _create(ticker_records=[{"ticker": "AAPL"}])
+
+    def test_missing_scores_field_rejected(self):
+        """Ticker record missing the scores field entirely must be rejected."""
+        rec = _ticker()
+        del rec["scores"]
+        with pytest.raises(ValidationError, match="missing required fields"):
+            _create(ticker_records=[rec])
+
+    def test_missing_score_key_rejected(self):
+        """scores dict missing required key 'composite' must be rejected."""
+        rec = _ticker()
+        del rec["scores"]["composite"]
+        with pytest.raises(ValidationError, match="composite"):
+            _create(ticker_records=[rec])
+
+    def test_bool_as_score_rejected(self):
+        """scores value that is bool must be rejected (bool is a subclass of int)."""
+        rec = _ticker()
+        rec["scores"]["momentum"] = True
+        with pytest.raises(ValidationError, match="bool"):
+            _create(ticker_records=[rec])
+
+    def test_bool_as_factor_coverage_rejected(self):
+        """factor_coverage that is bool must be rejected."""
+        rec = _ticker()
+        rec["factor_coverage"] = True
+        with pytest.raises(ValidationError, match="bool"):
+            _create(ticker_records=[rec])
+
+    def test_nan_as_score_rejected_in_validate_path(self):
+        """NaN score injected past make_ticker_record must be caught by validate_ticker_records."""
+        rec = _ticker()
+        rec["scores"]["value"] = float("nan")
+        with pytest.raises(ValidationError, match="NaN|finite"):
+            _create(ticker_records=[rec])
+
+    def test_rank_zero_rejected(self):
+        """rank=0 must be rejected — rank must be a positive integer or None."""
+        rec = _ticker()
+        rec["rank"] = 0
+        with pytest.raises(ValidationError, match="rank"):
+            _create(ticker_records=[rec])
+
+    def test_rank_negative_rejected(self):
+        """rank=-1 must be rejected."""
+        rec = _ticker()
+        rec["rank"] = -1
+        with pytest.raises(ValidationError, match="rank"):
+            _create(ticker_records=[rec])
+
+    def test_rank_bool_rejected(self):
+        """rank=True must be rejected even though bool is a subclass of int."""
+        rec = _ticker()
+        rec["rank"] = True
+        with pytest.raises(ValidationError, match="rank"):
+            _create(ticker_records=[rec])
+
+    def test_provenance_missing_type_rejected(self):
+        """provenance entry without provenance_type must be rejected at create time."""
+        rec = _ticker()
+        rec["provenance"] = [{"source": "price_history"}]  # missing provenance_type
+        with pytest.raises(ValidationError, match="provenance_type"):
+            _create(ticker_records=[rec])
+
+    def test_provenance_missing_source_rejected(self):
+        """provenance entry without source must be rejected at create time."""
+        rec = _ticker()
+        rec["provenance"] = [{"provenance_type": "point_in_time"}]  # missing source
+        with pytest.raises(ValidationError, match="source"):
+            _create(ticker_records=[rec])
+
+    def test_selected_tickers_cross_validation_rejects_unknown_ticker(self):
+        """selected_tickers_per_strategy referencing a ticker not in records is rejected
+        when ticker_records_represents_all_scored=True."""
+        with pytest.raises(ValidationError, match="MSFT"):
+            create_observation(
+                model_version=VALID_MODEL,
+                model_config_hash=VALID_CFG_HASH,
+                intended_execution_session=VALID_SESSION,
+                universe_count=500,
+                valid_ticker_count=480,
+                stale_ticker_count=5,
+                excluded_ticker_count=10,
+                missing_ticker_count=5,
+                signal_coverage_rate=0.85,
+                selected_tickers_per_strategy={"Core_Quality_Momentum_V2": ["MSFT"]},
+                data_quality_status="ok",
+                ticker_records=[_ticker("AAPL")],
+                ticker_records_represents_all_scored=True,
+            )
+
+    def test_selected_tickers_cross_validation_skipped_when_subset(self):
+        """ticker_records_represents_all_scored=False must bypass cross-validation."""
+        ev = create_observation(
+            model_version=VALID_MODEL,
+            model_config_hash=VALID_CFG_HASH,
+            intended_execution_session=VALID_SESSION,
+            universe_count=500,
+            valid_ticker_count=480,
+            stale_ticker_count=5,
+            excluded_ticker_count=10,
+            missing_ticker_count=5,
+            signal_coverage_rate=0.85,
+            selected_tickers_per_strategy={"Core_Quality_Momentum_V2": ["MSFT"]},
+            data_quality_status="ok",
+            ticker_records=[_ticker("AAPL")],
+            ticker_records_represents_all_scored=False,
+        )
+        assert ev["event_type"] == "OBSERVATION_CREATED"
