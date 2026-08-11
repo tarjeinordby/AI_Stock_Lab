@@ -16,3 +16,8 @@ env/
 # Ledger lock files (runtime artifacts, must not be committed)
 data_v4/state/orders.jsonl.lock
 data_v4/ledger/fills.jsonl.lock
+
+# V2B shadow ledger runtime files (lock files and temp files must not be committed)
+data_v4/v2b_ledger/*.lock
+data_v4/v2b_ledger/.ev_*
+data_v4/v2b_ledger/.idx_*
