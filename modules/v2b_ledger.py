@@ -53,11 +53,16 @@ LOCK ORDERING (deadlock prevention):
 
 INDEX CONTRACT:
   v2b_idx.json is a REBUILDABLE CACHE, not the source of truth. The JSONL files
-  are always authoritative. A corrupt or missing index entry can never make a
-  valid observation permanently invisible — lookup falls back to full JSONL scan.
+  are always authoritative. An index mapping is only trusted if the mapped partition
+  actually contains the observation_key. Any mapping that fails this check (absent,
+  invalid format, pointing to a non-existent or wrong-month file) triggers a full
+  JSONL scan and atomic index repair.
 
   _update_idx_locked always rebuilds from JSONL when the index is corrupt (so a
   new create never replaces a corrupt index with only its own key).
+
+  If an observation_key is found in more than one partition during a scan,
+  CorruptionError is raised immediately (fail-closed).
 
 RUN-LEVEL COUNTS SEMANTICS:
   universe_count           — total tickers in the scoring universe before any filtering
@@ -114,6 +119,7 @@ _ORDER_CREATION_BLOCKED: bool = True
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_YYYYMM_RE = re.compile(r"^\d{4}-\d{2}$")
 
 # record_version values this code can read. Anything else is fail-closed.
 _SUPPORTED_RECORD_VERSIONS: frozenset[str] = frozenset({"2"})
@@ -959,18 +965,61 @@ def _update_idx_locked(observation_key: str, yyyymm: str) -> None:
 def _find_key_in_jsonl(observation_key: str) -> str | None:
     """
     Scan all monthly JSONL files looking for this observation_key.
-    Returns the YYYY-MM partition if found, None otherwise.
-    Used for crash recovery when the index is missing an entry.
+    Returns the YYYY-MM partition if found in exactly one partition.
+    Raises CorruptionError if the key appears in more than one partition.
+    Returns None if not found anywhere.
     """
+    found_in: list[str] = []
     for p in sorted(LEDGER_DIR.glob("*_v2b_observations.jsonl")):
         yyyymm = p.name[:7]
-        try:
-            events = _read_events_raw(p)
-        except CorruptionError:
-            raise
+        events = _read_events_raw(p)
         if any(e.get("observation_key") == observation_key for e in events):
-            return yyyymm
-    return None
+            found_in.append(yyyymm)
+    if len(found_in) > 1:
+        raise CorruptionError(
+            f"v2b_ledger: observation_key {observation_key[:16]}… found in multiple "
+            f"partitions: {found_in} — data integrity violation"
+        )
+    return found_in[0] if found_in else None
+
+
+def _resolve_partition_for_key(
+    observation_key: str,
+) -> tuple[str | None, list[dict]]:
+    """
+    Locate the partition and events for an observation_key, validating the index mapping.
+
+    Fast path: index has a valid YYYYMM mapping AND the mapped partition contains the key.
+    Slow path: index is absent, has invalid format, or the mapped partition does not
+               contain the key → full JSONL scan, atomically repair the index.
+
+    Returns (yyyymm, key_events).
+    yyyymm is None and key_events is [] if the key does not exist anywhere.
+    Raises CorruptionError if the key is found in more than one partition.
+    """
+    idx = _load_idx_or_rebuild()
+    cached_yyyymm: str | None = idx.get(observation_key)
+
+    if cached_yyyymm is not None and isinstance(cached_yyyymm, str) and _YYYYMM_RE.match(cached_yyyymm):
+        path = _ledger_path(cached_yyyymm)
+        all_events = _read_events_raw(path)  # Returns [] if file does not exist
+        key_events = _find_events_for_key(observation_key, all_events)
+        if key_events:
+            return cached_yyyymm, key_events
+        # Mapped partition does not contain the key — stale or wrong mapping
+
+    # Full scan — also detects multi-partition duplicates
+    real_yyyymm = _find_key_in_jsonl(observation_key)
+    if real_yyyymm is None:
+        return None, []
+
+    # Repair stale mapping under index lock
+    if real_yyyymm != cached_yyyymm:
+        _update_idx_locked(observation_key, real_yyyymm)
+
+    path = _ledger_path(real_yyyymm)
+    all_events = _read_events_raw(path)
+    return real_yyyymm, _find_events_for_key(observation_key, all_events)
 
 
 # ---------------------------------------------------------------------------
@@ -1104,6 +1153,9 @@ def create_observation(
         "signal_coverage_rate": signal_coverage_rate,
         "selected_tickers_per_strategy": selected_tickers_per_strategy,
         "data_quality_status": data_quality_status,
+        # ticker_records_represents_all_scored changes validation semantics AND is stored
+        # in the event — it must be part of canonical so a changed flag triggers CONFLICT.
+        "ticker_records_represents_all_scored": ticker_records_represents_all_scored,
         "ticker_records": ticker_records,
         "metadata": metadata or {},
     }
@@ -1201,17 +1253,12 @@ def transition_observation(
     Status is read and the transition is validated under the exclusive monthly lock,
     so concurrent calls to transition the same observation are serialized correctly.
 
-    Crash recovery: if the key is not in the index (crash before index update), the
-    JSONL files are scanned and the index is repaired before attempting the transition.
+    Index validation: the mapped partition is verified to contain the key before
+    taking the monthly lock. A stale or wrong mapping triggers JSONL scan and repair.
     """
-    idx = _load_idx_or_rebuild()
-    yyyymm = idx.get(observation_key)
+    yyyymm, _ = _resolve_partition_for_key(observation_key)
     if yyyymm is None:
-        # Index might be stale — fall back to JSONL scan (crash recovery)
-        yyyymm = _find_key_in_jsonl(observation_key)
-        if yyyymm is None:
-            raise KeyError(f"observation_key not found: {observation_key[:16]}…")
-        _update_idx_locked(observation_key, yyyymm)
+        raise KeyError(f"observation_key not found: {observation_key[:16]}…")
 
     path = _ledger_path(yyyymm)
 
@@ -1245,21 +1292,12 @@ def transition_observation(
 
 def get_observation_status(observation_key: str) -> ObservationStatus | None:
     """
-    Return current status. Falls back to JSONL scan if key is absent from index
-    (crash recovery). Returns None only if the key genuinely does not exist.
-    """
-    idx = _load_idx_or_rebuild()
-    yyyymm = idx.get(observation_key)
-    if yyyymm is None:
-        yyyymm = _find_key_in_jsonl(observation_key)
-        if yyyymm is None:
-            return None
-        # Repair the index entry
-        _update_idx_locked(observation_key, yyyymm)
+    Return current status. Returns None only if the key genuinely does not exist.
 
-    path = _ledger_path(yyyymm)
-    all_events = _read_events_raw(path)
-    key_events = _find_events_for_key(observation_key, all_events)
+    Index validation: the mapped partition is verified to contain the key. A stale
+    or wrong mapping (wrong month, non-existent file) triggers JSONL scan and repair.
+    """
+    _, key_events = _resolve_partition_for_key(observation_key)
     if not key_events:
         return None
     return _derive_status(key_events)
@@ -1267,20 +1305,13 @@ def get_observation_status(observation_key: str) -> ObservationStatus | None:
 
 def get_observation_events(observation_key: str) -> list[dict]:
     """
-    Return all events for a key (in append order). Falls back to JSONL scan if
-    key is absent from index (crash recovery). Returns [] if not found.
-    """
-    idx = _load_idx_or_rebuild()
-    yyyymm = idx.get(observation_key)
-    if yyyymm is None:
-        yyyymm = _find_key_in_jsonl(observation_key)
-        if yyyymm is None:
-            return []
-        _update_idx_locked(observation_key, yyyymm)
+    Return all events for a key (in append order). Returns [] if not found.
 
-    path = _ledger_path(yyyymm)
-    all_events = _read_events_raw(path)
-    return _find_events_for_key(observation_key, all_events)
+    Index validation: the mapped partition is verified to contain the key. A stale
+    or wrong mapping triggers JSONL scan and repair.
+    """
+    _, key_events = _resolve_partition_for_key(observation_key)
+    return key_events
 
 
 def list_observations(yyyymm: str | None = None) -> list[dict]:

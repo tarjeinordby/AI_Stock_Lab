@@ -1354,3 +1354,176 @@ class TestTickerSchemaCompleteness:
             ticker_records_represents_all_scored=False,
         )
         assert ev["event_type"] == "OBSERVATION_CREATED"
+
+
+# ---------------------------------------------------------------------------
+# T27 — Issue 1 (Round 4): Wrong index mapping hides valid observation
+# ---------------------------------------------------------------------------
+
+
+class TestStaleIndexMappingRecovery:
+    """
+    Reproduces Issue 1 (Round 4): a valid YYYYMM value in the index that points
+    to the wrong partition (or a non-existent one) was trusted without verification.
+    The lookup returned None / [] even though the observation existed in JSONL.
+    """
+
+    def _set_idx_mapping(self, tmp_ledger: Path, key: str, yyyymm: str) -> None:
+        idx_path = tmp_ledger / "v2b_idx.json"
+        idx = json.loads(idx_path.read_text()) if idx_path.exists() else {}
+        idx[key] = yyyymm
+        idx_path.write_text(json.dumps(idx))
+
+    def test_mapping_to_nonexistent_month_repaired(self, tmp_ledger):
+        """Index maps key → "2099-01" (no such file) → must fall back and find real partition."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._set_idx_mapping(tmp_ledger, key, "2099-01")
+        status = get_observation_status(key)
+        assert status == "CREATED"
+
+    def test_mapping_to_wrong_existing_month_repaired(self, tmp_ledger):
+        """Index maps key → existing but wrong month → must fall back to JSONL scan."""
+        ev_aug = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        # Also create a file for a different month so it exists
+        _create(session=VALID_SESSION_ALT, cfg_hash="b" * 64)
+        key_aug = ev_aug["observation_key"]
+        # Point key_aug at the wrong month (Sept file exists but doesn't have this key)
+        self._set_idx_mapping(tmp_ledger, key_aug, "2026-09")
+        status = get_observation_status(key_aug)
+        assert status == "CREATED"
+
+    def test_stale_mapping_index_repaired_after_lookup(self, tmp_ledger):
+        """After stale-mapping recovery, index is updated to the correct partition."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._set_idx_mapping(tmp_ledger, key, "2099-01")
+        get_observation_status(key)  # Triggers repair
+        idx = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert idx.get(key) == "2026-08", f"Index not repaired: {idx.get(key)!r}"
+
+    def test_events_returned_after_stale_mapping_recovery(self, tmp_ledger):
+        """get_observation_events must return correct events after stale-mapping repair."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._set_idx_mapping(tmp_ledger, key, "2099-01")
+        events = get_observation_events(key)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "OBSERVATION_CREATED"
+
+    def test_transition_works_after_stale_mapping_recovery(self, tmp_ledger):
+        """transition_observation must work after repairing a stale index mapping."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._set_idx_mapping(tmp_ledger, key, "2099-01")
+        transition_observation(key, "COLLECTING")
+        assert get_observation_status(key) == "COLLECTING"
+
+    def test_key_in_multiple_partitions_raises_corruption(self, tmp_ledger):
+        """If a key appears in more than one JSONL partition, CorruptionError is raised.
+
+        The multi-partition check fires during JSONL scan (slow path). To reach the
+        scan, the index is pointed at a non-existent month so the fast path fails.
+        """
+        ev = _create(session=VALID_SESSION, cfg_hash="a" * 64)
+        key = ev["observation_key"]
+        # Duplicate the event into a second month's JSONL
+        src = list(tmp_ledger.glob("*_v2b_observations.jsonl"))[0]
+        dup = tmp_ledger / "2026-09_v2b_observations.jsonl"
+        dup.write_text(src.read_text())
+        # Force the fast path to fail → triggers JSONL scan
+        self._set_idx_mapping(tmp_ledger, key, "2099-01")
+        # JSONL scan finds key in both "2026-08" and "2026-09" → CorruptionError
+        with pytest.raises(CorruptionError, match="multiple partitions"):
+            get_observation_status(key)
+
+    def test_valid_mapping_not_disturbed(self, tmp_ledger):
+        """A correct index mapping must be used as-is without triggering a scan."""
+        ev = _create()
+        key = ev["observation_key"]
+        # Confirm the index is correct before and after lookup
+        idx_before = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        status = get_observation_status(key)
+        idx_after = json.loads((tmp_ledger / "v2b_idx.json").read_text())
+        assert status == "CREATED"
+        assert idx_before == idx_after, "Valid mapping was unnecessarily modified"
+
+    def test_invalid_format_in_index_value_triggers_scan(self, tmp_ledger):
+        """Index value that is not a valid YYYYMM string must trigger JSONL scan."""
+        ev = _create()
+        key = ev["observation_key"]
+        self._set_idx_mapping(tmp_ledger, key, "not-a-date")
+        status = get_observation_status(key)
+        assert status == "CREATED"
+
+
+# ---------------------------------------------------------------------------
+# T28 — Issue 2 (Round 4): ticker_records_represents_all_scored in content hash
+# ---------------------------------------------------------------------------
+
+
+class TestRepresentsAllScoredInContentHash:
+    """
+    Reproduces Issue 2 (Round 4): ticker_records_represents_all_scored was stored
+    in the event but absent from the canonical payload, so True→False produced the
+    same content_hash and was silently treated as IDEMPOTENT_MATCH.
+    """
+
+    def _common_kwargs(self):
+        return dict(
+            model_version=VALID_MODEL,
+            model_config_hash=VALID_CFG_HASH,
+            intended_execution_session=VALID_SESSION,
+            universe_count=500,
+            valid_ticker_count=480,
+            stale_ticker_count=5,
+            excluded_ticker_count=10,
+            missing_ticker_count=5,
+            signal_coverage_rate=0.85,
+            selected_tickers_per_strategy={"Core_Quality_Momentum_V2": ["AAPL"]},
+            data_quality_status="ok",
+            ticker_records=[_ticker()],
+            metadata={"source": "test"},
+        )
+
+    def test_true_then_false_raises_conflict(self):
+        """True → False with same payload must write CONFLICT and raise ConflictError."""
+        create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=True)
+        with pytest.raises(ConflictError):
+            create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=False)
+
+    def test_false_then_true_raises_conflict(self):
+        """False → True with same payload must write CONFLICT and raise ConflictError."""
+        create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=False)
+        with pytest.raises(ConflictError):
+            create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=True)
+
+    def test_true_then_true_is_idempotent(self):
+        """True → True with identical payload must return IDEMPOTENT_MATCH."""
+        create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=True)
+        ev2 = create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=True)
+        assert ev2["event_type"] == "IDEMPOTENT_MATCH"
+
+    def test_false_then_false_is_idempotent(self):
+        """False → False with identical payload must return IDEMPOTENT_MATCH."""
+        create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=False)
+        ev2 = create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=False)
+        assert ev2["event_type"] == "IDEMPOTENT_MATCH"
+
+    def test_content_hash_differs_between_true_and_false(self):
+        """content_hash for True must differ from content_hash for False."""
+        ev_true = create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=True)
+        # Use a different session to avoid conflict
+        kw = self._common_kwargs()
+        kw["intended_execution_session"] = VALID_SESSION_ALT
+        ev_false = create_observation(**kw, ticker_records_represents_all_scored=False)
+        assert ev_true["content_hash"] != ev_false["content_hash"]
+
+    def test_event_stores_flag_value(self):
+        """The OBSERVATION_CREATED event must store the correct flag value."""
+        ev_true = create_observation(**self._common_kwargs(), ticker_records_represents_all_scored=True)
+        assert ev_true["ticker_records_represents_all_scored"] is True
+        kw = self._common_kwargs()
+        kw["intended_execution_session"] = VALID_SESSION_ALT
+        ev_false = create_observation(**kw, ticker_records_represents_all_scored=False)
+        assert ev_false["ticker_records_represents_all_scored"] is False
