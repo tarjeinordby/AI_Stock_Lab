@@ -696,3 +696,311 @@ class TestTelegramIsolation:
         assert "v2b_shadow_runner" not in signal_yml
         # Its name must be unchanged
         assert "Signal" in signal_yml or "signal" in signal_yml
+
+
+# ===========================================================================
+# T40 TestTickerRecordFailClosed
+# ===========================================================================
+
+class TestTickerRecordFailClosed:
+    """Bug 1: Silent drop of ticker records replaced with fail-closed behavior."""
+
+    def test_record_build_failure_returns_failed_validation(self, monkeypatch):
+        """make_ticker_record raising must produce FAILED_VALIDATION, not COMPLETED."""
+        monkeypatch.setattr(
+            runner, "make_ticker_record",
+            mock.Mock(side_effect=ValueError("simulated record validation failure")),
+        )
+        result = _run()
+        assert result.status == "FAILED_VALIDATION"
+        assert result.observation_key is None
+        assert "Cannot build ticker record" in (result.error or "")
+
+    def test_no_completed_observation_when_record_fails(self, monkeypatch):
+        """No observation must be written to the ledger when record build fails."""
+        monkeypatch.setattr(
+            runner, "make_ticker_record",
+            mock.Mock(side_effect=ValueError("fail")),
+        )
+        result = _run()
+        assert result.status == "FAILED_VALIDATION"
+        assert result.observation_key is None
+
+    def test_partial_record_failure_fails_entire_run(self, monkeypatch):
+        """Failure on the second ticker must fail the run, not produce a partial set."""
+        call_count = {"n": 0}
+        original = runner.make_ticker_record
+
+        def failing_second(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                raise ValueError("second ticker fails")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(runner, "make_ticker_record", failing_second)
+        result = _run()
+        assert result.status == "FAILED_VALIDATION"
+        assert result.observation_key is None
+
+    def test_error_message_includes_ticker_name(self, monkeypatch):
+        """RecordBuildError must name the failing ticker in the error."""
+        monkeypatch.setattr(
+            runner, "make_ticker_record",
+            mock.Mock(side_effect=ValueError("bad score")),
+        )
+        result = _run()
+        assert result.status == "FAILED_VALIDATION"
+        # The error must name the ticker, not just say "unknown record failure"
+        error = result.error or ""
+        assert any(t in error for t in TICKERS), (
+            f"Error must name the failing ticker; got: {error!r}"
+        )
+
+
+# ===========================================================================
+# T41 TestPriceProvenance
+# ===========================================================================
+
+class TestPriceProvenance:
+    """Bug 3: Price provenance must use actual last valid price date, not as_of_date."""
+
+    def test_get_last_valid_price_date_excludes_future_rows(self):
+        """Future rows (index > as_of_date) must not count as the last price date."""
+        future_dates = pd.date_range("2026-08-11", periods=5, freq="B")
+        df = pd.DataFrame({"Close": [100.0] * 5}, index=future_dates)
+        result = runner._get_last_valid_price_date(df, MONDAY)
+        assert result is None
+
+    def test_get_last_valid_price_date_returns_max_valid(self):
+        """Return the latest date on or before as_of_date when future rows are mixed in."""
+        # Mix of dates: some before, some after MONDAY
+        before = pd.date_range("2026-08-05", "2026-08-10", freq="B")  # includes MONDAY
+        after = pd.date_range("2026-08-11", "2026-08-14", freq="B")
+        dates = before.append(after)
+        df = pd.DataFrame({"Close": [100.0] * len(dates)}, index=dates)
+        result = runner._get_last_valid_price_date(df, MONDAY)
+        assert result is not None
+        assert result <= pd.Timestamp(MONDAY)
+        assert result.strftime("%Y-%m-%d") == MONDAY
+
+    def test_get_last_valid_price_date_timezone_aware_index(self):
+        """Timezone-aware (UTC) index is normalized and compared correctly."""
+        dates = pd.date_range("2026-08-05", periods=5, freq="B", tz="UTC")
+        df = pd.DataFrame({"Close": [100.0] * 5}, index=dates)
+        result = runner._get_last_valid_price_date(df, MONDAY)
+        assert result is not None
+        assert result <= pd.Timestamp(MONDAY)
+
+    def test_get_last_valid_price_date_none_for_empty_df(self):
+        """Empty DataFrame returns None."""
+        assert runner._get_last_valid_price_date(pd.DataFrame(), MONDAY) is None
+
+    def test_ticker_with_only_future_rows_classified_as_missing(self):
+        """A ticker whose price rows are all > as_of_date goes into missing_price."""
+        future_dates = pd.date_range("2026-08-11", periods=10, freq="B")
+        df = pd.DataFrame(
+            {"Adj Close": [100.0] * 10, "Close": [100.0] * 10, "Volume": [1_000_000] * 10},
+            index=future_dates,
+        )
+        _, stale, missing = runner._classify_price_tickers({"AAPL": df}, MONDAY, 5)
+        assert "AAPL" in missing
+        assert "AAPL" not in stale
+
+    def test_provenance_source_timestamp_is_actual_last_price_date(self):
+        """provenance source_timestamp must be actual last valid price date, not as_of_date."""
+        end_date = pd.Timestamp("2026-08-07")  # Friday before MONDAY
+        dates = pd.date_range(end=end_date, periods=100, freq="B")
+        price_data = {}
+        for i, t in enumerate(TICKERS):
+            if i == 0:
+                price_data[t] = pd.DataFrame(
+                    {"Adj Close": [100.0] * 100, "Close": [100.0] * 100,
+                     "Volume": [1_000_000] * 100},
+                    index=dates,
+                )
+            else:
+                price_data[t] = _make_price_df(n=300, seed=i * 7)
+        fundamentals = {t: _make_fundamentals(seed=i * 3) for i, t in enumerate(TICKERS)}
+
+        result = _run(price_data=price_data, fundamentals=fundamentals)
+        assert result.status == "COMPLETED"
+
+        events = get_observation_events(result.observation_key)
+        created = next(e for e in events if e["event_type"] == "OBSERVATION_CREATED")
+        records = created["ticker_records"]
+        rec = next((r for r in records if r["ticker"] == TICKERS[0]), None)
+        assert rec is not None
+
+        price_prov = next(
+            (p for p in rec["provenance"] if p.get("source") == "yfinance_daily_prices"),
+            None,
+        )
+        assert price_prov is not None
+        assert price_prov.get("provenance_type") == "point_in_time"
+        # source_timestamp and data_cutoff_at must reflect the actual last price date
+        assert price_prov.get("source_timestamp") == "2026-08-07"
+        assert price_prov.get("data_cutoff_at") == "2026-08-07"
+        # Must NOT be as_of_date when last price was earlier
+        assert price_prov.get("source_timestamp") != MONDAY
+
+    def test_all_future_price_rows_causes_failed_data(self):
+        """When all tickers have only future price rows, the run must fail with FAILED_DATA."""
+        future_dates = pd.date_range("2026-08-11", periods=10, freq="B")
+        price_data = {
+            t: pd.DataFrame(
+                {"Adj Close": [100.0] * 10, "Close": [100.0] * 10,
+                 "Volume": [1_000_000] * 10},
+                index=future_dates,
+            )
+            for t in TICKERS
+        }
+        fundamentals = {t: _make_fundamentals(seed=i) for i, t in enumerate(TICKERS)}
+        result = _run(price_data=price_data, fundamentals=fundamentals)
+        assert result.status == "FAILED_DATA"
+
+
+# ===========================================================================
+# T42 TestClaudeStatusHonesty
+# ===========================================================================
+
+class TestClaudeStatusHonesty:
+    """Bug 4: Claude status must be honest per-ticker; not_collected when claude_outputs=None."""
+
+    def test_claude_outputs_none_sets_not_collected_in_metadata(self):
+        """claude_outputs=None must set claude_shadow.status='not_collected' in metadata."""
+        result = _run(claude_outputs=None)
+        events = get_observation_events(result.observation_key)
+        created = next(e for e in events if e["event_type"] == "OBSERVATION_CREATED")
+        assert created["metadata"]["claude_shadow"]["status"] == "not_collected"
+
+    def test_status_detail_includes_not_collected_when_none(self):
+        """status_detail must include 'claude_shadow_not_collected' when claude_outputs=None."""
+        result = _run(claude_outputs=None)
+        assert result.status == "COMPLETED"
+        assert "claude_shadow_not_collected" in result.status_detail
+
+    def test_one_valid_claude_does_not_activate_other_tickers(self):
+        """Valid Claude record for one ticker must NOT select other tickers for Claude strategy."""
+        # Only TICKERS[0] gets a valid Claude output
+        claude_outputs = {TICKERS[0]: _valid_claude_output(TICKERS[0])}
+        result = _run(claude_outputs=claude_outputs)
+        assert result.status == "COMPLETED"
+
+        events = get_observation_events(result.observation_key)
+        created = next(e for e in events if e["event_type"] == "OBSERVATION_CREATED")
+        strat_map = created["selected_tickers_per_strategy"]
+
+        if _CLAUDE_SHADOW in strat_map:
+            claude_selected = strat_map[_CLAUDE_SHADOW]
+            # Other tickers must NOT appear in the Claude strategy
+            for t in TICKERS[1:]:
+                assert t not in claude_selected, (
+                    f"{t!r} selected for Claude strategy without a valid Claude record"
+                )
+
+    def test_is_genuinely_valid_claude_rejects_empty_source_ids(self):
+        """Claude record with empty source_ids must not be counted as genuinely valid."""
+        output = {
+            "provenance_valid": True,
+            "signal_direction": "bullish",
+            "evidence_strength": "moderate",
+            "guidance_change": "maintained",
+            "estimate_revision_direction": "upward",
+            "margin_trend": "stable",
+            "earnings_quality": "high",
+            "capital_allocation_quality": "medium",
+            "catalyst_strength": "moderate",
+            "uncertainty": "low",
+            "source_ids": [],   # empty → not genuinely valid
+        }
+        assert runner._is_genuinely_valid_claude(output) is False
+
+    def test_is_genuinely_valid_claude_rejects_all_unavailable_fields(self):
+        """Claude record with all 'unavailable' analysis fields must not be genuinely valid."""
+        output = {
+            "provenance_valid": True,
+            "source_ids": ["some_source"],
+            "signal_direction": "unavailable",
+            "evidence_strength": "unavailable",
+            "guidance_change": "unavailable",
+            "estimate_revision_direction": "unavailable",
+            "margin_trend": "unavailable",
+            "earnings_quality": "unavailable",
+            "capital_allocation_quality": "unavailable",
+            "catalyst_strength": "unavailable",
+            "uncertainty": "unavailable",
+        }
+        assert runner._is_genuinely_valid_claude(output) is False
+
+    def test_is_genuinely_valid_claude_requires_provenance_valid(self):
+        """Claude record with provenance_valid=False must not be genuinely valid."""
+        output = {
+            "provenance_valid": False,
+            "source_ids": ["src"],
+            "signal_direction": "bullish",
+        }
+        assert runner._is_genuinely_valid_claude(output) is False
+
+    def test_claude_collected_status_when_outputs_provided(self):
+        """When claude_outputs is provided, metadata status must be 'collected'."""
+        claude_outputs = {TICKERS[0]: _valid_claude_output(TICKERS[0])}
+        result = _run(claude_outputs=claude_outputs)
+        events = get_observation_events(result.observation_key)
+        created = next(e for e in events if e["event_type"] == "OBSERVATION_CREATED")
+        assert created["metadata"]["claude_shadow"]["status"] == "collected"
+
+    def test_selected_claude_is_subset_of_factor_only(self):
+        """selected_claude must always be a subset of selected_factor_only."""
+        claude_outputs = {t: _valid_claude_output(t) for t in TICKERS}
+        result = _run(claude_outputs=claude_outputs)
+        assert result.status == "COMPLETED"
+
+        events = get_observation_events(result.observation_key)
+        created = next(e for e in events if e["event_type"] == "OBSERVATION_CREATED")
+        strat_map = created["selected_tickers_per_strategy"]
+        fo_set = set(strat_map.get(_FACTOR_ONLY, []))
+        cs_set = set(strat_map.get(_CLAUDE_SHADOW, []))
+        assert cs_set.issubset(fo_set), (
+            f"Claude strategy tickers must be a subset of Factor-Only: "
+            f"extra={cs_set - fo_set}"
+        )
+
+
+# ===========================================================================
+# T43 TestManualDateRestriction
+# ===========================================================================
+
+class TestManualDateRestriction:
+    """Bug 2: Manual V2B_AS_OF_DATE must only accept today in America/New_York."""
+
+    def test_entry_script_uses_ny_timezone(self):
+        """v2b_daily_shadow.py must use America/New_York for date validation."""
+        source = Path("v2b_daily_shadow.py").read_text()
+        assert "America/New_York" in source, (
+            "v2b_daily_shadow.py must use America/New_York timezone for as_of_date validation"
+        )
+
+    def test_entry_script_has_rejection_for_non_today(self):
+        """v2b_daily_shadow.py must have an explicit sys.exit(1) for non-today dates."""
+        source = Path("v2b_daily_shadow.py").read_text()
+        assert "sys.exit(1)" in source
+        assert "backfill" in source.lower() or "not supported" in source.lower()
+
+    def test_workflow_description_mentions_restriction(self):
+        """Workflow as_of_date description must mention the today-only restriction."""
+        import yaml
+        with open(".github/workflows/v2b_shadow.yml") as f:
+            wf = yaml.safe_load(f)
+        triggers = wf.get(True, wf.get("on", {})) or {}
+        dispatch_inputs = triggers.get("workflow_dispatch", {}).get("inputs", {})
+        desc = dispatch_inputs.get("as_of_date", {}).get("description", "")
+        assert any(kw in desc.lower() for kw in ["today", "must be", "rejected"]), (
+            f"as_of_date description should mention the today-only restriction: {desc!r}"
+        )
+
+    def test_workflow_has_no_anthropic_api_key(self):
+        """V2B.2 workflow must not include ANTHROPIC_API_KEY — V2B.2 never calls Claude API."""
+        workflow_text = Path(".github/workflows/v2b_shadow.yml").read_text()
+        assert "ANTHROPIC_API_KEY" not in workflow_text, (
+            "V2B.2 workflow must not include ANTHROPIC_API_KEY"
+        )

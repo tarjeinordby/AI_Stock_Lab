@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       as_of_date:
-        description: 'Signal date (YYYY-MM-DD). Leave blank to use today.'
+        description: 'Signal date (YYYY-MM-DD). Must be today in America/New_York. Historical dates rejected — V2B.2 has no point-in-time data source. Leave blank to use today.'
         required: false
         default: ''
         type: string
@@ -30,7 +30,6 @@ jobs:
 
     env:
       V2B_AS_OF_DATE: ${{ inputs.as_of_date || '' }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
     steps:
       - name: Check out repository

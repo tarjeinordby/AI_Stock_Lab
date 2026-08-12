@@ -64,6 +64,13 @@ _MIN_FACTOR_COVERAGE: float = 0.25
 _DATA_QUALITY_OK_COVERAGE: float = 0.90
 _DATA_QUALITY_DEGRADED_COVERAGE: float = 0.70
 
+# Claude analysis fields: all "unavailable" → not a genuine analysis
+_CLAUDE_ANALYSIS_FIELDS: frozenset[str] = frozenset({
+    "signal_direction", "evidence_strength", "guidance_change",
+    "estimate_revision_direction", "margin_trend", "earnings_quality",
+    "capital_allocation_quality", "catalyst_strength", "uncertainty",
+})
+
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
@@ -79,6 +86,10 @@ class SafetyBoundaryError(RuntimeError):
     """Raised fail-closed when a V2B safety invariant would be violated."""
 
 
+class RecordBuildError(Exception):
+    """Raised when a ticker record cannot be built from available data."""
+
+
 # ── Result type ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -89,6 +100,7 @@ class ShadowRunResult:
     quant_ticker_count: int = 0
     claude_ticker_count: int = 0
     claude_available: bool = False
+    status_detail: str = ""  # e.g. "quant_observation_completed|claude_shadow_not_collected"
     error: str | None = None
     detail: str | None = None
 
@@ -166,27 +178,56 @@ def validate_data_cutoff(data_cutoff_at: str, as_of_date: str) -> None:
         )
 
 
-def _find_stale_tickers(
+def _get_last_valid_price_date(
+    df: pd.DataFrame | None,
+    as_of_date: str,
+) -> pd.Timestamp | None:
+    """
+    Return the latest index date that is <= as_of_date.
+
+    Normalizes timezone-aware indices to UTC-naive for comparison.
+    Future rows (index > as_of_date) are excluded.
+    Returns None if the DataFrame is empty or has no rows on or before as_of_date.
+    """
+    if df is None or df.empty:
+        return None
+    as_of_ts = pd.Timestamp(as_of_date)
+    idx = df.index
+    if hasattr(idx, "tz") and idx.tz is not None:
+        idx = idx.tz_convert("UTC").tz_localize(None)
+    valid = idx[idx <= as_of_ts]
+    return valid.max() if not valid.empty else None
+
+
+def _classify_price_tickers(
     price_data: dict[str, pd.DataFrame],
     as_of_date: str,
-    max_days: int,
-) -> set[str]:
-    """Return tickers whose most recent price is more than max_days before as_of_date."""
-    stale: set[str] = set()
+    max_staleness_days: int,
+) -> tuple[dict, set[str], set[str]]:
+    """
+    Classify tickers by price availability relative to as_of_date.
+
+    Returns:
+        last_dates:     ticker → last valid price date (<= as_of_date), or None
+        stale:          tickers whose last valid date is > max_staleness_days before as_of_date
+        missing_price:  tickers with no price rows on or before as_of_date
+
+    Future rows (index > as_of_date) are never counted as the last price date.
+    """
     as_of_ts = pd.Timestamp(as_of_date)
+    last_dates: dict = {}
+    stale: set[str] = set()
+    missing_price: set[str] = set()
     for ticker, df in price_data.items():
-        if df is None or df.empty:
-            continue
-        try:
-            last_date = df.index.max()
-            if last_date.tzinfo is not None:
-                last_date = last_date.tz_convert("UTC").tz_localize(None)
+        last_date = _get_last_valid_price_date(df, as_of_date)
+        last_dates[ticker] = last_date
+        if last_date is None:
+            missing_price.add(ticker)
+        else:
             gap = (as_of_ts - last_date).days
-            if gap > max_days:
+            if gap > max_staleness_days:
                 stale.add(ticker)
-        except Exception:
-            stale.add(ticker)
-    return stale
+    return last_dates, stale, missing_price
 
 
 # ── Factor computation ────────────────────────────────────────────────────────
@@ -219,25 +260,33 @@ def _compute_factor_scores(
 
 def _ticker_provenance(
     ticker: str,
-    has_price: bool,
+    last_price_date: pd.Timestamp | None,
     has_fundamentals: bool,
     as_of_date: str,
     data_cutoff_at: str,
 ) -> list[dict]:
+    """
+    Build provenance entries for a ticker.
+
+    last_price_date: actual last price observation on or before as_of_date.
+    Must never be a future date — callers must filter to <= as_of_date first.
+    """
     entries = []
-    if has_price:
+    if last_price_date is not None:
+        actual_date_str = last_price_date.strftime("%Y-%m-%d")
         entries.append(provenance_entry(
             "point_in_time",
             "yfinance_daily_prices",
             as_of_date=as_of_date,
-            data_cutoff_at=as_of_date,
+            source_timestamp=actual_date_str,
+            data_cutoff_at=actual_date_str,
             note="momentum and safety factors",
         ))
     else:
         entries.append(provenance_entry(
             "unavailable",
             "yfinance_daily_prices",
-            note="price data not available for this ticker",
+            note="no price rows on or before as_of_date",
         ))
     if has_fundamentals:
         entries.append(provenance_entry(
@@ -265,7 +314,14 @@ def _build_ticker_records(
     data_cutoff_at: str,
     selected_factor_only: list[str],
     selected_claude: list[str],
+    price_last_dates: dict,
 ) -> list[dict]:
+    """
+    Build ticker records for the ledger.
+
+    Raises RecordBuildError if any ticker record cannot be built.
+    Never silently drops a ticker — fail-closed on any validation failure.
+    """
     if scores_df.empty:
         return []
 
@@ -286,7 +342,7 @@ def _build_ticker_records(
 
     for _, row in df.iterrows():
         ticker = str(row["ticker"])
-        has_price = ticker in price_data and price_data[ticker] is not None and not price_data[ticker].empty
+        last_price_date = price_last_dates.get(ticker)   # None if no valid rows
         has_fund = ticker in fundamentals and bool(fundamentals[ticker])
 
         strategies_selected = []
@@ -329,7 +385,9 @@ def _build_ticker_records(
                 raw_inputs[factor] = None
                 raw_reasons[factor] = "factor unavailable or score non-finite"
 
-        provenance = _ticker_provenance(ticker, has_price, has_fund, as_of_date, data_cutoff_at)
+        provenance = _ticker_provenance(
+            ticker, last_price_date, has_fund, as_of_date, data_cutoff_at
+        )
 
         try:
             rec = make_ticker_record(
@@ -354,9 +412,10 @@ def _build_ticker_records(
                 provenance=provenance,
             )
             records.append(rec)
-        except Exception:
-            # Skip tickers whose records fail validation (data quality guard)
-            pass
+        except Exception as exc:
+            raise RecordBuildError(
+                f"Cannot build ticker record for {ticker!r}: {exc}"
+            ) from exc
 
     return records
 
@@ -374,6 +433,31 @@ def _data_quality_label(valid_count: int, total_count: int, stale_count: int) ->
     if coverage >= _DATA_QUALITY_DEGRADED_COVERAGE:
         return "degraded"
     return "poor"
+
+
+# ── Claude validation helpers ─────────────────────────────────────────────────
+
+def _is_genuinely_valid_claude(output: dict) -> bool:
+    """
+    Return True only when a validated Claude record is genuinely usable:
+    1. provenance_valid is True
+    2. At least one analysis field is not "unavailable"
+    3. source_ids is non-empty
+
+    Empty analyses and empty source lists must not count as valid.
+    A valid record for one ticker must not be used to activate others.
+    """
+    if not output.get("provenance_valid"):
+        return False
+    all_unavailable = all(
+        output.get(f) == "unavailable" for f in _CLAUDE_ANALYSIS_FIELDS
+    )
+    if all_unavailable:
+        return False
+    source_ids = output.get("source_ids")
+    if not source_ids:
+        return False
+    return True
 
 
 # ── Observation completion ────────────────────────────────────────────────────
@@ -423,6 +507,7 @@ def run_shadow_observation(
         spy_prices:               SPY daily prices for beta calculation (optional).
         sector_map:               ticker → sector string for sector-relative value (optional).
         claude_outputs:           ticker → raw Claude shadow output dict (optional).
+                                  None means Claude was not collected this run (not_collected).
         metadata:                 Caller-supplied observation context (optional).
         model_version:            V2 model version (default: quant_baseline_v2).
         model_config_hash:        64-char hex SHA-256 of model config. If omitted, loaded
@@ -478,21 +563,28 @@ def run_shadow_observation(
             error="No tickers provided — cannot create shadow observation",
         )
 
-    # ── Staleness check ────────────────────────────────────────────────────────
-    stale_tickers = _find_stale_tickers(price_data, as_of_date, max_price_staleness_days)
-    if len(stale_tickers) == len([t for t in all_tickers if t in price_data]):
-        # Every ticker with price data is stale — treat as data failure
+    # ── Price classification (staleness + missing) ─────────────────────────────
+    # Future price rows (index > as_of_date) are excluded from last-date computation.
+    price_last_dates, stale_tickers, missing_price_tickers = _classify_price_tickers(
+        price_data, as_of_date, max_price_staleness_days
+    )
+    tickers_with_price = {t for t in all_tickers if t in price_data}
+    # Fail if every ticker with a price DataFrame is stale or has no valid rows
+    if tickers_with_price and (stale_tickers | missing_price_tickers) >= tickers_with_price:
         return ShadowRunResult(
             status="FAILED_DATA",
             observation_key=None,
             intended_execution_session=intended_session,
-            error=f"All {len(stale_tickers)} ticker(s) with price data are stale "
-                  f"(last close > {max_price_staleness_days} days before {as_of_date})",
+            error=(
+                f"All {len(tickers_with_price)} ticker(s) with price data are stale or "
+                f"have no rows on or before {as_of_date}"
+            ),
         )
 
     # ── Factor computation ────────────────────────────────────────────────────
-    # Exclude stale tickers from price-derived factor computation
-    clean_price = {t: df for t, df in price_data.items() if t not in stale_tickers}
+    # Exclude stale and missing-price tickers from price-derived factor computation
+    unusable_price = stale_tickers | missing_price_tickers
+    clean_price = {t: df for t, df in price_data.items() if t not in unusable_price}
     scores_df = _compute_factor_scores(
         clean_price, fundamentals, as_of_date, spy_prices, sector_map
     )
@@ -516,8 +608,13 @@ def run_shadow_observation(
     selected_factor_only = valid_scores["ticker"].head(buy_top_n).tolist()
 
     # ── Claude shadow validation ───────────────────────────────────────────────
+    # claude_outputs=None → not collected this run (explicit, not "unavailable").
+    # A valid Claude record for one ticker must NOT activate the strategy for other tickers.
+    claude_shadow_status = "not_collected"
     validated_claude: dict[str, dict] = {}
-    if claude_outputs:
+
+    if claude_outputs is not None:
+        claude_shadow_status = "collected"
         try:
             cutoff_norm = data_cutoff_at.strip().replace("Z", "+00:00")
             cutoff_utc = datetime.fromisoformat(cutoff_norm).astimezone(timezone.utc)
@@ -535,8 +632,8 @@ def run_shadow_observation(
                 )
                 continue
 
-            # Reject if Claude's own data_cutoff_at postdates runner's data cutoff.
-            # This means Claude used data that is newer than our cutoff — reject.
+            # Reject if Claude's data_cutoff_at postdates runner's cutoff
+            # (Claude used data newer than our cutoff — not allowed)
             if cutoff_utc is not None:
                 claude_cutoff_str = validated.get("data_cutoff_at")
                 if claude_cutoff_str:
@@ -554,11 +651,13 @@ def run_shadow_observation(
 
             validated_claude[ticker] = validated
 
-    # Tickers with genuinely valid Claude output (provenance_valid=True)
-    claude_ok_tickers = [t for t, v in validated_claude.items() if v.get("provenance_valid")]
-    claude_available = len(claude_ok_tickers) > 0
-    # Factor_Plus_Claude_Shadow_V2 is only recorded when valid Claude output exists
-    selected_claude = selected_factor_only if claude_available else []
+    # Per-ticker genuine validity check: provenance valid + non-empty analysis + sources.
+    # selected_claude is the intersection of factor-selected tickers and Claude-valid tickers.
+    claude_ok_set = {
+        t for t, v in validated_claude.items() if _is_genuinely_valid_claude(v)
+    }
+    claude_available = len(claude_ok_set) > 0
+    selected_claude = [t for t in selected_factor_only if t in claude_ok_set]
 
     # ── Count statistics ──────────────────────────────────────────────────────
     scored_tickers = set(scores_df["ticker"].tolist()) if not scores_df.empty else set()
@@ -575,22 +674,59 @@ def run_shadow_observation(
 
     represents_all = (missing_count == 0 and stale_count == 0)
 
-    # ── Build ticker records ──────────────────────────────────────────────────
-    ticker_records = _build_ticker_records(
-        scores_df,
-        price_data,
-        fundamentals,
-        sector_map,
-        as_of_date,
-        data_cutoff_at,
-        selected_factor_only,
-        selected_claude,
-    )
+    # ── Build ticker records (fail-closed: any failure → FAILED_VALIDATION) ───
+    try:
+        ticker_records = _build_ticker_records(
+            scores_df,
+            price_data,
+            fundamentals,
+            sector_map,
+            as_of_date,
+            data_cutoff_at,
+            selected_factor_only,
+            selected_claude,
+            price_last_dates,
+        )
+    except RecordBuildError as exc:
+        return ShadowRunResult(
+            status="FAILED_VALIDATION",
+            observation_key=None,
+            intended_execution_session=intended_session,
+            error=str(exc),
+        )
+
+    # ── Cross-validate: all selected tickers must have records ─────────────────
+    record_ticker_set = {r["ticker"] for r in ticker_records}
+    missing_selected = [t for t in selected_factor_only if t not in record_ticker_set]
+    if missing_selected:
+        return ShadowRunResult(
+            status="FAILED_VALIDATION",
+            observation_key=None,
+            intended_execution_session=intended_session,
+            error=(
+                f"Cross-validation failed: selected tickers not in ticker_records: "
+                f"{missing_selected!r}"
+            ),
+        )
+
+    # represents_all must be False if fewer records than scored tickers
+    if len(ticker_records) != len(scores_df):
+        represents_all = False
 
     # ── selected_tickers_per_strategy ─────────────────────────────────────────
     selected_per_strategy: dict[str, list[str]] = {_FACTOR_ONLY: selected_factor_only}
-    if claude_available:
+    if selected_claude:
         selected_per_strategy[_CLAUDE_SHADOW] = selected_claude
+
+    # ── Status detail ─────────────────────────────────────────────────────────
+    detail_parts = ["quant_observation_completed"]
+    if claude_shadow_status == "not_collected":
+        detail_parts.append("claude_shadow_not_collected")
+    elif claude_available:
+        detail_parts.append(f"claude_shadow_collected_{len(claude_ok_set)}_tickers")
+    else:
+        detail_parts.append("claude_shadow_collected_none_valid")
+    status_detail = "|".join(detail_parts)
 
     # ── Observation metadata ──────────────────────────────────────────────────
     obs_metadata: dict[str, Any] = dict(metadata or {})
@@ -601,8 +737,9 @@ def run_shadow_observation(
     obs_metadata["portfolio_config_hash"] = portfolio_config_hash or ""
     obs_metadata["stale_tickers"] = sorted(stale_tickers)
     obs_metadata["claude_shadow"] = {
+        "status": claude_shadow_status,
         "available": claude_available,
-        "ok_ticker_count": len(claude_ok_tickers),
+        "ok_ticker_count": len(claude_ok_set),
         "per_ticker": {t: v for t, v in validated_claude.items()},
     }
 
@@ -631,6 +768,7 @@ def run_shadow_observation(
             intended_execution_session=intended_session,
             quant_ticker_count=len(ticker_records),
             claude_available=claude_available,
+            status_detail=status_detail,
             error=str(exc),
         )
     except (CorruptionError, Exception) as exc:
@@ -638,6 +776,7 @@ def run_shadow_observation(
             status="FAILED_VALIDATION",
             observation_key=None,
             intended_execution_session=intended_session,
+            status_detail=status_detail,
             error=f"Observation creation failed: {exc}",
         )
 
@@ -655,16 +794,18 @@ def run_shadow_observation(
                 observation_key=obs_key,
                 intended_execution_session=intended_session,
                 quant_ticker_count=len(ticker_records),
-                claude_ticker_count=len(claude_ok_tickers),
+                claude_ticker_count=len(claude_ok_set),
                 claude_available=claude_available,
+                status_detail=status_detail,
             )
         return ShadowRunResult(
             status="IDEMPOTENT_MATCH",
             observation_key=obs_key,
             intended_execution_session=intended_session,
             quant_ticker_count=len(ticker_records),
-            claude_ticker_count=len(claude_ok_tickers),
+            claude_ticker_count=len(claude_ok_set),
             claude_available=claude_available,
+            status_detail=status_detail,
         )
 
     # ── Transition new observation to COMPLETED ───────────────────────────────
@@ -682,6 +823,7 @@ def run_shadow_observation(
             intended_execution_session=intended_session,
             quant_ticker_count=len(ticker_records),
             claude_available=claude_available,
+            status_detail=status_detail,
             error=str(exc),
         )
 
@@ -690,8 +832,9 @@ def run_shadow_observation(
         observation_key=obs_key,
         intended_execution_session=intended_session,
         quant_ticker_count=len(ticker_records),
-        claude_ticker_count=len(claude_ok_tickers),
+        claude_ticker_count=len(claude_ok_set),
         claude_available=claude_available,
+        status_detail=status_detail,
     )
 
 
@@ -713,6 +856,8 @@ def format_shadow_preview(result: ShadowRunResult) -> str:
         f"Claude:  {'yes' if result.claude_available else 'no'} "
         f"({result.claude_ticker_count} ticker(s))",
     ]
+    if result.status_detail:
+        lines.append(f"Detail:  {result.status_detail}")
     if result.error:
         lines.append(f"Error:   {result.error}")
     if result.observation_key:

@@ -16,6 +16,7 @@ import os
 import sys
 import warnings
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -29,7 +30,23 @@ from modules.versioning import get_model_config_hash, get_portfolio_config_hash
 from modules.v2_strategy import V2_MODEL_VERSION, V2_PORTFOLIO_VERSION
 
 # ── Determine as_of_date ──────────────────────────────────────────────────────
-AS_OF_DATE = os.environ.get("V2B_AS_OF_DATE", "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+# Historical backfill is NOT supported in V2B.2 — no point-in-time data source.
+# Only today's date in America/New_York is accepted as a manual as_of_date.
+_NY_TZ = ZoneInfo("America/New_York")
+_TODAY_NY = datetime.now(_NY_TZ).strftime("%Y-%m-%d")
+
+_ENV_AS_OF_DATE = os.environ.get("V2B_AS_OF_DATE", "").strip()
+if _ENV_AS_OF_DATE and _ENV_AS_OF_DATE != _TODAY_NY:
+    print(
+        f"ERROR: V2B_AS_OF_DATE={_ENV_AS_OF_DATE!r} is not today's date in "
+        f"America/New_York ({_TODAY_NY!r}).\n"
+        "Historical backfill is not supported in V2B.2 — a point-in-time data\n"
+        "source is required for any date other than today.\n"
+        "Remove V2B_AS_OF_DATE or set it to today's date in America/New_York."
+    )
+    sys.exit(1)
+
+AS_OF_DATE = _TODAY_NY
 
 print(f"V2B shadow collection — as_of_date: {AS_OF_DATE}")
 print("SHADOW ONLY: order_creation_blocked = True")
