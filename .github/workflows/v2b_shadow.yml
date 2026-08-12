@@ -1,0 +1,82 @@
+name: V2B Shadow Collection
+
+# SHADOW ONLY — this workflow never creates orders, fills, or trades.
+# It records V2 factor scores to the V2B ledger for prospective OOS evaluation.
+# order_creation_blocked = True is a structural invariant.
+
+on:
+  workflow_dispatch:
+    inputs:
+      as_of_date:
+        description: 'Signal date (YYYY-MM-DD). Leave blank to use today.'
+        required: false
+        default: ''
+        type: string
+
+  schedule:
+    # 21:30 UTC Mon–Fri (after US market close at 16:00 ET = 20:00–21:00 UTC)
+    - cron: "30 21 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v2b-shadow-collection
+  cancel-in-progress: false
+
+jobs:
+  shadow-collection:
+    runs-on: ubuntu-latest
+
+    env:
+      V2B_AS_OF_DATE: ${{ inputs.as_of_date || '' }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run V2B shadow collection
+        # Exits 0 immediately if today is not a NYSE trading session.
+        # Exchange calendar decides — no cron skipping needed.
+        run: python v2b_daily_shadow.py
+
+      - name: Commit V2B ledger
+        if: always()
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          # Only stage V2B ledger files — never V1 state, fills, orders, or cache
+          git add data_v4/v2b_ledger/*.jsonl data_v4/v2b_ledger/v2b_idx.json 2>/dev/null || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "V2B shadow: $(date -u +%Y-%m-%d)"
+          else
+            echo "No V2B ledger changes to commit."
+            exit 0
+          fi
+
+          # Conflict-safe push: pull --rebase on failure, up to 3 attempts
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "Push OK ✅"
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt/3) — pulling and retrying..."
+            git pull --rebase origin main
+          done
+
+          echo "Push failed after 3 attempts ❌"
+          exit 1
