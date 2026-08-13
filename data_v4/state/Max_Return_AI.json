@@ -1,25 +1,25 @@
 {
-  "cash": 3743.965494578271,
+  "cash": 2939.381714578271,
   "cooldowns": {
     "ARM": "2026-08-06"
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10000.0,
-  "last_execution_date": "2026-08-12",
+  "last_execution_date": "2026-08-13",
   "portfolio_id": "c11f0a84-11f6-417b-bc1e-5b4b78bf863e",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
     "OKTA": {
-      "avg_price": 144.34500122070312,
+      "avg_price": 145.91302940404125,
       "buy_date": "2026-08-06",
       "buy_score": 71.5,
       "highest_price": 152.1199951171875,
-      "is_partial": true,
-      "last_price": 149.86000061035156,
-      "market_value": 1251.733153932692,
+      "is_partial": false,
+      "last_price": 148.3300018310547,
+      "market_value": 2042.7335583786921,
       "pyramid_min_price": 147.2319,
-      "pyramid_remaining_value": 803.78,
-      "shares": 8.35268349682783
+      "pyramid_remaining_value": 0.0,
+      "shares": 13.771546775178567
     },
     "ROKU": {
       "avg_price": 142.72027702667722,
@@ -27,8 +27,8 @@
       "buy_score": 70.9,
       "highest_price": 152.52000427246094,
       "is_partial": false,
-      "last_price": 151.0,
-      "market_value": 3967.5511552864814,
+      "last_price": 151.5,
+      "market_value": 3980.6887418933907,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 26.27517321381776
@@ -39,8 +39,8 @@
       "buy_score": 88.0,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 432.6499938964844,
-      "market_value": 959.7807280162797,
+      "last_price": 429.1499938964844,
+      "market_value": 952.0164090622831,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 683.59,
       "shares": 2.2183768439990232
