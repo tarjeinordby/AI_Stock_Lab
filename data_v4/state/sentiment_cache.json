@@ -1,14 +1,12 @@
 {
   "ABNB": {
-    "fetched_at": "2026-08-12T21:41:36.118163+00:00",
-    "key_factors": [
-      "70 buy/strongBuy vs 6 sell ratings shows strong conviction",
-      "AI strategy and hotel expansion are credible growth drivers"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Positive. Strong analyst support, AI/hotel growth catalysts offset earnings miss"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-08-13T21:41:17.029997+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -22,17 +20,19 @@
     "summary": "Strong analyst support & earnings execution offset recent weakness"
   },
   "ARM": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-12T21:41:24.792136+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-08-13T21:41:11.158563+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4/4 beats) demonstrates consistent execution",
+      "82 buy+ ratings vs 6 sell shows overwhelming analyst confidence"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong fundamentals with valuation reset; consensus bullish but execution risk r"
   },
   "ASML": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-12T21:41:28.040604+00:00",
+    "fetched_at": "2026-08-13T21:41:13.902182+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -40,15 +40,15 @@
     "summary": "Ingen data"
   },
   "BILL": {
-    "fetched_at": "2026-08-12T21:41:30.877817+00:00",
+    "fetched_at": "2026-08-13T21:41:19.645254+00:00",
     "key_factors": [
-      "Perfect 4-quarter earnings beat streak demonstrates operational excellence",
-      "69% buy/strongBuy vs 27% hold consensus shows strong conviction"
+      "Perfect earnings track record (4/4 beats) demonstrates execution quality",
+      "Overwhelming bullish analyst consensus (42 buy/strongBuy vs 0 sell)"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with positive analyst consensus and perfect earnings executi"
+    "summary": "Strong fundamentals with consistent execution offset by valuation concerns"
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
@@ -71,15 +71,15 @@
     "summary": "Strong fundamentals with consistent execution. Valuation near peaks warrants cau"
   },
   "DDOG": {
-    "fetched_at": "2026-08-12T21:41:21.869383+00:00",
+    "fetched_at": "2026-08-13T21:41:08.031887+00:00",
     "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution excellence",
-      "Overwhelming analyst support (129 buy/strongBuy vs 6 sell/hold)"
+      "Perfect 4Q earnings beat streak demonstrates execution excellence",
+      "129 buy/strongBuy vs 6 sell ratings shows overwhelming analyst conviction"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with valuation pullback; consistent execution supports upsid"
+    "summary": "Strong fundamentals offset near-term pullback. Earnings excellence and analyst c"
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -152,26 +152,22 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-08-12T21:41:13.388473+00:00",
-    "key_factors": [
-      "Exceptional earnings track record: 4 consecutive beats",
-      "AI security narrative gaining traction with recent upgrades"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong bullish setup: consistent earnings beats, AI tailwinds, overwhelmingly po"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-08-13T21:40:55.442705+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PANW": {
-    "fetched_at": "2026-08-12T21:41:33.248517+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters)",
-      "Overwhelming analyst support (133 buy vs 3 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals & analyst consensus offset valuation concerns"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-08-13T21:41:25.526931+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PLTR": {
     "error": "Ugyldig JSON-respons",
@@ -193,7 +189,7 @@
   },
   "ROKU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-12T21:41:16.327667+00:00",
+    "fetched_at": "2026-08-13T21:40:58.454759+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -212,13 +208,15 @@
     "summary": "Strong analyst support offsets execution concerns; recovery potential attractive"
   },
   "SHOP": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-07T21:35:34.560085+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-08-13T21:41:22.569813+00:00",
+    "key_factors": [
+      "116 buy/strongBuy vs 3 sell ratings (97% positive)",
+      "3 of 4 recent earnings beats show execution"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Bullish. Strong analyst support, solid earnings, AI momentum offset by valuation"
   },
   "SMCI": {
     "fetched_at": "2026-06-11T12:29:40.190016+00:00",
@@ -270,7 +268,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-12T21:41:19.297839+00:00",
+    "fetched_at": "2026-08-13T21:41:05.021341+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,

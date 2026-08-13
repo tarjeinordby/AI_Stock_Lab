@@ -14,16 +14,16 @@
   },
   "BILL": {
     "beat_probability": 0.82,
-    "expected_reaction": "positive if beat + guidance holds; muted/negative if revenue decel continues despite EPS beat",
-    "fetched_at": "2026-08-11T21:42:24.974816+00:00",
+    "expected_reaction": "positive if guidance holds, but muted given revenue softness",
+    "fetched_at": "2026-08-13T21:41:29.501601+00:00",
     "key_metrics_to_watch": [
-      "Total revenue & sequential growth",
-      "Take rate / TPV growth",
-      "FY guidance and operating margin"
+      "Total payment volume (TPV)",
+      "Take rate / revenue growth",
+      "FY guidance & margins"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-qtr beat streak (14-30%) supports EPS upside, but declining revenue trend caps reaction. EPS consensus figure looks inconsistent w/ quarterly history.",
-    "risk_level": "high"
+    "reasoning": "Strong 4-qtr beat streak (avg +22%) supports EPS beat, but declining revenue ($0.41B\u2192$0.38B) caps upside. Watch guidance for reaction.",
+    "risk_level": "medium"
   },
   "CELH": {
     "beat_probability": 0.78,
