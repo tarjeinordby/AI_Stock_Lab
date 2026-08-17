@@ -14,16 +14,16 @@
   },
   "BILL": {
     "beat_probability": 0.82,
-    "expected_reaction": "positive if guidance holds, but muted given revenue softness",
-    "fetched_at": "2026-08-13T21:41:29.501601+00:00",
+    "expected_reaction": "positive if beat continues, but muted given decelerating revenue; volatility high on guidance",
+    "fetched_at": "2026-08-17T21:22:32.744706+00:00",
     "key_metrics_to_watch": [
-      "Total payment volume (TPV)",
-      "Take rate / revenue growth",
-      "FY guidance & margins"
+      "revenue growth/guidance",
+      "TPV & take rate",
+      "operating margin/FCF"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-qtr beat streak (avg +22%) supports EPS beat, but declining revenue ($0.41B\u2192$0.38B) caps upside. Watch guidance for reaction.",
-    "risk_level": "medium"
+    "reasoning": "Strong 4-quarter beat streak (avg +22%) supports EPS beat, but flat-to-declining revenue trend caps upside and raises guidance risk.",
+    "risk_level": "high"
   },
   "CELH": {
     "beat_probability": 0.78,
@@ -40,15 +40,15 @@
   },
   "CRWD": {
     "beat_probability": 0.75,
-    "expected_reaction": "Muted-to-positive if EPS beats but revenue trajectory raises deceleration concerns; high implied volatility priced in",
-    "fetched_at": "2026-08-14T21:21:48.625139+00:00",
+    "expected_reaction": "Positive if beat + ARR growth holds; muted given elevated valuation and decelerating revenue trend",
+    "fetched_at": "2026-08-17T21:22:37.655227+00:00",
     "key_metrics_to_watch": [
-      "Net new ARR and total ARR growth",
-      "Subscription gross margin & net retention rate",
-      "Forward guidance vs consensus"
+      "Net new ARR / ending ARR",
+      "Subscription gross margin",
+      "Dollar-based net retention rate"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Consistent 4-quarter beat streak favors EPS beat, but declining sequential revenue and rich valuation cap upside. Guidance is the swing factor.",
+    "reasoning": "Consistent beat history (4/4) supports upside, but declining sequential revenue trend and premium valuation cap reaction and add high risk.",
     "risk_level": "high"
   },
   "DDOG": {
@@ -66,15 +66,15 @@
   },
   "OKTA": {
     "beat_probability": 0.82,
-    "expected_reaction": "modestly positive if beat, but muted given declining revenue trend; guidance-driven volatility likely",
-    "fetched_at": "2026-08-14T21:21:44.307351+00:00",
+    "expected_reaction": "Modestly positive if EPS beats and guidance holds, but muted upside given declining revenue trend; downside risk if guid",
+    "fetched_at": "2026-08-17T21:22:28.499821+00:00",
     "key_metrics_to_watch": [
-      "forward revenue guidance",
-      "billings/RPO growth",
-      "operating margin & FCF"
+      "Revenue growth & guidance",
+      "Billings/RPO (remaining performance obligations)",
+      "Operating margin & FCF"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-quarter beat streak (+6-8%) supports EPS beat, but sequential revenue decline caps upside. Guidance is the key swing factor.",
+    "reasoning": "Strong 4/4 EPS beat streak (avg +7%) supports beat odds, but sequential revenue decline caps upside. Guidance is the key swing factor.",
     "risk_level": "medium"
   },
   "ROKU": {
