@@ -1,4 +1,20 @@
 {
+  "ABNB": {
+    "action": "hold",
+    "catalysts": [
+      "Expanding gross margins hitting 86.6% signals operating leverage",
+      "AI-driven travel booking tailwinds and new product initiatives"
+    ],
+    "conviction": "medium",
+    "fetched_at": "2026-08-17T14:57:12.517580+00:00",
+    "reasoning": "Strong Q4 revenue/margins, 25% recent rally, but current price near avg target limits upside; thesis intact near-term.",
+    "risks": [
+      "Trading near avg analyst target of $174.73 with limited upside buffer",
+      "EPS volatility signals earnings inconsistency across quarters"
+    ],
+    "source": "claude",
+    "thesis_intact": true
+  },
   "ARM": {
     "action": "reduce",
     "catalysts": [
@@ -34,15 +50,15 @@
   "DDOG": {
     "action": "hold",
     "catalysts": [
-      "AI observability demand driving new workload adoption and platform expansion",
-      "BofA and RBC bullish stance with avg target $282 implies ~13% upside from current"
+      "Expanding gross margins and accelerating EPS growth suggest improving operational efficiency and pricing power",
+      "Large enterprise customer base growth and AI observability adoption could re-accelerate top-line momentum"
     ],
-    "conviction": "medium",
-    "fetched_at": "2026-08-10T14:32:22.960656+00:00",
-    "reasoning": "Core growth accelerating, margins expanding, EPS rising. Cautious Q3 guidance and largest customer usage cut warrant monitoring.",
+    "conviction": "high",
+    "fetched_at": "2026-08-17T14:57:20.783870+00:00",
+    "reasoning": "Revenue decelerating but margins expanding, EPS accelerating, large customer growth intact, trading below avg analyst target of $285.",
     "risks": [
-      "Largest customer cutting usage signals potential enterprise spending pressure",
-      "Cautious Q3 guidance may compress multiple if growth disappoints"
+      "Revenue growth deceleration from $1.12B to $0.89B signals potential demand softening or macro headwinds",
+      "Valuation remains elevated; any guidance miss could trigger sharp multiple compression"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -50,15 +66,15 @@
   "OKTA": {
     "action": "hold",
     "catalysts": [
-      "$200M AI agent identity investment could open new TAM",
-      "Cybersecurity sector rebound and nonhuman identity demand surge"
+      "Aug 26 earnings with potential beat per RBC reseller feedback",
+      "AI-native identity + MCP cost controls could re-accelerate growth narrative"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-08-10T14:32:07.441903+00:00",
-    "reasoning": "Revenue declining sequentially, margins compressing slightly, but AI agent identity push and cybersecurity tailwinds support medium-term thesis.",
+    "fetched_at": "2026-08-17T14:56:55.752602+00:00",
+    "reasoning": "Revenue declining sequentially but AI identity push + multiple upgrades + Aug 26 earnings catalyst support near-term thesis despite margin pressure.",
     "risks": [
-      "Revenue deceleration trend raises growth sustainability concerns",
-      "Current price above analyst avg target of $129; limited upside consensus"
+      "Revenue deceleration trend across 4 quarters raises growth concern",
+      "Stock near/above avg analyst target of $132; current price at premium"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -66,15 +82,15 @@
   "ROKU": {
     "action": "hold",
     "catalysts": [
-      "AI/Search integration driving platform revenue acceleration",
-      "Potential acquisition premium if M&A rumors materialize"
+      "CTV ad market growth with Fox/Walmart partnerships validating platform value",
+      "Home screen gatekeeper positioning drives premium ad pricing power"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-08-10T14:32:13.036982+00:00",
-    "reasoning": "Q2 beat on revenue/ads/subs; EPS trend strong. Margin compression & macro headwinds temper enthusiasm near analyst avg target.",
+    "fetched_at": "2026-08-17T14:57:00.608829+00:00",
+    "reasoning": "EPS trajectory strong but revenue volatile and margins compressing; current price near avg analyst target limits upside.",
     "risks": [
-      "Gross margin declining 6pts over 4Q signals monetization pressure",
-      "Trade Desk macro/structural concerns may spill into Roku ad revenue"
+      "Gross margin erosion from 49.7% to 43.4% signals monetization pressure",
+      "Wells Fargo downgrade post-Q2 suggests peak near-term sentiment"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -82,15 +98,15 @@
   "TSM": {
     "action": "add",
     "catalysts": [
-      "AI chip demand acceleration",
-      "Microsoft/Nvidia capacity expansion commitments"
+      "AI chip demand surge driving advanced node pricing power",
+      "Institutional accumulation signaling re-rating potential"
     ],
     "conviction": "high",
-    "fetched_at": "2026-08-10T14:32:17.742304+00:00",
-    "reasoning": "AI demand driving 45% sales growth, expanding margins, accelerating EPS. Dip is sentiment-driven, not fundamental.",
+    "fetched_at": "2026-08-17T14:57:07.930363+00:00",
+    "reasoning": "Fundamentals strengthening: EPS accelerating, margins expanding, smart money rotating in. Dip below avg target offers attractive entry.",
     "risks": [
-      "Geopolitical Taiwan risk",
-      "Customer concentration in Apple/Nvidia"
+      "Geopolitical Taiwan strait tensions",
+      "Customer concentration/NVIDIA dependency"
     ],
     "source": "claude",
     "thesis_intact": true
