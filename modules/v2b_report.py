@@ -16,10 +16,24 @@ Report storage:
   data_v4/v2b_reports/{YYYY-MM}_v2b_reports.jsonl
   data_v4/v2b_reports/v2b_report_idx.json
 
+Hash chain (record_version="2"):
+  Every event carries:
+    event_hash           = SHA-256(canonical JSON without event_hash field)
+    previous_event_hash  = event_hash of prior event for same report_key (None for first)
+  Broken chains, wrong record_version, or tampered event_hash raise CorruptionError.
+
+Telegram outbox lifecycle per report_key:
+  REPORT_CREATED → SEND_CLAIMED → SEND_CONFIRMED
+                                → SEND_AMBIGUOUS  (crash recovery / uncertain delivery)
+                                → SEND_FAILED     (definitive failure, currently reserved)
+  Delivery guarantee: at-least-once with explicit AMBIGUOUS status.
+  Telegram API provides no idempotency key, so exactly-once is not achievable.
+
 Isolation: zero imports from V1 execution modules.
   Does NOT import: modules.portfolio, modules.orders, modules.fills,
                    modules.ledger, modules.state
   Does NOT call:   execute_buy, execute_sell, execute_pyramid_fill
+  Does NOT create: orders, fills, trades, or position changes
 """
 
 from __future__ import annotations
@@ -29,9 +43,11 @@ import hashlib
 import json
 import os
 import tempfile
+import uuid
+import warnings
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Generator
 
@@ -45,17 +61,27 @@ from modules.v2b_ledger import (
 _ORDER_CREATION_BLOCKED: bool = True
 
 REPORT_VERSION = "shadow_report_v1"
+RECORD_VERSION = "2"         # mandatory hash-chain version
+SEND_CLAIM_TTL_SECONDS = 300  # 5 minutes
+
 REPORT_DIR: Path = Path(__file__).parent.parent / "data_v4" / "v2b_reports"
+
+_HEX64_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
+_SUPPORTED_RECORD_VERSIONS: frozenset[str] = frozenset({"2"})
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
 class ObservationNotFoundError(Exception):
-    """No observation of any status exists for the requested session."""
+    """No COMPLETED observation found for the requested session."""
 
 
 class ObservationIncompleteError(Exception):
-    """Observation exists for the session but has not reached COMPLETED status."""
+    """Observation exists but has not reached COMPLETED status."""
+
+
+class ObservationAmbiguousError(Exception):
+    """Multiple COMPLETED observations for the same session — fail-closed."""
 
 
 class ObservationIntegrityError(Exception):
@@ -70,15 +96,20 @@ class SafetyBoundaryError(RuntimeError):
     """Raised fail-closed when a V2B safety invariant would be violated."""
 
 
+class CorruptionError(RuntimeError):
+    """Raised on hash mismatch, broken chain, missing mandatory field, or bad record_version."""
+
+
 # ── Result type ───────────────────────────────────────────────────────────────
 
 @dataclass
 class ShadowReportResult:
-    status: str  # CREATED | IDEMPOTENT_MATCH | CONFLICT | FAILED
+    status: str                          # CREATED | IDEMPOTENT_MATCH | CONFLICT | FAILED
+    telegram_status: str | None = None   # CONFIRMED | AMBIGUOUS | SKIPPED | NONE
     report_key: str | None = None
     observation_key: str | None = None
     intended_execution_session: str | None = None
-    telegram_sent: bool = False
+    telegram_sent: bool = False          # True only if SEND_CONFIRMED
     telegram_skipped: bool = False
     error: str | None = None
     detail: str | None = None
@@ -110,12 +141,13 @@ def make_report_key(report_content: dict) -> str:
 
 
 def _make_event_hash(event_body: dict) -> str:
-    """SHA-256 of event body excluding the event_hash field."""
+    """SHA-256 of event body WITHOUT the event_hash field itself."""
     return _sha256(_canonical_json({k: v for k, v in event_body.items() if k != "event_hash"}))
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _now_iso(_now: Callable[[], datetime] | None = None) -> str:
+    dt = _now() if _now is not None else datetime.now(timezone.utc)
+    return dt.isoformat()
 
 
 # ── File path helpers ─────────────────────────────────────────────────────────
@@ -164,18 +196,214 @@ def _idx_lock_ctx() -> Generator[None, None, None]:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
+# ── Hash chain integrity ──────────────────────────────────────────────────────
+
+def _verify_report_event_structure(ev: dict, filename: str, line_num: int) -> None:
+    """
+    Verify structural integrity of a parsed report event dict.
+
+    record_version must be "2". Missing or unsupported → CorruptionError.
+    report_key must be a 64-char hex string.
+    event_hash must be a 64-char hex string (MANDATORY).
+    previous_event_hash must be present: None for first event per key, 64-char hex for rest.
+    """
+    rv = ev.get("record_version")
+    if rv not in _SUPPORTED_RECORD_VERSIONS:
+        raise CorruptionError(
+            f"v2b_report: unsupported or missing record_version {rv!r} "
+            f"at line {line_num} in {filename} — fail-closed"
+        )
+
+    rk = ev.get("report_key")
+    if not isinstance(rk, str) or not _HEX64_RE.match(rk):
+        raise CorruptionError(
+            f"v2b_report: missing or invalid report_key at line {line_num} in {filename}"
+        )
+
+    event_hash = ev.get("event_hash")
+    if not isinstance(event_hash, str) or not _HEX64_RE.match(event_hash):
+        raise CorruptionError(
+            f"v2b_report: missing or invalid event_hash at line {line_num} in {filename} "
+            f"(mandatory for record_version='2')"
+        )
+
+    if "previous_event_hash" not in ev:
+        raise CorruptionError(
+            f"v2b_report: missing previous_event_hash at line {line_num} in {filename} "
+            f"(mandatory for record_version='2')"
+        )
+    peh = ev["previous_event_hash"]
+    if peh is not None and (not isinstance(peh, str) or not _HEX64_RE.match(peh)):
+        raise CorruptionError(
+            f"v2b_report: invalid previous_event_hash at line {line_num} in {filename}: "
+            f"must be None or a 64-char hex string, got {peh!r}"
+        )
+
+
+def _verify_report_hash_chains(events: list[dict], filename: str = "") -> None:
+    """Verify that previous_event_hash chains are unbroken for each report_key."""
+    by_key: dict[str, list[dict]] = {}
+    for ev in events:
+        rk = ev.get("report_key")
+        if rk:
+            by_key.setdefault(rk, []).append(ev)
+
+    for rk, chain in by_key.items():
+        prev_hash: str | None = None
+        for ev in chain:
+            stored_prev = ev["previous_event_hash"]
+            if stored_prev != prev_hash:
+                raise CorruptionError(
+                    f"v2b_report: hash chain broken for {rk[:16]}… in {filename}: "
+                    f"expected previous_event_hash={prev_hash!r}, got={stored_prev!r}"
+                )
+            prev_hash = ev["event_hash"]
+
+
+# ── Hardened JSONL reader ─────────────────────────────────────────────────────
+
+def _read_report_events_raw(yyyymm: str) -> list[dict]:
+    """
+    Read all report events from a monthly JSONL file with full integrity verification.
+
+    - Incomplete last line → UserWarning + skip (crash-safe truncation)
+    - Mid-file JSON error → CorruptionError (fail-closed)
+    - Missing/wrong record_version → CorruptionError
+    - Missing mandatory field (event_hash, previous_event_hash) → CorruptionError
+    - event_hash value mismatch → CorruptionError
+    - Broken previous_event_hash chain → CorruptionError
+    """
+    path = _report_jsonl_path(yyyymm)
+    if not path.exists():
+        return []
+
+    content = path.read_text()
+    all_lines = content.splitlines()
+    events: list[dict] = []
+
+    for i, raw_line in enumerate(all_lines):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            is_last_nonempty = all(not ln.strip() for ln in all_lines[i + 1:])
+            if is_last_nonempty:
+                warnings.warn(
+                    f"v2b_report: incomplete last line in {path.name} (line {i + 1}) — skipped",
+                    UserWarning,
+                    stacklevel=4,
+                )
+                continue
+            raise CorruptionError(
+                f"v2b_report: mid-file JSON parse failure at line {i + 1} in {path.name}"
+            )
+
+        _verify_report_event_structure(ev, path.name, i + 1)
+
+        body = {k: v for k, v in ev.items() if k != "event_hash"}
+        computed = _make_event_hash(body)
+        if computed != ev["event_hash"]:
+            raise CorruptionError(
+                f"v2b_report: event_hash mismatch at line {i + 1} in {path.name}: "
+                f"stored={ev['event_hash'][:16]}… computed={computed[:16]}…"
+            )
+
+        events.append(ev)
+
+    _verify_report_hash_chains(events, path.name)
+    return events
+
+
+def _last_event_hash_for_key(events: list[dict], report_key: str) -> str | None:
+    """Return the event_hash of the last event for a given report_key, or None."""
+    last = None
+    for ev in events:
+        if ev.get("report_key") == report_key:
+            last = ev["event_hash"]
+    return last
+
+
+# ── JSONL append ──────────────────────────────────────────────────────────────
+
+def _append_report_event(yyyymm: str, event: dict) -> None:
+    """Append one event to the monthly JSONL. Caller MUST hold the monthly lock."""
+    path = _report_jsonl_path(yyyymm)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = _canonical_json(event) + "\n"
+    with open(path, "a") as af:
+        af.write(line)
+        af.flush()
+        os.fsync(af.fileno())
+
+
+def _build_and_append_event(
+    yyyymm: str,
+    event_body: dict[str, Any],
+    prev_hash: str | None,
+) -> dict:
+    """
+    Add record_version, previous_event_hash, and event_hash to event_body, then append.
+    Caller MUST hold the monthly lock.
+    Returns the complete event dict.
+    """
+    event_body["record_version"] = RECORD_VERSION
+    event_body["previous_event_hash"] = prev_hash
+    event_body["order_creation_blocked"] = _ORDER_CREATION_BLOCKED
+    event_body["event_hash"] = _make_event_hash(event_body)
+    _append_report_event(yyyymm, event_body)
+    return event_body
+
+
 # ── Index helpers ─────────────────────────────────────────────────────────────
 
-def _load_report_idx() -> dict[str, dict]:
-    """Load report index. Returns {} on any error."""
+def _load_report_idx_raw() -> dict[str, dict] | None:
+    """
+    Load report index without rebuilding.
+    Returns {} if file does not exist.
+    Returns None if file exists but is corrupt.
+    Never raises.
+    """
     p = _report_idx_path()
     if not p.exists():
         return {}
     try:
         data = json.loads(p.read_text())
-        return data if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else None
     except Exception:
-        return {}
+        return None
+
+
+def _rebuild_report_idx() -> dict[str, dict]:
+    """
+    Rebuild the report index by scanning all JSONL files.
+    Raises CorruptionError if the same observation_key appears in multiple partitions.
+    """
+    idx: dict[str, dict] = {}
+    for jsonl_path in sorted(REPORT_DIR.glob("*_v2b_reports.jsonl")):
+        yyyymm = jsonl_path.name[:7]
+        events = _read_report_events_raw(yyyymm)
+        for ev in events:
+            if ev.get("event_type") == "REPORT_CREATED":
+                obs_key = ev.get("observation_key", "")
+                rk = ev.get("report_key", "")
+                if obs_key:
+                    if obs_key in idx and idx[obs_key].get("report_key") != rk:
+                        raise CorruptionError(
+                            f"v2b_report: observation_key {obs_key[:16]}… found with different "
+                            f"report_keys in multiple partitions — data integrity violation"
+                        )
+                    idx[obs_key] = {"yyyymm": yyyymm, "report_key": rk}
+    return idx
+
+
+def _load_report_idx() -> dict[str, dict]:
+    """Load report index. Falls back to rebuild if corrupt. Returns {} on empty."""
+    result = _load_report_idx_raw()
+    if result is not None:
+        return result
+    return _rebuild_report_idx()
 
 
 def _save_report_idx_atomic(idx: dict[str, dict]) -> None:
@@ -199,72 +427,47 @@ def _save_report_idx_atomic(idx: dict[str, dict]) -> None:
 
 
 def _update_report_idx(observation_key: str, yyyymm: str, report_key: str) -> None:
-    """Under exclusive index lock, record the (observation_key → yyyymm, report_key) mapping."""
+    """Under exclusive index lock, record (observation_key → yyyymm, report_key)."""
     with _idx_lock_ctx():
-        idx = _load_report_idx()
+        raw = _load_report_idx_raw()
+        if raw is None:
+            idx = _rebuild_report_idx()
+        else:
+            idx = raw
         idx[observation_key] = {"yyyymm": yyyymm, "report_key": report_key}
         _save_report_idx_atomic(idx)
 
 
-# ── JSONL append ──────────────────────────────────────────────────────────────
-
-def _append_report_event(yyyymm: str, event: dict) -> None:
-    """Append one event to the monthly JSONL. Caller MUST hold the monthly lock."""
-    path = _report_jsonl_path(yyyymm)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = _canonical_json(event) + "\n"
-    with open(path, "a") as af:
-        af.write(line)
-        af.flush()
-        os.fsync(af.fileno())
-
-
-def _read_report_events(yyyymm: str) -> list[dict]:
-    """Read all report events from a monthly JSONL file."""
+def _validate_index_entry(obs_key: str, entry: dict) -> bool:
+    """Return True if the index entry is valid and points to a JSONL that contains obs_key."""
+    yyyymm = entry.get("yyyymm", "")
     path = _report_jsonl_path(yyyymm)
     if not path.exists():
-        return []
-    events = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass  # Skip truncated last lines (crash-safe)
-    return events
-
-
-def _read_all_report_events() -> list[dict]:
-    """Read all report events from all monthly partitions."""
-    events = []
-    for path in sorted(REPORT_DIR.glob("*_v2b_reports.jsonl")):
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return events
+        return False
+    try:
+        events = _read_report_events_raw(yyyymm)
+    except CorruptionError:
+        return False
+    return any(
+        e.get("event_type") == "REPORT_CREATED" and e.get("observation_key") == obs_key
+        for e in events
+    )
 
 
 # ── Observation reader ────────────────────────────────────────────────────────
 
 def read_completed_observation(session: str) -> dict:
     """
-    Find the COMPLETED observation for the given intended_execution_session.
+    Find the single COMPLETED observation for the given intended_execution_session.
 
     Returns the full OBSERVATION_CREATED event dict.
 
-    Raises ObservationNotFoundError if no observation exists for the session.
-    Raises ObservationIncompleteError if observation exists but is not COMPLETED.
+    Raises ObservationNotFoundError if no COMPLETED observation exists for the session.
+    Raises ObservationAmbiguousError if multiple COMPLETED observations exist (fail-closed).
     Raises ObservationIntegrityError if the event is missing or malformed.
 
-    Note: event_hash integrity is verified by v2b_ledger's _read_events_raw
-    during get_observation_events() — tampered events raise CorruptionError there.
+    event_hash integrity is verified by v2b_ledger's _read_events_raw during
+    get_observation_events() — tampered events raise CorruptionError there.
     """
     _assert_order_creation_blocked()
     observations = list_observations()
@@ -280,11 +483,19 @@ def read_completed_observation(session: str) -> dict:
         )
 
     completed = [o for o in matching if o.get("status") == "COMPLETED"]
+
     if not completed:
         statuses = [o.get("status") for o in matching]
         raise ObservationIncompleteError(
             f"V2B observation for session {session!r} is not COMPLETED. "
             f"Current status(es): {statuses}"
+        )
+
+    if len(completed) > 1:
+        keys = [o.get("observation_key", "?")[:16] + "…" for o in completed]
+        raise ObservationAmbiguousError(
+            f"{len(completed)} COMPLETED observations for session {session!r} — fail-closed. "
+            f"Keys: {keys}. Manual review required."
         )
 
     obs_summary = completed[0]
@@ -343,8 +554,9 @@ def build_report_content(obs_event: dict) -> dict:
     """
     Build structured report content from a COMPLETED OBSERVATION_CREATED event.
 
-    Returns a dict with all fields required for the shadow report:
-    strategy selections, agreement/disagreement, coverage, quality, and provenance.
+    agreement_tickers = explicit intersection of factor_only_selected and claude_shadow_selected.
+    Raises ValueError if Claude has selected tickers outside the factor selection
+    (design invariant from V2B.2 — should never happen in production).
     """
     selected_per_strategy = obs_event.get("selected_tickers_per_strategy", {})
     factor_only_selected = selected_per_strategy.get("Factor_Only_Core_V2", [])
@@ -353,8 +565,16 @@ def build_report_content(obs_event: dict) -> dict:
     fo_set = set(factor_only_selected)
     cs_set = set(claude_selected)
 
-    # Claude selection is always a subset of Factor-Only (V2B.2 design invariant)
-    agreement_tickers = sorted(cs_set)
+    # Validate Claude subset invariant — fail-closed if violated
+    claude_outside_factor = sorted(cs_set - fo_set)
+    if claude_outside_factor:
+        raise ValueError(
+            f"Claude selected tickers not in factor selection (design invariant violated): "
+            f"{claude_outside_factor}"
+        )
+
+    # Explicit intersection — correct even if cs_set were not a subset
+    agreement_tickers = sorted(fo_set & cs_set)
     factor_only_not_in_claude = sorted(fo_set - cs_set)
 
     # Factor coverage: mean across all ticker records with valid coverage
@@ -406,6 +626,7 @@ def create_report(obs_event: dict) -> ShadowReportResult:
     """
     Append a shadow report record for the given observation event.
 
+    Verifies under the exclusive monthly lock — does NOT trust the index alone.
     Idempotent: same report_key → IDEMPOTENT_MATCH (no write).
     Conflict: same observation_key, different report_key → ReportConflictError.
 
@@ -421,40 +642,19 @@ def create_report(obs_event: dict) -> ShadowReportResult:
     report_content = build_report_content(obs_event)
     report_key = make_report_key(report_content)
 
-    # Check index first (fast path)
-    idx = _load_report_idx()
-    if obs_key in idx:
-        existing = idx[obs_key]
-        if existing.get("report_key") == report_key:
-            return ShadowReportResult(
-                status="IDEMPOTENT_MATCH",
-                report_key=report_key,
-                observation_key=obs_key,
-                intended_execution_session=session,
-            )
-        else:
-            # Different report content for same observation — conflict
-            raise ReportConflictError(
-                f"Report conflict for observation {obs_key[:16]}…: "
-                f"existing report_key={existing.get('report_key', '?')[:16]}…, "
-                f"new report_key={report_key[:16]}…"
-            )
-
-    # Write under lock
     with _monthly_report_lock(yyyymm):
-        # Re-read under lock to avoid TOCTOU
-        events = _read_report_events(yyyymm)
-        existing_report = next(
+        # Under lock: verify directly from JSONL, don't trust index
+        events = _read_report_events_raw(yyyymm)
+        existing = next(
             (e for e in events
              if e.get("event_type") == "REPORT_CREATED"
              and e.get("observation_key") == obs_key),
             None,
         )
 
-        if existing_report is not None:
-            existing_key = existing_report.get("report_key")
+        if existing is not None:
+            existing_key = existing.get("report_key")
             if existing_key == report_key:
-                # Repair index if needed
                 _update_report_idx(obs_key, yyyymm, report_key)
                 return ShadowReportResult(
                     status="IDEMPOTENT_MATCH",
@@ -469,7 +669,8 @@ def create_report(obs_event: dict) -> ShadowReportResult:
                     f"new report_key={report_key[:16]}…"
                 )
 
-        # Build and append new REPORT_CREATED event
+        prev_hash = _last_event_hash_for_key(events, report_key)
+
         event_body: dict[str, Any] = {
             "event_type": "REPORT_CREATED",
             "report_version": REPORT_VERSION,
@@ -478,11 +679,9 @@ def create_report(obs_event: dict) -> ShadowReportResult:
             "observation_run_id": obs_run_id,
             "intended_execution_session": session,
             "generated_at": _now_iso(),
-            "order_creation_blocked": _ORDER_CREATION_BLOCKED,
             "report_content": report_content,
         }
-        event_body["event_hash"] = _make_event_hash(event_body)
-        _append_report_event(yyyymm, event_body)
+        _build_and_append_event(yyyymm, event_body, prev_hash)
 
     _update_report_idx(obs_key, yyyymm, report_key)
 
@@ -494,32 +693,192 @@ def create_report(obs_event: dict) -> ShadowReportResult:
     )
 
 
-def telegram_already_sent(report_key: str, yyyymm: str) -> bool:
-    """Return True if a TELEGRAM_SENT event already exists for this report_key."""
-    events = _read_report_events(yyyymm)
-    return any(
-        e.get("event_type") == "TELEGRAM_SENT" and e.get("report_key") == report_key
-        for e in events
-    )
+# ── Telegram outbox ───────────────────────────────────────────────────────────
+
+def _get_send_state(events_for_key: list[dict]) -> tuple[str | None, dict | None]:
+    """
+    Scan events for a report_key and return (current_send_state, claim_event).
+
+    States: None (not started) | "SEND_CONFIRMED" | "SEND_AMBIGUOUS" |
+            "SEND_FAILED" | "SEND_CLAIMED" (live or expired)
+    """
+    claim_ev: dict | None = None
+    for ev in events_for_key:
+        et = ev.get("event_type")
+        if et == "SEND_CONFIRMED":
+            return "SEND_CONFIRMED", None
+        if et == "SEND_AMBIGUOUS":
+            return "SEND_AMBIGUOUS", None
+        if et == "SEND_FAILED":
+            return "SEND_FAILED", None
+        if et == "SEND_CLAIMED":
+            claim_ev = ev  # last claim seen
+    return ("SEND_CLAIMED" if claim_ev else None), claim_ev
 
 
-def record_telegram_sent(report_key: str, obs_key: str, session: str) -> None:
-    """Append a TELEGRAM_SENT event (under lock) to record that the message was sent."""
-    yyyymm = session[:7] if len(session) >= 7 else "unknown"
+def _is_claim_expired(claim_ev: dict, _now: Callable[[], datetime] | None = None) -> bool:
+    """Return True if the SEND_CLAIMED event's lease has expired."""
+    expires_at = claim_ev.get("claim_expires_at", "")
+    if not expires_at:
+        return True
+    try:
+        exp_dt = datetime.fromisoformat(expires_at)
+        now_dt = _now() if _now is not None else datetime.now(timezone.utc)
+        return now_dt >= exp_dt
+    except Exception:
+        return True
+
+
+def _events_for_report_key(all_events: list[dict], report_key: str) -> list[dict]:
+    return [e for e in all_events if e.get("report_key") == report_key]
+
+
+def _claim_send_slot(
+    report_key: str,
+    obs_key: str,
+    session: str,
+    yyyymm: str,
+    _now: Callable[[], datetime] | None = None,
+) -> str | None:
+    """
+    Under monthly lock: check send state and write SEND_CLAIMED if safe.
+
+    Returns claim_id if the slot was claimed.
+    Returns None if already confirmed, ambiguous, or another process holds a live lease.
+
+    If an expired SEND_CLAIMED exists with no SEND_CONFIRMED, writes SEND_AMBIGUOUS
+    (crash recovery) and then proceeds to claim.
+
+    Delivery guarantee: at-least-once. Telegram API has no idempotency key.
+    """
     with _monthly_report_lock(yyyymm):
-        # Idempotent: skip if already recorded
-        if telegram_already_sent(report_key, yyyymm):
-            return
-        event_body: dict[str, Any] = {
-            "event_type": "TELEGRAM_SENT",
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        state, claim_ev = _get_send_state(key_events)
+
+        if state in ("SEND_CONFIRMED", "SEND_AMBIGUOUS", "SEND_FAILED"):
+            return None
+
+        if state == "SEND_CLAIMED" and claim_ev is not None:
+            if not _is_claim_expired(claim_ev, _now):
+                return None  # Another process holds a live lease — don't send
+            # Expired lease with no SEND_CONFIRMED → crash recovery → mark SEND_AMBIGUOUS
+            prev_hash = _last_event_hash_for_key(all_events, report_key)
+            ambiguous_body: dict[str, Any] = {
+                "event_type": "SEND_AMBIGUOUS",
+                "report_key": report_key,
+                "observation_key": obs_key,
+                "intended_execution_session": session,
+                "original_claim_id": claim_ev.get("claim_id"),
+                "reason": "claim_expired_with_no_confirmation — possible delivery",
+                "resolved_at": _now_iso(_now),
+            }
+            _build_and_append_event(yyyymm, ambiguous_body, prev_hash)
+            # After marking ambiguous, proceed to re-claim (at-least-once)
+
+        # Claim the slot
+        now_dt = _now() if _now is not None else datetime.now(timezone.utc)
+        expires_dt = now_dt + timedelta(seconds=SEND_CLAIM_TTL_SECONDS)
+        claim_id = str(uuid.uuid4())
+
+        all_events = _read_report_events_raw(yyyymm)
+        prev_hash = _last_event_hash_for_key(all_events, report_key)
+
+        claim_body: dict[str, Any] = {
+            "event_type": "SEND_CLAIMED",
             "report_key": report_key,
             "observation_key": obs_key,
             "intended_execution_session": session,
-            "sent_at": _now_iso(),
-            "order_creation_blocked": _ORDER_CREATION_BLOCKED,
+            "claim_id": claim_id,
+            "claimed_at": now_dt.isoformat(),
+            "claim_expires_at": expires_dt.isoformat(),
         }
-        event_body["event_hash"] = _make_event_hash(event_body)
-        _append_report_event(yyyymm, event_body)
+        _build_and_append_event(yyyymm, claim_body, prev_hash)
+
+    return claim_id
+
+
+def _confirm_send(
+    report_key: str,
+    claim_id: str,
+    obs_key: str,
+    session: str,
+    yyyymm: str,
+    _now: Callable[[], datetime] | None = None,
+) -> None:
+    """Under monthly lock: write SEND_CONFIRMED event."""
+    with _monthly_report_lock(yyyymm):
+        all_events = _read_report_events_raw(yyyymm)
+        prev_hash = _last_event_hash_for_key(all_events, report_key)
+        confirmed_body: dict[str, Any] = {
+            "event_type": "SEND_CONFIRMED",
+            "report_key": report_key,
+            "observation_key": obs_key,
+            "intended_execution_session": session,
+            "claim_id": claim_id,
+            "confirmed_at": _now_iso(_now),
+        }
+        _build_and_append_event(yyyymm, confirmed_body, prev_hash)
+
+
+def _mark_send_ambiguous(
+    report_key: str,
+    claim_id: str,
+    reason: str,
+    obs_key: str,
+    session: str,
+    yyyymm: str,
+    _now: Callable[[], datetime] | None = None,
+) -> None:
+    """Under monthly lock: write SEND_AMBIGUOUS event (exception during send)."""
+    with _monthly_report_lock(yyyymm):
+        all_events = _read_report_events_raw(yyyymm)
+        prev_hash = _last_event_hash_for_key(all_events, report_key)
+        body: dict[str, Any] = {
+            "event_type": "SEND_AMBIGUOUS",
+            "report_key": report_key,
+            "observation_key": obs_key,
+            "intended_execution_session": session,
+            "original_claim_id": claim_id,
+            "reason": reason,
+            "resolved_at": _now_iso(_now),
+        }
+        _build_and_append_event(yyyymm, body, prev_hash)
+
+
+def record_telegram_sent(report_key: str, obs_key: str, session: str) -> None:
+    """
+    Legacy compatibility shim: write a SEND_CONFIRMED event for an already-sent message.
+    Used by tests that inject send_telegram_fn directly.
+    """
+    yyyymm = session[:7] if len(session) >= 7 else "unknown"
+    with _monthly_report_lock(yyyymm):
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        state, _ = _get_send_state(key_events)
+        if state == "SEND_CONFIRMED":
+            return  # Already recorded
+        prev_hash = _last_event_hash_for_key(all_events, report_key)
+        body: dict[str, Any] = {
+            "event_type": "SEND_CONFIRMED",
+            "report_key": report_key,
+            "observation_key": obs_key,
+            "intended_execution_session": session,
+            "claim_id": "direct",
+            "confirmed_at": _now_iso(),
+        }
+        _build_and_append_event(yyyymm, body, prev_hash)
+
+
+def telegram_already_sent(report_key: str, yyyymm: str) -> bool:
+    """Return True if a SEND_CONFIRMED event already exists for this report_key."""
+    try:
+        events = _read_report_events_raw(yyyymm)
+    except CorruptionError:
+        return False  # Fail-open on corruption during this read — let send proceed
+    key_events = _events_for_report_key(events, report_key)
+    state, _ = _get_send_state(key_events)
+    return state == "SEND_CONFIRMED"
 
 
 # ── Telegram message formatter ────────────────────────────────────────────────
@@ -528,9 +887,8 @@ def format_telegram_message(report_content: dict) -> str:
     """
     Format a labeled V2 SHADOW Telegram message.
 
-    The message is clearly marked "V2 SHADOW — INGEN HANDLER" and must never
-    be presented as a buy recommendation or production signal.
-    V1 production messages are completely unaffected by this call.
+    Clearly marked "V2 SHADOW — INGEN HANDLER".
+    Never a buy recommendation. V1 production messages completely unaffected.
     """
     session = report_content.get("intended_execution_session", "ukjent")
     obs_key = report_content.get("observation_key", "")
@@ -615,31 +973,23 @@ def run_shadow_report(
     session: str,
     *,
     send_telegram_fn: Callable[[str], None] | None = None,
+    _now: Callable[[], datetime] | None = None,
 ) -> ShadowReportResult:
     """
-    Full shadow reporting flow for a given intended_execution_session:
+    Full shadow reporting flow for a given intended_execution_session.
 
-    1. Read the COMPLETED observation from the ledger.
-    2. Validate observation integrity (key derivation, session match).
-    3. Build report content.
-    4. Append report record (idempotent).
-    5. If send_telegram_fn is provided and not already sent: format and send.
-    6. Record telegram sent status (idempotent).
+    Delivery guarantee: at-least-once with SEND_AMBIGUOUS on uncertainty.
+    Telegram API has no idempotency key — exactly-once is not achievable.
 
-    On ObservationNotFoundError or ObservationIncompleteError: returns
-    ShadowReportResult(status="FAILED", error=...) — caller should send a
-    shadow-error Telegram if desired, but must not affect V1.
-
-    On ReportConflictError: returns ShadowReportResult(status="CONFLICT", ...)
-    — fail-closed, does not send Telegram.
-
+    Returns ShadowReportResult; never raises.
     V1 production messages are never modified or replaced.
     """
     _assert_order_creation_blocked()
 
     try:
         obs_event = read_completed_observation(session)
-    except (ObservationNotFoundError, ObservationIncompleteError) as exc:
+    except (ObservationNotFoundError, ObservationIncompleteError,
+            ObservationAmbiguousError) as exc:
         return ShadowReportResult(
             status="FAILED",
             intended_execution_session=session,
@@ -667,22 +1017,39 @@ def run_shadow_report(
         )
 
     if send_telegram_fn is None:
+        result.telegram_status = "NONE"
         return result
 
     yyyymm = session[:7] if len(session) >= 7 else "unknown"
     report_key = result.report_key
+    obs_key = result.observation_key or ""
 
-    if telegram_already_sent(report_key, yyyymm):
+    # Outbox protocol: claim → send → confirm/ambiguous
+    claim_id = _claim_send_slot(report_key, obs_key, session, yyyymm, _now)
+
+    if claim_id is None:
+        # Already confirmed, ambiguous, or another process holds a live lease
         result.telegram_skipped = True
+        result.telegram_status = "SKIPPED"
         return result
 
     try:
         report_content = build_report_content(obs_event)
         message = format_telegram_message(report_content)
         send_telegram_fn(message)
-        record_telegram_sent(report_key, result.observation_key or "", session)
+        # Send succeeded — confirm under lock
+        _confirm_send(report_key, claim_id, obs_key, session, yyyymm, _now)
         result.telegram_sent = True
+        result.telegram_status = "CONFIRMED"
     except Exception as exc:
-        result.detail = f"Telegram send failed: {exc}"
+        # Send raised — delivery uncertain (AMBIGUOUS)
+        try:
+            _mark_send_ambiguous(
+                report_key, claim_id, str(exc), obs_key, session, yyyymm, _now
+            )
+        except Exception:
+            pass
+        result.detail = f"Telegram send failed (AMBIGUOUS): {exc}"
+        result.telegram_status = "AMBIGUOUS"
 
     return result

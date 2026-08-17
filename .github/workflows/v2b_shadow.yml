@@ -1,8 +1,9 @@
-name: V2B Shadow Collection
+name: V2B Shadow Collection + Report
 
 # SHADOW ONLY — this workflow never creates orders, fills, or trades.
-# It records V2 factor scores to the V2B ledger for prospective OOS evaluation.
-# order_creation_blocked = True is a structural invariant.
+# It records V2 factor scores to the V2B ledger for prospective OOS evaluation
+# and sends a clearly labeled "V2 SHADOW — INGEN HANDLER" Telegram report.
+# order_creation_blocked = True is a structural invariant in both scripts.
 
 on:
   workflow_dispatch:
@@ -51,19 +52,29 @@ jobs:
         # Exchange calendar decides — no cron skipping needed.
         run: python v2b_daily_shadow.py
 
-      - name: Commit V2B ledger
+      - name: Run V2B shadow report
+        # Runs in the same job as the collector so both use the same wall-clock day
+        # (America/New_York) to derive intended_execution_session. Running them in the
+        # same job prevents a midnight edge case where a later separate workflow would
+        # compute a different session from the one the collector used.
+        # On FAILED (missing observation): exits 0 — V1 is never blocked by a V2 failure.
+        # On CONFLICT: exits 1 — manual review required.
+        run: python v2b_daily_report.py
+
+      - name: Commit V2B ledger and report
         if: always()
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
 
-          # Only stage V2B ledger files — never V1 state, fills, orders, or cache
+          # Only stage V2B ledger and report files — never V1 state, fills, orders, or cache
           git add data_v4/v2b_ledger/*.jsonl data_v4/v2b_ledger/v2b_idx.json 2>/dev/null || true
+          git add data_v4/v2b_reports/*.jsonl data_v4/v2b_reports/v2b_report_idx.json 2>/dev/null || true
 
           if ! git diff --cached --quiet; then
             git commit -m "V2B shadow: $(date -u +%Y-%m-%d)"
           else
-            echo "No V2B ledger changes to commit."
+            echo "No V2B ledger/report changes to commit."
             exit 0
           fi
 

@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import tempfile
+from unittest import mock
 
 import pytest
 
@@ -29,6 +30,23 @@ from modules.signal_validator import (
     compute_signal_content_hash,
     validate_signal,
 )
+
+# ---------------------------------------------------------------------------
+# Test isolation — prevent ANY test from reading the real V1 signal ledger
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _isolate_signal_records_from_v1_ledger(monkeypatch):
+    """
+    Prevent signal_validator tests from touching the real V1 signal ledger.
+
+    validate_signal() calls modules.ledger.get_signal_records_for_run when
+    _get_signal_records_fn is None. This fixture patches that import so tests
+    always see an empty record list — isolation from runtime data.
+    Tests that explicitly pass _get_signal_records_fn are unaffected.
+    """
+    with mock.patch("modules.ledger.get_signal_records_for_run", return_value=[]):
+        yield
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -165,6 +183,7 @@ def _validate(signal, session=SESSION):
         _get_publication_fn=_pub_success,
         _get_ledger_status_fn=_ledger_status_completed,
         _get_ledger_record_fn=_ledger_record_ok,
+        _get_signal_records_fn=lambda rid, ym: [],  # explicit isolation from V1 ledger
     )
 
 

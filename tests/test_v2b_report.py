@@ -625,7 +625,7 @@ class TestReportIdempotency:
         yyyymm = session[:7]
         jsonl_path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
         events = [json.loads(l) for l in jsonl_path.read_text().splitlines() if l.strip()]
-        sent_events = [e for e in events if e.get("event_type") == "TELEGRAM_SENT"]
+        sent_events = [e for e in events if e.get("event_type") == "SEND_CONFIRMED"]
         assert len(sent_events) == 1
         assert sent_events[0].get("order_creation_blocked") is True
 
@@ -682,7 +682,7 @@ class TestReportSafetyBoundary:
         yyyymm = session[:7]
         jsonl_path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
         events = [json.loads(l) for l in jsonl_path.read_text().splitlines() if l.strip()]
-        assert len(events) >= 2  # REPORT_CREATED + TELEGRAM_SENT
+        assert len(events) >= 2  # REPORT_CREATED + SEND_CLAIMED + SEND_CONFIRMED
         for ev in events:
             assert ev.get("order_creation_blocked") is True, (
                 f"order_creation_blocked must be True in all events, got: {ev}"
@@ -729,3 +729,441 @@ class TestReportSafetyBoundary:
         assert "INGEN HANDLER" in msg
         # Must not look like a production buy signal
         assert "🔔" not in msg or "V2 SHADOW" in msg  # If bell emoji, must be in shadow context
+
+
+# ===========================================================================
+# T51 TestReportLedgerHardening
+# ===========================================================================
+
+class TestReportLedgerHardening:
+    """Hash chain integrity, corruption detection, index reconstruction."""
+
+    def _make_valid_event(self, report_key: str, prev_hash: str | None = None) -> dict:
+        from modules.v2b_report import (
+            RECORD_VERSION, _ORDER_CREATION_BLOCKED, _make_event_hash
+        )
+        body = {
+            "event_type": "REPORT_CREATED",
+            "record_version": RECORD_VERSION,
+            "report_key": report_key,
+            "observation_key": "a" * 64,
+            "intended_execution_session": "2026-08-11",
+            "generated_at": "2026-08-11T21:30:00+00:00",
+            "previous_event_hash": prev_hash,
+            "order_creation_blocked": _ORDER_CREATION_BLOCKED,
+            "report_content": {},
+        }
+        body["event_hash"] = _make_event_hash(body)
+        return body
+
+    def _write_jsonl(self, path, lines):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(lines)
+
+    def test_mid_file_json_corruption_raises(self, tmp_report_dir):
+        from modules.v2b_report import CorruptionError, _read_report_events_raw
+        import json as _json
+        yyyymm = "2026-08"
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        rk = "b" * 64
+        good_ev = self._make_valid_event(rk)
+        self._write_jsonl(
+            path,
+            _json.dumps(good_ev, sort_keys=True) + "\n"
+            + "{corrupt json\n"
+            + _json.dumps(good_ev, sort_keys=True) + "\n",
+        )
+        with pytest.raises(CorruptionError, match="mid-file JSON"):
+            _read_report_events_raw(yyyymm)
+
+    def test_tampered_event_hash_raises(self, tmp_report_dir):
+        from modules.v2b_report import CorruptionError, _read_report_events_raw
+        import json as _json
+        yyyymm = "2026-08"
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        rk = "c" * 64
+        ev = self._make_valid_event(rk)
+        ev["event_hash"] = "0" * 64  # tampered
+        self._write_jsonl(path, _json.dumps(ev, sort_keys=True) + "\n")
+        with pytest.raises(CorruptionError, match="event_hash mismatch"):
+            _read_report_events_raw(yyyymm)
+
+    def test_broken_previous_event_hash_chain_raises(self, tmp_report_dir):
+        from modules.v2b_report import (
+            CorruptionError, _read_report_events_raw,
+            RECORD_VERSION, _ORDER_CREATION_BLOCKED, _make_event_hash,
+        )
+        import json as _json
+        yyyymm = "2026-08"
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        rk = "d" * 64
+        ev1 = self._make_valid_event(rk, prev_hash=None)
+        body2 = {
+            "event_type": "SEND_CONFIRMED",
+            "record_version": RECORD_VERSION,
+            "report_key": rk,
+            "claim_id": "x",
+            "confirmed_at": "2026-08-11T22:00:00+00:00",
+            "previous_event_hash": "0" * 64,  # wrong — should be ev1["event_hash"]
+            "order_creation_blocked": _ORDER_CREATION_BLOCKED,
+        }
+        body2["event_hash"] = _make_event_hash(body2)
+        self._write_jsonl(
+            path,
+            _json.dumps(ev1, sort_keys=True) + "\n"
+            + _json.dumps(body2, sort_keys=True) + "\n",
+        )
+        with pytest.raises(CorruptionError, match="hash chain broken"):
+            _read_report_events_raw(yyyymm)
+
+    def test_unsupported_record_version_raises(self, tmp_report_dir):
+        from modules.v2b_report import CorruptionError, _read_report_events_raw, _make_event_hash
+        import json as _json
+        yyyymm = "2026-08"
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        rk = "e" * 64
+        body = {
+            "event_type": "REPORT_CREATED",
+            "record_version": "99",
+            "report_key": rk,
+            "previous_event_hash": None,
+        }
+        body["event_hash"] = _make_event_hash(body)
+        self._write_jsonl(path, _json.dumps(body, sort_keys=True) + "\n")
+        with pytest.raises(CorruptionError, match="unsupported or missing record_version"):
+            _read_report_events_raw(yyyymm)
+
+    def test_missing_event_hash_field_raises(self, tmp_report_dir):
+        from modules.v2b_report import CorruptionError, _read_report_events_raw
+        import json as _json
+        yyyymm = "2026-08"
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        body = {
+            "event_type": "REPORT_CREATED",
+            "record_version": "2",
+            "report_key": "f" * 64,
+            "previous_event_hash": None,
+            # event_hash missing
+        }
+        self._write_jsonl(path, _json.dumps(body, sort_keys=True) + "\n")
+        with pytest.raises(CorruptionError, match="event_hash"):
+            _read_report_events_raw(yyyymm)
+
+    def test_corrupt_index_triggers_rebuild(self, tmp_report_dir):
+        """A corrupt index JSON is discarded and rebuilt from JSONL."""
+        from modules.v2b_report import _load_report_idx
+        # Write a valid JSONL with one REPORT_CREATED event
+        session, obs_event = _create_completed_observation()
+        create_report(obs_event)
+        # Now corrupt the index
+        idx_path = tmp_report_dir / "v2b_report_idx.json"
+        idx_path.write_text("NOT VALID JSON")
+        # Load should rebuild from JSONL
+        idx = _load_report_idx()
+        obs_key = obs_event["observation_key"]
+        assert obs_key in idx
+        assert idx[obs_key]["report_key"] is not None
+
+    def test_stale_index_entry_does_not_prevent_write(self, tmp_report_dir):
+        """Index pointing to non-existent file is healed during create_report."""
+        session, obs_event = _create_completed_observation()
+        # Manually corrupt the index to point to a wrong yyyymm
+        import json as _json
+        idx_path = tmp_report_dir / "v2b_report_idx.json"
+        idx_path.parent.mkdir(parents=True, exist_ok=True)
+        fake_entry = {obs_event["observation_key"]: {"yyyymm": "2020-01", "report_key": "x" * 64}}
+        idx_path.write_text(_json.dumps(fake_entry))
+        # create_report verifies under lock from JSONL — stale index is ignored
+        result = create_report(obs_event)
+        assert result.status == "CREATED"
+
+
+# ===========================================================================
+# T52 TestObservationAmbiguity
+# ===========================================================================
+
+class TestObservationAmbiguity:
+    """Multiple COMPLETED observations for the same session → fail-closed."""
+
+    def test_multiple_completed_observations_raise(self, monkeypatch):
+        """When list_observations returns two COMPLETED entries for the session → AMBIGUOUS."""
+        from modules.v2b_report import ObservationAmbiguousError
+        import modules.v2b_report as rep
+
+        # Create a real observation first
+        session, _ = _create_completed_observation()
+
+        # Mock list_observations to return two COMPLETED summaries for the same session
+        original_list = rep.list_observations
+        call_count = {"n": 0}
+
+        def _two_completed():
+            call_count["n"] += 1
+            obs = original_list()
+            matching = [o for o in obs if o.get("intended_execution_session") == session
+                        and o.get("status") == "COMPLETED"]
+            if matching and call_count["n"] == 1:
+                # Duplicate the entry with a different key
+                dup = dict(matching[0], observation_key="9" * 64)
+                return obs + [dup]
+            return obs
+
+        monkeypatch.setattr(rep, "list_observations", _two_completed)
+
+        with pytest.raises(ObservationAmbiguousError, match="2 COMPLETED"):
+            read_completed_observation(session)
+
+    def test_single_completed_observation_succeeds(self):
+        """Exactly one COMPLETED observation → no error."""
+        session, _ = _create_completed_observation()
+        obs = read_completed_observation(session)
+        assert obs["intended_execution_session"] == session
+
+    def test_run_shadow_report_fails_on_ambiguous(self, monkeypatch):
+        """run_shadow_report returns FAILED (not CONFLICT) when observation is ambiguous."""
+        import modules.v2b_report as rep
+        from modules.v2b_report import ObservationAmbiguousError
+
+        session, _ = _create_completed_observation()
+
+        def _raise_ambiguous(s):
+            raise ObservationAmbiguousError("multiple COMPLETED for test")
+
+        monkeypatch.setattr(rep, "read_completed_observation", _raise_ambiguous)
+        result = run_shadow_report(session)
+        assert result.status == "FAILED"
+        assert "multiple COMPLETED" in (result.error or "")
+
+
+# ===========================================================================
+# T53 TestClaudeSubsetInvariant
+# ===========================================================================
+
+class TestClaudeSubsetInvariant:
+    """agreement_tickers is explicit intersection; Claude outside factor set → error."""
+
+    def test_agreement_is_explicit_intersection(self):
+        """agreement_tickers = fo_set ∩ cs_set regardless of runner design invariant."""
+        session, obs_event = _create_completed_observation()
+        content = build_report_content(obs_event)
+        # Agreement must be subset of both factor_only and claude_shadow
+        fo_set = set(content["factor_only_selected"])
+        cs_set = set(content["claude_shadow_selected"])
+        agree_set = set(content["agreement_tickers"])
+        assert agree_set <= fo_set
+        assert agree_set <= cs_set
+
+    def test_no_claude_gives_empty_agreement(self):
+        """When claude_shadow_selected is empty, agreement_tickers is empty."""
+        session, obs_event = _create_completed_observation()
+        # In our test setup, no Claude outputs → empty claude_shadow_selected
+        content = build_report_content(obs_event)
+        assert content["claude_shadow_selected"] == []
+        assert content["agreement_tickers"] == []
+
+    def test_claude_outside_factor_raises(self):
+        """Claude ticker outside factor selection violates design invariant → ValueError."""
+        session, obs_event = _create_completed_observation()
+        # Inject a Claude ticker that's not in the factor selection
+        selected = obs_event.get("selected_tickers_per_strategy", {})
+        fo_tickers = selected.get("Factor_Only_Core_V2", ["AAPL", "MSFT"])
+        # Add a Claude ticker not in factor selection
+        tampered = dict(obs_event)
+        tampered["selected_tickers_per_strategy"] = dict(selected, **{
+            "Factor_Plus_Claude_Shadow_V2": fo_tickers[:1] + ["FAKE_OUTSIDE"],
+        })
+        with pytest.raises(ValueError, match="design invariant"):
+            build_report_content(tampered)
+
+    def test_factor_only_not_in_claude_accounts_for_removed(self):
+        """factor_only_not_in_claude is fo_set - cs_set."""
+        session, obs_event = _create_completed_observation()
+        content = build_report_content(obs_event)
+        fo_set = set(content["factor_only_selected"])
+        cs_set = set(content["claude_shadow_selected"])
+        expected_removed = sorted(fo_set - cs_set)
+        assert content["factor_only_not_in_claude"] == expected_removed
+
+
+# ===========================================================================
+# T54 TestTelegramOutbox
+# ===========================================================================
+
+class TestTelegramOutbox:
+    """Telegram outbox: SEND_CLAIMED → SEND_CONFIRMED / SEND_AMBIGUOUS."""
+
+    def test_send_confirmed_event_written_after_send(self, tmp_report_dir):
+        session, _ = _create_completed_observation()
+        run_shadow_report(session, send_telegram_fn=mock.Mock())
+        yyyymm = session[:7]
+        jsonl_path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        events = [json.loads(l) for l in jsonl_path.read_text().splitlines() if l.strip()]
+        event_types = [e.get("event_type") for e in events]
+        assert "SEND_CLAIMED" in event_types
+        assert "SEND_CONFIRMED" in event_types
+
+    def test_send_ambiguous_when_telegram_raises(self, tmp_report_dir):
+        """Exception from send_telegram_fn → SEND_AMBIGUOUS, not unhandled exception."""
+        session, _ = _create_completed_observation()
+        def _fail(msg):
+            raise RuntimeError("network error")
+        result = run_shadow_report(session, send_telegram_fn=_fail)
+        assert result.telegram_status == "AMBIGUOUS"
+        assert result.telegram_sent is False
+        yyyymm = session[:7]
+        events = [json.loads(l) for l in (tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl").read_text().splitlines() if l.strip()]
+        assert any(e.get("event_type") == "SEND_AMBIGUOUS" for e in events)
+
+    def test_parallel_sends_only_one_claims(self, tmp_report_dir, monkeypatch):
+        """Two concurrent _claim_send_slot calls for the same report_key: only one succeeds."""
+        from modules.v2b_report import _claim_send_slot, create_report
+        session, obs_event = _create_completed_observation()
+        result = create_report(obs_event)
+        rk = result.report_key
+        obs_key = obs_event["observation_key"]
+        yyyymm = session[:7]
+
+        # First claim succeeds
+        claim_id_1 = _claim_send_slot(rk, obs_key, session, yyyymm)
+        assert claim_id_1 is not None
+
+        # Second claim within TTL → None (lease held)
+        claim_id_2 = _claim_send_slot(rk, obs_key, session, yyyymm)
+        assert claim_id_2 is None
+
+    def test_expired_claim_without_confirmation_gets_ambiguous(self, tmp_report_dir):
+        """Expired SEND_CLAIMED with no SEND_CONFIRMED → SEND_AMBIGUOUS + new claim on retry."""
+        from modules.v2b_report import _claim_send_slot, create_report, SEND_CLAIM_TTL_SECONDS
+        session, obs_event = _create_completed_observation()
+        result = create_report(obs_event)
+        rk = result.report_key
+        obs_key = obs_event["observation_key"]
+        yyyymm = session[:7]
+
+        # Claim at T=0
+        from datetime import datetime, timezone, timedelta
+        t0 = datetime(2026, 8, 11, 21, 0, 0, tzinfo=timezone.utc)
+        _now_t0 = lambda: t0
+        claim_id = _claim_send_slot(rk, obs_key, session, yyyymm, _now_t0)
+        assert claim_id is not None
+
+        # At T=TTL+1: claim is expired, no SEND_CONFIRMED
+        t_expired = t0 + timedelta(seconds=SEND_CLAIM_TTL_SECONDS + 1)
+        _now_expired = lambda: t_expired
+        # Re-claim: should detect expired claim, write SEND_AMBIGUOUS, then claim again
+        claim_id_2 = _claim_send_slot(rk, obs_key, session, yyyymm, _now_expired)
+        assert claim_id_2 is not None  # new claim after marking ambiguous
+
+        events = [json.loads(l) for l in (tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl").read_text().splitlines() if l.strip()]
+        ambiguous = [e for e in events if e.get("event_type") == "SEND_AMBIGUOUS"]
+        assert len(ambiguous) == 1
+        assert ambiguous[0]["original_claim_id"] == claim_id
+
+    def test_confirmed_send_prevents_second_claim(self, tmp_report_dir):
+        """Once SEND_CONFIRMED exists, _claim_send_slot returns None."""
+        from modules.v2b_report import _claim_send_slot, _confirm_send, create_report
+        session, obs_event = _create_completed_observation()
+        result = create_report(obs_event)
+        rk = result.report_key
+        obs_key = obs_event["observation_key"]
+        yyyymm = session[:7]
+
+        claim_id = _claim_send_slot(rk, obs_key, session, yyyymm)
+        _confirm_send(rk, claim_id, obs_key, session, yyyymm)
+
+        # Second claim → None (already confirmed)
+        second_claim = _claim_send_slot(rk, obs_key, session, yyyymm)
+        assert second_claim is None
+
+    def test_run_returns_failed_when_telegram_raises_and_detail_set(self):
+        """AMBIGUOUS telegram → result.detail is set, status is CREATED (report was created)."""
+        session, _ = _create_completed_observation()
+        def _fail(msg):
+            raise RuntimeError("timeout")
+        result = run_shadow_report(session, send_telegram_fn=_fail)
+        assert result.status == "CREATED"
+        assert result.telegram_status == "AMBIGUOUS"
+        assert "timeout" in (result.detail or "")
+        assert result.telegram_sent is False
+
+    def test_all_report_events_have_record_version_2(self, tmp_report_dir):
+        """Every JSONL event written to the report ledger has record_version='2'."""
+        session, _ = _create_completed_observation()
+        run_shadow_report(session, send_telegram_fn=mock.Mock())
+        yyyymm = session[:7]
+        events = [json.loads(l) for l in (tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl").read_text().splitlines() if l.strip()]
+        for ev in events:
+            assert ev.get("record_version") == "2", f"Missing record_version in: {ev.get('event_type')}"
+
+    def test_all_report_events_have_previous_event_hash(self, tmp_report_dir):
+        """Every event has previous_event_hash (None for first per key, hex for rest)."""
+        session, _ = _create_completed_observation()
+        run_shadow_report(session, send_telegram_fn=mock.Mock())
+        yyyymm = session[:7]
+        events = [json.loads(l) for l in (tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl").read_text().splitlines() if l.strip()]
+        for ev in events:
+            assert "previous_event_hash" in ev, f"Missing previous_event_hash in: {ev.get('event_type')}"
+
+    def test_skipped_when_already_confirmed(self):
+        """Second run_shadow_report: already SEND_CONFIRMED → telegram_status=SKIPPED."""
+        session, _ = _create_completed_observation()
+        r1 = run_shadow_report(session, send_telegram_fn=mock.Mock())
+        r2 = run_shadow_report(session, send_telegram_fn=mock.Mock())
+        assert r1.telegram_status == "CONFIRMED"
+        assert r2.telegram_status == "SKIPPED"
+        assert r2.telegram_skipped is True
+
+    def test_workflow_exits_nonzero_on_conflict(self, monkeypatch):
+        """v2b_daily_report.py should exit 1 on CONFLICT — tested here via run_shadow_report status."""
+        # Validate CONFLICT status is correctly returned (exit code tested in entry script)
+        session, obs_event = _create_completed_observation()
+        run_shadow_report(session)  # First run — creates report
+
+        original_build = report.build_report_content
+        monkeypatch.setattr(
+            report, "build_report_content",
+            lambda event: dict(original_build(event), universe_count=99999),
+        )
+        result = run_shadow_report(session)
+        assert result.status == "CONFLICT"
+
+
+# ===========================================================================
+# T55 TestWorkflowIntegration
+# ===========================================================================
+
+class TestWorkflowIntegration:
+    """Workflow wiring and documentation correctness."""
+
+    def test_workflow_runs_reporter_after_collector(self):
+        from pathlib import Path
+        import re
+        wf = Path(".github/workflows/v2b_shadow.yml").read_text()
+        # Find position of shadow and report steps
+        pos_shadow = wf.find("v2b_daily_shadow.py")
+        pos_report = wf.find("v2b_daily_report.py")
+        assert pos_shadow > 0, "Workflow must reference v2b_daily_shadow.py"
+        assert pos_report > 0, "Workflow must reference v2b_daily_report.py"
+        assert pos_shadow < pos_report, (
+            "Shadow collector must appear before reporter in workflow"
+        )
+
+    def test_workflow_commits_report_files(self):
+        from pathlib import Path
+        wf = Path(".github/workflows/v2b_shadow.yml").read_text()
+        assert "v2b_reports" in wf, (
+            "Workflow commit step must include data_v4/v2b_reports/ files"
+        )
+
+    def test_workflow_stages_both_ledger_and_reports(self):
+        from pathlib import Path
+        wf = Path(".github/workflows/v2b_shadow.yml").read_text()
+        assert "v2b_ledger" in wf
+        assert "v2b_reports" in wf
+
+    def test_workflow_uses_same_concurrency_group(self):
+        from pathlib import Path
+        wf = Path(".github/workflows/v2b_shadow.yml").read_text()
+        # Ensure concurrency group is defined (prevents parallel runs)
+        assert "concurrency" in wf
+        assert "v2b-shadow" in wf
