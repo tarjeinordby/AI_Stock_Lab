@@ -1167,3 +1167,350 @@ class TestWorkflowIntegration:
         # Ensure concurrency group is defined (prevents parallel runs)
         assert "concurrency" in wf
         assert "v2b-shadow" in wf
+
+
+# ===========================================================================
+# T56 TestOutboxReducerBehavior
+# ===========================================================================
+
+class TestOutboxReducerBehavior:
+    """
+    Behavioral tests for the deterministic outbox reducer and claim lifecycle.
+
+    Tests assert observable outcomes (return values, raised exceptions, event counts)
+    rather than inspecting source code or internal structures.
+    All tests operate on real event chains written to the tmp report ledger.
+    """
+
+    # ── Helper: write raw events to bypass normal API ──────────────────────────
+
+    def _write_event_directly(self, yyyymm: str, body: dict, tmp_report_dir: Path) -> None:
+        """Append an event directly to the JSONL (bypassing the chain builder)."""
+        import hashlib
+        import json as _json
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ev = dict(body, record_version="2")
+        ev_hash = hashlib.sha256(_json.dumps(ev, sort_keys=True).encode()).hexdigest()
+        ev["event_hash"] = ev_hash
+        ev["previous_event_hash"] = "0" * 64
+        path.write_text(_json.dumps(ev) + "\n", encoding="utf-8")
+
+    # ── Old AMBIGUOUS for old claim → new CONFIRMED for new claim → CONFIRMED ─
+
+    def test_old_ambiguous_then_new_confirmed_gives_confirmed(self):
+        """
+        Sequence: SEND_CLAIMED(A) → SEND_AMBIGUOUS(A) → SEND_CLAIMED(B) → SEND_CONFIRMED(B)
+        Expected: telegram_already_sent() == True
+        Old SEND_AMBIGUOUS must NOT override the newer SEND_CONFIRMED.
+        """
+        session, _ = _create_completed_observation()
+        # Use no send_telegram_fn so the report is created without outbox activity
+        result = run_shadow_report(session)
+        assert result.status in ("CREATED", "IDEMPOTENT_MATCH")
+        report_key = result.report_key
+        obs_key = result.observation_key or ""
+        yyyymm = session[:7]
+
+        from modules.v2b_report import (
+            _claim_send_slot, _confirm_send, _mark_send_ambiguous
+        )
+
+        # First claim: A
+        t_past = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        claim_a = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t_past)
+        assert claim_a is not None, "Expected to claim slot A"
+
+        # Mark A ambiguous (simulating crash/exception during send)
+        _mark_send_ambiguous(report_key, claim_a, "simulated crash", obs_key,
+                             session, yyyymm, _now=lambda: t_past)
+
+        # Second claim: B (should succeed because A is now closed as AMBIGUOUS)
+        t_now = datetime(2026, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        claim_b = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t_now)
+        assert claim_b is not None, "Expected to claim slot B after A was AMBIGUOUS"
+        assert claim_b != claim_a
+
+        # Confirm B
+        _confirm_send(report_key, claim_b, obs_key, session, yyyymm,
+                      _now=lambda: t_now)
+
+        # SEND_CONFIRMED for B must dominate — old SEND_AMBIGUOUS for A must not override
+        assert telegram_already_sent(report_key, yyyymm) is True
+
+    def test_full_run_sees_confirmed_after_ambiguous_and_reclaim(self):
+        """
+        run_shadow_report after the reducer fix: second run after AMBIGUOUS+reclaim+confirm
+        must report SKIPPED (not send again).
+        """
+        session, _ = _create_completed_observation()
+        from modules.v2b_report import (
+            _claim_send_slot, _confirm_send, _mark_send_ambiguous
+        )
+        # No send_telegram_fn: creates report without outbox activity
+        result = run_shadow_report(session)
+        report_key = result.report_key
+        obs_key = result.observation_key or ""
+        yyyymm = session[:7]
+
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        claim_a = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t1)
+        assert claim_a is not None
+        _mark_send_ambiguous(report_key, claim_a, "crash", obs_key, session,
+                             yyyymm, _now=lambda: t1)
+
+        t2 = datetime(2026, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        claim_b = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t2)
+        assert claim_b is not None
+        _confirm_send(report_key, claim_b, obs_key, session, yyyymm,
+                      _now=lambda: t2)
+
+        # run_shadow_report should now see SEND_CONFIRMED and skip Telegram
+        r2 = run_shadow_report(session, send_telegram_fn=mock.Mock())
+        assert r2.telegram_status == "SKIPPED"
+        assert r2.telegram_skipped is True
+
+    # ── Stale claim_id rejected ────────────────────────────────────────────────
+
+    def test_stale_claim_id_rejected_by_confirm(self):
+        """
+        _confirm_send with a claim_id that is no longer the active (last) claim
+        must raise ValueError — the worker was superseded.
+        """
+        session, _ = _create_completed_observation()
+        result = run_shadow_report(session)  # No outbox activity
+        report_key = result.report_key
+        obs_key = result.observation_key or ""
+        yyyymm = session[:7]
+
+        from modules.v2b_report import (
+            _claim_send_slot, _confirm_send, _mark_send_ambiguous
+        )
+
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        claim_a = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t1)
+        assert claim_a is not None
+
+        # Close A as ambiguous, then open B
+        _mark_send_ambiguous(report_key, claim_a, "crash", obs_key, session,
+                             yyyymm, _now=lambda: t1)
+        t2 = datetime(2026, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        claim_b = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t2)
+        assert claim_b is not None
+
+        # Stale worker tries to confirm with claim_a (no longer active)
+        with pytest.raises(ValueError, match="not the active claim"):
+            _confirm_send(report_key, claim_a, obs_key, session, yyyymm,
+                          _now=lambda: t2)
+
+    # ── Idempotent confirmation ────────────────────────────────────────────────
+
+    def test_idempotent_confirm_same_claim_id_does_not_raise(self):
+        """
+        Confirming the same claim_id twice must be idempotent (no error, no duplicate event).
+        """
+        session, _ = _create_completed_observation()
+        result = run_shadow_report(session)  # No outbox activity
+        report_key = result.report_key
+        obs_key = result.observation_key or ""
+        yyyymm = session[:7]
+
+        from modules.v2b_report import _claim_send_slot, _confirm_send
+
+        claim_id = _claim_send_slot(report_key, obs_key, session, yyyymm)
+        assert claim_id is not None
+
+        _confirm_send(report_key, claim_id, obs_key, session, yyyymm)
+        # Second confirm with same claim_id must not raise
+        _confirm_send(report_key, claim_id, obs_key, session, yyyymm)
+
+        # State is still SEND_CONFIRMED
+        assert telegram_already_sent(report_key, yyyymm) is True
+
+    # ── SEND_CONFIRMED prevents new claim ─────────────────────────────────────
+
+    def test_confirmed_prevents_new_claim(self):
+        """
+        After SEND_CONFIRMED, _claim_send_slot must return None (do not re-send).
+        """
+        session, _ = _create_completed_observation()
+        result = run_shadow_report(session)  # No outbox activity
+        report_key = result.report_key
+        obs_key = result.observation_key or ""
+        yyyymm = session[:7]
+
+        from modules.v2b_report import _claim_send_slot, _confirm_send
+
+        claim_id = _claim_send_slot(report_key, obs_key, session, yyyymm)
+        assert claim_id is not None
+        _confirm_send(report_key, claim_id, obs_key, session, yyyymm)
+
+        second_claim = _claim_send_slot(report_key, obs_key, session, yyyymm)
+        assert second_claim is None, (
+            "SEND_CONFIRMED must block any new claim — no re-send allowed"
+        )
+
+    # ── Two concurrent reclaims produce at most one ───────────────────────────
+
+    def test_two_concurrent_reclaims_produce_at_most_one(self):
+        """
+        Simulate two workers both trying to claim simultaneously (via threads).
+        Only one should receive a claim_id; the second sees the first's lease.
+        """
+        import threading
+        session, _ = _create_completed_observation()
+        result = run_shadow_report(session)  # No outbox activity
+        report_key = result.report_key
+        obs_key = result.observation_key or ""
+        yyyymm = session[:7]
+
+        from modules.v2b_report import _claim_send_slot
+
+        claim_ids: list[str | None] = []
+        lock = threading.Lock()
+
+        def worker():
+            cid = _claim_send_slot(report_key, obs_key, session, yyyymm)
+            with lock:
+                claim_ids.append(cid)
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        non_null = [c for c in claim_ids if c is not None]
+        assert len(non_null) <= 1, (
+            f"At most one concurrent claim should succeed, got {non_null}"
+        )
+
+    # ── Corrupt ledger blocks sending ─────────────────────────────────────────
+
+    def test_corrupt_ledger_blocks_telegram_already_sent(self, tmp_report_dir):
+        """
+        A corrupt (unparseable) JSONL must cause telegram_already_sent to raise
+        CorruptionError — never return False — so no send attempt is made.
+        """
+        from modules.v2b_report import CorruptionError
+
+        yyyymm = "2026-08"
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a valid first line, then a corrupt line
+        path.write_text(
+            '{"event_type":"REPORT_CREATED","report_key":"rk","record_version":"2",'
+            '"event_hash":"' + "a" * 64 + '","previous_event_hash":"' + "0" * 64 + '"}\n'
+            'not valid json\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(CorruptionError):
+            telegram_already_sent("rk", yyyymm)
+
+    def test_corrupt_ledger_in_run_shadow_report_does_not_raise(self):
+        """
+        run_shadow_report must catch CorruptionError from _claim_send_slot and return
+        a result with telegram_status="FAILED" — never raise to the caller.
+        """
+        session, _ = _create_completed_observation()
+        # First run creates the report cleanly
+        r1 = run_shadow_report(session)
+        assert r1.status in ("CREATED", "IDEMPOTENT_MATCH")
+
+        from modules.v2b_report import CorruptionError as CE
+        # Patch _claim_send_slot to simulate a corrupt ledger
+        with mock.patch("modules.v2b_report._claim_send_slot",
+                        side_effect=CE("simulated corruption")):
+            r2 = run_shadow_report(session, send_telegram_fn=mock.Mock())
+
+        assert r2.telegram_status == "FAILED"
+        assert "corrupt" in (r2.detail or "").lower()
+
+    # ── Broken hash chain blocks sending ──────────────────────────────────────
+
+    def test_broken_chain_raises_corruption_on_send_attempt(self, tmp_report_dir):
+        """
+        A tampered event_hash in the report ledger must raise CorruptionError,
+        preventing telegram_already_sent from returning False.
+        """
+        from modules.v2b_report import CorruptionError
+        import json as _json
+
+        session, _ = _create_completed_observation()
+        r1 = run_shadow_report(session, send_telegram_fn=mock.Mock())
+        yyyymm = session[:7]
+        path = tmp_report_dir / f"{yyyymm}_v2b_reports.jsonl"
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        # Tamper the event_hash of the first event
+        first = _json.loads(lines[0])
+        first["event_hash"] = "tampered" + "0" * 57
+        lines[0] = _json.dumps(first)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(CorruptionError):
+            telegram_already_sent(r1.report_key, yyyymm)
+
+    # ── Old terminal does not override new claim ───────────────────────────────
+
+    def test_old_terminal_does_not_override_new_claim_state(self):
+        """
+        Sequence: SEND_CLAIMED(A) → SEND_AMBIGUOUS(A) → SEND_CLAIMED(B)
+        Expected: state is SEND_CLAIMED (B still open), not SEND_AMBIGUOUS.
+        """
+        from modules.v2b_report import (
+            _claim_send_slot, _mark_send_ambiguous, _reduce_send_state,
+            _events_for_report_key, _read_report_events_raw,
+        )
+        session, _ = _create_completed_observation()
+        r = run_shadow_report(session)  # No outbox activity
+        report_key = r.report_key
+        obs_key = r.observation_key or ""
+        yyyymm = session[:7]
+
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        claim_a = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t1)
+        assert claim_a is not None
+        _mark_send_ambiguous(report_key, claim_a, "crash", obs_key, session,
+                             yyyymm, _now=lambda: t1)
+
+        t2 = datetime(2026, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        claim_b = _claim_send_slot(report_key, obs_key, session, yyyymm,
+                                   _now=lambda: t2)
+        assert claim_b is not None
+
+        # Reducer must see SEND_CLAIMED for B, not SEND_AMBIGUOUS for A
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        state, active_ev = _reduce_send_state(key_events)
+        assert state == "SEND_CLAIMED", (
+            f"Expected SEND_CLAIMED for open claim B, got {state!r}"
+        )
+        assert active_ev is not None
+        assert active_ev.get("claim_id") == claim_b
+
+    # ── Full run does not re-send when already confirmed ──────────────────────
+
+    def test_full_run_does_not_resend_when_already_confirmed(self):
+        """
+        run_shadow_report called twice with a real send_telegram_fn mock:
+        first call sends once (CONFIRMED), second call skips (SKIPPED).
+        The mock must be called exactly once across both runs.
+        """
+        session, _ = _create_completed_observation()
+        mock_send = mock.Mock()
+
+        r1 = run_shadow_report(session, send_telegram_fn=mock_send)
+        assert r1.telegram_status == "CONFIRMED"
+        assert mock_send.call_count == 1
+
+        r2 = run_shadow_report(session, send_telegram_fn=mock_send)
+        assert r2.telegram_status == "SKIPPED"
+        assert mock_send.call_count == 1  # Must NOT have sent again

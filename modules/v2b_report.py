@@ -694,26 +694,119 @@ def create_report(obs_event: dict) -> ShadowReportResult:
 
 
 # ── Telegram outbox ───────────────────────────────────────────────────────────
+#
+# Delivery model: at-least-once with bounded duplicates.
+#
+# Lifecycle per report_key (append-only):
+#   REPORT_CREATED
+#   → SEND_CLAIMED(claim_id, expires_at)   — lease acquired before sending
+#   → SEND_CONFIRMED(claim_id)             — delivered; no further send needed
+#   → SEND_AMBIGUOUS(original_claim_id)    — outcome uncertain; retry allowed
+#   → SEND_FAILED(claim_id)               — reserved for definitive failure (unused)
+#
+# After SEND_AMBIGUOUS, a new SEND_CLAIMED may be written to retry.
+# Duplicate risk: if SEND_CONFIRMED was not written after a successful send
+# (crash between send() and the lock), the next retry sends again.
+# This is the at-least-once guarantee — no manual review required for AMBIGUOUS.
+#
+# Deterministic reducer (_reduce_send_state):
+#   - Processes ALL events in order.
+#   - The "active claim" is the LAST SEND_CLAIMED event.
+#   - The state is determined by whether the active claim has a terminal event.
+#   - An old SEND_AMBIGUOUS for a prior claim does NOT block a newer SEND_CONFIRMED.
+#   - Invalid chains (duplicate claim_id, unknown claim_id in terminal, contradictory
+#     terminals) raise CorruptionError — fail-closed.
 
-def _get_send_state(events_for_key: list[dict]) -> tuple[str | None, dict | None]:
+def _reduce_send_state(
+    events_for_key: list[dict],
+) -> tuple[str | None, dict | None]:
     """
-    Scan events for a report_key and return (current_send_state, claim_event).
+    Deterministic reducer: reconstruct current send state from the full event history
+    for a single report_key.
 
-    States: None (not started) | "SEND_CONFIRMED" | "SEND_AMBIGUOUS" |
-            "SEND_FAILED" | "SEND_CLAIMED" (live or expired)
+    Returns (status, active_claim_event) where status is:
+      None             — no send activity yet
+      "SEND_CLAIMED"   — active claim exists, no terminal event yet
+      "SEND_CONFIRMED" — active claim has been confirmed (message delivered)
+      "SEND_AMBIGUOUS" — active claim was marked ambiguous (retryable)
+      "SEND_FAILED"    — active claim definitively failed (reserved)
+
+    The active claim is the LAST SEND_CLAIMED event in the history.
+    A terminal event for an OLDER claim has NO effect on the state of a NEWER claim.
+
+    Raises CorruptionError on:
+      - SEND_CLAIMED with missing claim_id
+      - Duplicate claim_id across SEND_CLAIMED events
+      - SEND_CONFIRMED/SEND_FAILED with missing or unknown claim_id
+      - SEND_AMBIGUOUS with missing or unknown original_claim_id
+      - Contradictory terminals for the same claim_id (e.g. CONFIRMED then AMBIGUOUS)
     """
-    claim_ev: dict | None = None
+    claims: dict[str, dict] = {}          # claim_id → SEND_CLAIMED event
+    terminals: dict[str, str] = {}        # claim_id → terminal event type
+    last_claim_ev: dict | None = None
+
     for ev in events_for_key:
-        et = ev.get("event_type")
-        if et == "SEND_CONFIRMED":
-            return "SEND_CONFIRMED", None
-        if et == "SEND_AMBIGUOUS":
-            return "SEND_AMBIGUOUS", None
-        if et == "SEND_FAILED":
-            return "SEND_FAILED", None
+        et = ev.get("event_type", "")
+
         if et == "SEND_CLAIMED":
-            claim_ev = ev  # last claim seen
-    return ("SEND_CLAIMED" if claim_ev else None), claim_ev
+            cid = ev.get("claim_id")
+            if not cid:
+                raise CorruptionError(
+                    "v2b_report: SEND_CLAIMED event missing claim_id"
+                )
+            if cid in claims:
+                raise CorruptionError(
+                    f"v2b_report: duplicate claim_id {cid!r} in SEND_CLAIMED events"
+                )
+            claims[cid] = ev
+            last_claim_ev = ev
+
+        elif et in ("SEND_CONFIRMED", "SEND_FAILED"):
+            cid = ev.get("claim_id")
+            if not cid:
+                raise CorruptionError(
+                    f"v2b_report: {et} event missing claim_id"
+                )
+            if cid not in claims:
+                raise CorruptionError(
+                    f"v2b_report: {et} references unknown claim_id {cid!r} — "
+                    "no matching SEND_CLAIMED found"
+                )
+            existing = terminals.get(cid)
+            if existing is not None and existing != et:
+                raise CorruptionError(
+                    f"v2b_report: contradictory terminals for claim_id {cid!r}: "
+                    f"{existing!r} then {et!r}"
+                )
+            terminals[cid] = et  # idempotent for same type
+
+        elif et == "SEND_AMBIGUOUS":
+            cid = ev.get("original_claim_id")
+            if not cid:
+                raise CorruptionError(
+                    "v2b_report: SEND_AMBIGUOUS event missing original_claim_id"
+                )
+            if cid not in claims:
+                raise CorruptionError(
+                    f"v2b_report: SEND_AMBIGUOUS references unknown claim_id {cid!r} — "
+                    "no matching SEND_CLAIMED found"
+                )
+            existing = terminals.get(cid)
+            if existing is not None and existing != "SEND_AMBIGUOUS":
+                raise CorruptionError(
+                    f"v2b_report: contradictory terminals for claim_id {cid!r}: "
+                    f"{existing!r} then SEND_AMBIGUOUS"
+                )
+            terminals[cid] = "SEND_AMBIGUOUS"
+
+    if last_claim_ev is None:
+        return None, None
+
+    active_cid = last_claim_ev.get("claim_id")
+    terminal = terminals.get(active_cid)
+    if terminal is not None:
+        return terminal, last_claim_ev
+    return "SEND_CLAIMED", last_claim_ev
 
 
 def _is_claim_expired(claim_ev: dict, _now: Callable[[], datetime] | None = None) -> bool:
@@ -743,47 +836,53 @@ def _claim_send_slot(
     """
     Under monthly lock: check send state and write SEND_CLAIMED if safe.
 
-    Returns claim_id if the slot was claimed.
-    Returns None if already confirmed, ambiguous, or another process holds a live lease.
+    Returns new claim_id when the slot was successfully claimed.
+    Returns None when:
+      - state is SEND_CONFIRMED (already sent — do not retry)
+      - state is SEND_CLAIMED with a live (non-expired) lease (parallel run active)
 
-    If an expired SEND_CLAIMED exists with no SEND_CONFIRMED, writes SEND_AMBIGUOUS
-    (crash recovery) and then proceeds to claim.
+    Retryable states that produce a new claim_id:
+      - No prior activity (None)
+      - SEND_AMBIGUOUS (prior attempt uncertain — at-least-once retry)
+      - SEND_FAILED    (prior attempt failed — retry)
+      - SEND_CLAIMED but lease expired → write SEND_AMBIGUOUS for expired claim,
+        then write new SEND_CLAIMED
 
-    Delivery guarantee: at-least-once. Telegram API has no idempotency key.
+    Raises CorruptionError if the event chain is structurally invalid.
     """
     with _monthly_report_lock(yyyymm):
         all_events = _read_report_events_raw(yyyymm)
         key_events = _events_for_report_key(all_events, report_key)
-        state, claim_ev = _get_send_state(key_events)
+        state, active_claim_ev = _reduce_send_state(key_events)
 
-        if state in ("SEND_CONFIRMED", "SEND_AMBIGUOUS", "SEND_FAILED"):
-            return None
+        if state == "SEND_CONFIRMED":
+            return None  # Already delivered — do not re-send
 
-        if state == "SEND_CLAIMED" and claim_ev is not None:
-            if not _is_claim_expired(claim_ev, _now):
-                return None  # Another process holds a live lease — don't send
-            # Expired lease with no SEND_CONFIRMED → crash recovery → mark SEND_AMBIGUOUS
+        if state == "SEND_CLAIMED" and active_claim_ev is not None:
+            if not _is_claim_expired(active_claim_ev, _now):
+                return None  # Another process holds a live lease — do not send
+            # Expired lease: close it as AMBIGUOUS, then proceed to new claim
+            expired_cid = active_claim_ev.get("claim_id")
             prev_hash = _last_event_hash_for_key(all_events, report_key)
             ambiguous_body: dict[str, Any] = {
                 "event_type": "SEND_AMBIGUOUS",
                 "report_key": report_key,
                 "observation_key": obs_key,
                 "intended_execution_session": session,
-                "original_claim_id": claim_ev.get("claim_id"),
+                "original_claim_id": expired_cid,
                 "reason": "claim_expired_with_no_confirmation — possible delivery",
                 "resolved_at": _now_iso(_now),
             }
             _build_and_append_event(yyyymm, ambiguous_body, prev_hash)
-            # After marking ambiguous, proceed to re-claim (at-least-once)
+            # Re-read to get updated chain for the new SEND_CLAIMED
+            all_events = _read_report_events_raw(yyyymm)
 
-        # Claim the slot
+        # state is None, SEND_AMBIGUOUS, SEND_FAILED, or just closed expired claim
+        # All allow a new SEND_CLAIMED
         now_dt = _now() if _now is not None else datetime.now(timezone.utc)
         expires_dt = now_dt + timedelta(seconds=SEND_CLAIM_TTL_SECONDS)
         claim_id = str(uuid.uuid4())
-
-        all_events = _read_report_events_raw(yyyymm)
         prev_hash = _last_event_hash_for_key(all_events, report_key)
-
         claim_body: dict[str, Any] = {
             "event_type": "SEND_CLAIMED",
             "report_key": report_key,
@@ -806,9 +905,42 @@ def _confirm_send(
     yyyymm: str,
     _now: Callable[[], datetime] | None = None,
 ) -> None:
-    """Under monthly lock: write SEND_CONFIRMED event."""
+    """
+    Under monthly lock: write SEND_CONFIRMED for the given claim_id.
+
+    Validates:
+      - claim_id must be the active (last) claim in the event history
+      - active claim must not already have a terminal event
+    Idempotent: if SEND_CONFIRMED already exists for this claim_id, return without writing.
+    Rejects stale workers: raises ValueError if claim_id was superseded by a newer claim.
+    Raises CorruptionError if the chain is structurally invalid.
+    """
     with _monthly_report_lock(yyyymm):
         all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        state, active_claim_ev = _reduce_send_state(key_events)
+
+        active_cid = active_claim_ev.get("claim_id") if active_claim_ev else None
+
+        # Idempotent: same claim_id already confirmed
+        if state == "SEND_CONFIRMED" and active_cid == claim_id:
+            return
+
+        # Stale or foreign claim_id — this worker was superseded
+        if active_cid != claim_id:
+            raise ValueError(
+                f"_confirm_send: claim_id {claim_id!r} is not the active claim "
+                f"(active: {active_cid!r}, state: {state!r}) — "
+                "stale or superseded worker rejected"
+            )
+
+        # Active claim already has a non-CLAIMED terminal — contradictory confirmation
+        if state not in ("SEND_CLAIMED",):
+            raise CorruptionError(
+                f"_confirm_send: active claim {claim_id!r} already has terminal "
+                f"state {state!r} — cannot confirm"
+            )
+
         prev_hash = _last_event_hash_for_key(all_events, report_key)
         confirmed_body: dict[str, Any] = {
             "event_type": "SEND_CONFIRMED",
@@ -848,36 +980,27 @@ def _mark_send_ambiguous(
 
 def record_telegram_sent(report_key: str, obs_key: str, session: str) -> None:
     """
-    Legacy compatibility shim: write a SEND_CONFIRMED event for an already-sent message.
-    Used by tests that inject send_telegram_fn directly.
+    Compatibility shim: claim + confirm for an already-sent message (used by tests).
+    Uses the full outbox protocol so the event chain remains valid.
     """
     yyyymm = session[:7] if len(session) >= 7 else "unknown"
-    with _monthly_report_lock(yyyymm):
-        all_events = _read_report_events_raw(yyyymm)
-        key_events = _events_for_report_key(all_events, report_key)
-        state, _ = _get_send_state(key_events)
-        if state == "SEND_CONFIRMED":
-            return  # Already recorded
-        prev_hash = _last_event_hash_for_key(all_events, report_key)
-        body: dict[str, Any] = {
-            "event_type": "SEND_CONFIRMED",
-            "report_key": report_key,
-            "observation_key": obs_key,
-            "intended_execution_session": session,
-            "claim_id": "direct",
-            "confirmed_at": _now_iso(),
-        }
-        _build_and_append_event(yyyymm, body, prev_hash)
+    claim_id = _claim_send_slot(report_key, obs_key, session, yyyymm)
+    if claim_id is not None:
+        _confirm_send(report_key, claim_id, obs_key, session, yyyymm)
 
 
 def telegram_already_sent(report_key: str, yyyymm: str) -> bool:
-    """Return True if a SEND_CONFIRMED event already exists for this report_key."""
-    try:
-        events = _read_report_events_raw(yyyymm)
-    except CorruptionError:
-        return False  # Fail-open on corruption during this read — let send proceed
+    """
+    Return True if SEND_CONFIRMED exists for this report_key.
+
+    Raises CorruptionError if the event chain is invalid.
+    NEVER returns False on corruption — a corrupt ledger must not allow
+    a send attempt that could produce a duplicate message.
+    """
+    # No try/except: CorruptionError must propagate to prevent duplicate send
+    events = _read_report_events_raw(yyyymm)
     key_events = _events_for_report_key(events, report_key)
-    state, _ = _get_send_state(key_events)
+    state, _ = _reduce_send_state(key_events)
     return state == "SEND_CONFIRMED"
 
 
@@ -1025,10 +1148,16 @@ def run_shadow_report(
     obs_key = result.observation_key or ""
 
     # Outbox protocol: claim → send → confirm/ambiguous
-    claim_id = _claim_send_slot(report_key, obs_key, session, yyyymm, _now)
+    try:
+        claim_id = _claim_send_slot(report_key, obs_key, session, yyyymm, _now)
+    except CorruptionError as exc:
+        # Corrupt ledger: fail-closed — do not attempt send
+        result.detail = f"Corrupt report ledger — Telegram blocked: {exc}"
+        result.telegram_status = "FAILED"
+        return result
 
     if claim_id is None:
-        # Already confirmed, ambiguous, or another process holds a live lease
+        # Already confirmed or another process holds a live lease
         result.telegram_skipped = True
         result.telegram_status = "SKIPPED"
         return result
