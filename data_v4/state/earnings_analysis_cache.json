@@ -64,6 +64,19 @@
     "reasoning": "Strong 4-quarter beat streak (avg +14%) supports EPS beat, but declining sequential revenue signals growth deceleration\u2014guidance is the key risk, warranting caution.",
     "risk_level": "high"
   },
+  "MDB": {
+    "beat_probability": 0.85,
+    "expected_reaction": "positive if beat continues, but muted given revenue decline concerns",
+    "fetched_at": "2026-08-18T21:20:35.478759+00:00",
+    "key_metrics_to_watch": [
+      "revenue growth trajectory",
+      "Atlas cloud consumption/growth",
+      "operating margin & guidance"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-quarter beat streak (avg +35%) favors EPS beat, but declining sequential revenue ($0.69B\u2192$0.59B) signals top-line weakness. Consensus $7.34 EPS looks disconnected from history.",
+    "risk_level": "high"
+  },
   "OKTA": {
     "beat_probability": 0.82,
     "expected_reaction": "Modestly positive if EPS beats and guidance holds, but muted upside given declining revenue trend; downside risk if guid",
@@ -75,6 +88,19 @@
     ],
     "position_recommendation": "hold",
     "reasoning": "Strong 4/4 EPS beat streak (avg +7%) supports beat odds, but sequential revenue decline caps upside. Guidance is the key swing factor.",
+    "risk_level": "medium"
+  },
+  "PANW": {
+    "beat_probability": 0.82,
+    "expected_reaction": "Modest positive; consistent beats likely priced in, so magnitude and guidance drive the move more than the headline",
+    "fetched_at": "2026-08-18T21:20:31.481409+00:00",
+    "key_metrics_to_watch": [
+      "Next-Gen Security ARR & NRR",
+      "Remaining Performance Obligations (RPO)",
+      "FY guidance & operating margin"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "4/4 recent beats avg +7% supports high beat odds, but rich valuation caps upside; guidance risk warrants neutral stance",
     "risk_level": "medium"
   },
   "ROKU": {
