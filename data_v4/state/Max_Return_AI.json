@@ -1,22 +1,34 @@
 {
-  "cash": 2939.381714578271,
+  "cash": 694.013567641106,
   "cooldowns": {
     "ARM": "2026-08-06"
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10123.936300588417,
-  "last_execution_date": "2026-08-17",
+  "last_execution_date": "2026-08-18",
   "portfolio_id": "c11f0a84-11f6-417b-bc1e-5b4b78bf863e",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
+    "ABNB": {
+      "avg_price": 180.49000549316406,
+      "buy_date": "2026-08-18",
+      "buy_score": 71.5,
+      "highest_price": 180.49000549316406,
+      "is_partial": true,
+      "last_price": 180.49000549316406,
+      "market_value": 2243.12502191525,
+      "pyramid_min_price": 184.0998,
+      "pyramid_remaining_value": 1495.42,
+      "shares": 12.427973592145559
+    },
     "OKTA": {
       "avg_price": 145.91302940404125,
       "buy_date": "2026-08-06",
       "buy_score": 71.5,
       "highest_price": 156.38999938964844,
       "is_partial": false,
-      "last_price": 148.6999969482422,
-      "market_value": 2047.8289634416276,
+      "last_price": 143.75999450683594,
+      "market_value": 1979.797488750305,
       "pyramid_min_price": 147.2319,
       "pyramid_remaining_value": 0.0,
       "shares": 13.771546775178567
@@ -27,8 +39,8 @@
       "buy_score": 70.9,
       "highest_price": 157.11000061035156,
       "is_partial": false,
-      "last_price": 157.11000061035156,
-      "market_value": 4128.092479660001,
+      "last_price": 157.0,
+      "market_value": 4125.202194569388,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 26.27517321381776
@@ -39,8 +51,8 @@
       "buy_score": 88.0,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 429.9700012207031,
-      "market_value": 953.8354943222396,
+      "last_price": 417.0,
+      "market_value": 925.0631439475927,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 683.59,
       "shares": 2.2183768439990232
@@ -48,7 +60,7 @@
   },
   "strategy": "Max_Return_AI",
   "weekly_meta": {
-    "buys_this_week": 0,
+    "buys_this_week": 1,
     "iso_week": "2026-W34"
   }
 }
