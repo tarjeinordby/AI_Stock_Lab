@@ -1,12 +1,14 @@
 {
   "ABNB": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-19T21:21:28.555515+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-08-20T21:24:01.261791+00:00",
+    "key_factors": [
+      "14 strong buys vs balanced hold/sell ratings show conviction",
+      "Recent earnings misses (3 of 4Q) offset by latest beat"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Positive momentum near highs; mixed fundamentals warrant caution"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -21,7 +23,7 @@
   },
   "ARM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-19T21:21:48.120295+00:00",
+    "fetched_at": "2026-08-20T21:24:19.587608+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -29,26 +31,24 @@
     "summary": "Ingen data"
   },
   "ASML": {
-    "fetched_at": "2026-08-19T21:21:42.566778+00:00",
-    "key_factors": [
-      "Overwhelming bullish consensus: 117 buy vs 4 sell ratings",
-      "Solid earnings track record: 3 of 4 beats, demonstrating execution"
-    ],
-    "raw_score": 0.68,
-    "score": 0.84,
-    "source": "claude",
-    "summary": "Strong analyst support and earnings consistency offset near-term weakness"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-08-20T21:24:15.966926+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "BILL": {
-    "fetched_at": "2026-08-19T21:21:50.828710+00:00",
+    "fetched_at": "2026-08-20T21:24:22.608112+00:00",
     "key_factors": [
-      "Consistent earnings beats (4 straight quarters)",
-      "Bullish analyst consensus (56% buy/strongbuy vs 27% hold)"
+      "Perfect earnings beat streak (4/4) demonstrates execution",
+      "42 buy/strongBuy vs 27 hold ratings show analyst confidence"
     ],
     "raw_score": 0.62,
     "score": 0.81,
     "source": "claude",
-    "summary": "Strong fundamentals with execution risk; solid buy for 6-12mo horizon"
+    "summary": "Strong fundamentals offset by growth deceleration concerns and valuation pullbac"
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
@@ -72,7 +72,7 @@
   },
   "DDOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-19T21:21:39.752908+00:00",
+    "fetched_at": "2026-08-20T21:24:13.172052+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -151,7 +151,7 @@
   },
   "OKTA": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-19T21:21:31.183727+00:00",
+    "fetched_at": "2026-08-20T21:24:04.221372+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -159,13 +159,15 @@
     "summary": "Ingen data"
   },
   "PANW": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-19T21:21:45.385548+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-08-20T21:24:25.293222+00:00",
+    "key_factors": [
+      "Exceptional earnings track record (4/4 beats)",
+      "Overwhelming bullish analyst consensus (133/164 = 81%)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals & analyst support offset near-term weakness"
   },
   "PLTR": {
     "error": "Ugyldig JSON-respons",
@@ -187,7 +189,7 @@
   },
   "ROKU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-19T21:21:33.987613+00:00",
+    "fetched_at": "2026-08-20T21:24:07.188172+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -206,15 +208,13 @@
     "summary": "Strong analyst support offsets execution concerns; recovery potential attractive"
   },
   "SHOP": {
-    "fetched_at": "2026-08-19T21:21:53.540258+00:00",
-    "key_factors": [
-      "Strong analyst consensus: 116 buy/strongBuy vs 38 hold/sell",
-      "3 of 4 recent earnings beats shows execution capability"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Positive momentum despite valuation concerns. Strong analyst support with solid "
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-08-20T21:24:28.279236+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "SMCI": {
     "fetched_at": "2026-06-11T12:29:40.190016+00:00",
@@ -265,13 +265,15 @@
     "summary": "TOST missed Q1 EPS estimates and faces multiple analyst downgrades amid competitive pressure and hardware cost concerns, despite raising full-year guidance and strong recurring revenue growth."
   },
   "TSM": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-19T21:21:37.085650+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-08-20T21:24:10.307690+00:00",
+    "key_factors": [
+      "52/57 analysts bullish (91%); consistent earnings beats",
+      "Waymo chip risk overstated: demand exceeds TSM capacity"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals offset near-term chip customization headwinds"
   },
   "U": {
     "fetched_at": "2026-06-20T08:34:35.362173+00:00",

@@ -40,15 +40,15 @@
   },
   "CRWD": {
     "beat_probability": 0.75,
-    "expected_reaction": "Moderately positive if beat, but muted upside given elevated valuation; downside risk high on any guidance miss or ARR d",
-    "fetched_at": "2026-08-19T21:22:16.950927+00:00",
+    "expected_reaction": "muted-to-positive if beat holds, but declining revenue trend caps upside; sharp drop risk on any guidance miss",
+    "fetched_at": "2026-08-20T21:24:47.479439+00:00",
     "key_metrics_to_watch": [
-      "Net new ARR / ARR growth rate",
-      "Subscription gross margin & net retention (DBNR)",
-      "Forward guidance vs consensus"
+      "ARR/net new ARR growth",
+      "revenue guidance & sequential trend reversal",
+      "operating margin & FCF"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Consistent beat history (4/4) supports high beat odds, but declining revenue trend and quarterly EPS figures conflict with $1.57 annual consensus\u2014data ambiguity warrants caution.",
+    "reasoning": "Consistent EPS beats (4/4) support beat odds, but 4 straight quarters of declining revenue signals deceleration; guidance is the key swing factor.",
     "risk_level": "high"
   },
   "DDOG": {
@@ -66,41 +66,41 @@
   },
   "MDB": {
     "beat_probability": 0.82,
-    "expected_reaction": "positive if beat sustained, but muted vs history as surprise magnitude compresses; watch revenue deceleration",
-    "fetched_at": "2026-08-19T21:22:11.685825+00:00",
+    "expected_reaction": "Positive if beat continues, but decelerating revenue and shrinking surprise magnitude cap upside; volatile move likely",
+    "fetched_at": "2026-08-20T21:24:51.971734+00:00",
     "key_metrics_to_watch": [
       "Atlas cloud revenue growth",
-      "net revenue retention rate",
-      "operating margin/guidance"
+      "net revenue retention / customer adds",
+      "forward guidance vs $7.34 FY EPS consensus"
     ],
-    "position_recommendation": "add_before",
-    "reasoning": "Consistent 4-qtr beat streak favors upside, but declining sequential revenue ($0.69B->$0.59B) signals slowing growth; sizing modestly.",
-    "risk_level": "medium"
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-qtr beat streak but surprises shrinking (52%->11%) and revenue declining QoQ. Beat likely, guidance is the real risk.",
+    "risk_level": "high"
   },
   "OKTA": {
     "beat_probability": 0.82,
-    "expected_reaction": "Positive if beat sustained, but muted upside due to declining revenue trend; guidance is key swing factor",
-    "fetched_at": "2026-08-19T21:21:58.715789+00:00",
+    "expected_reaction": "Modest positive if EPS beats, but muted upside given declining revenue trend; guidance will dominate reaction",
+    "fetched_at": "2026-08-20T21:24:32.864894+00:00",
     "key_metrics_to_watch": [
-      "Revenue guidance/RPO growth",
-      "Net retention rate (NRR)",
+      "Revenue growth & guidance",
+      "Net retention rate (NRR/DBNR)",
       "Operating margin & FCF"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-quarter beat streak (avg +7.2%) supports EPS beat, but sequential revenue decline signals demand softness; hold pending guidance clarity",
+    "reasoning": "Strong 4-qtr beat streak (avg +7%) favors EPS beat, but sequential revenue decline signals demand softness; guidance risk caps upside.",
     "risk_level": "medium"
   },
   "PANW": {
     "beat_probability": 0.82,
-    "expected_reaction": "Moderately positive; consistent beats likely priced in, so magnitude of guidance and NGS/ARR momentum drive the move. Hi",
-    "fetched_at": "2026-08-19T21:22:02.834936+00:00",
+    "expected_reaction": "Positive if beat + guidance raise; muted move likely priced-in given consistent beats, watch NGS ARR",
+    "fetched_at": "2026-08-20T21:24:42.695275+00:00",
     "key_metrics_to_watch": [
       "Next-Gen Security ARR growth",
       "Remaining Performance Obligation (RPO)",
-      "FY guidance & operating margin"
+      "FY guidance / operating margin"
     ],
     "position_recommendation": "hold",
-    "reasoning": "4-for-4 beats averaging ~7% surprise favors a beat, but rich valuation and priced-in expectations cap upside. Hold into print.",
+    "reasoning": "4/4 recent beats avg +7% suggests high beat odds, but strong track record likely priced in; guidance is key swing factor.",
     "risk_level": "medium"
   },
   "ROKU": {
@@ -130,16 +130,16 @@
     "risk_level": "high"
   },
   "SNOW": {
-    "beat_probability": 0.82,
-    "expected_reaction": "positive if beat sustained, but muted upside given rich valuation; watch guidance more than EPS",
-    "fetched_at": "2026-08-19T21:22:21.418885+00:00",
+    "beat_probability": 0.8,
+    "expected_reaction": "Positive if beat continues, but muted given valuation; watch for volatility given data ambiguity in provided figures",
+    "fetched_at": "2026-08-20T21:24:58.891184+00:00",
     "key_metrics_to_watch": [
-      "product revenue growth & NRR (net revenue retention)",
-      "remaining performance obligations (RPO)",
-      "operating margin & FY guidance raise"
+      "Product revenue growth & net revenue retention (NRR)",
+      "Remaining performance obligations (RPO)",
+      "Non-GAAP operating margin & FCF margin"
     ],
     "position_recommendation": "hold",
-    "reasoning": "4/4 recent beats avg +21% supports EPS beat, but flagged revenue decline conflicts with SNOW's growth story\u2014verify data; consensus $2.70 likely annual not quarterly.",
+    "reasoning": "Strong 4-qtr beat streak (avg +21%) supports beat odds, BUT revenue trend shown is declining/inconsistent with SNOW's growth & EPS consensus $2.70 conflicts with quarterly actuals ~$0.35. Verify data.",
     "risk_level": "high"
   },
   "U": {
