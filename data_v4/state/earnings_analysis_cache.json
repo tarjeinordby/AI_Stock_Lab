@@ -154,5 +154,18 @@
     "position_recommendation": "reduce_before",
     "reasoning": "Beat streak broke last quarter (-4.2%) and revenue in steady decline ($0.51B\u2192$0.44B). Consensus EPS figures inconsistent; downside risk elevated.",
     "risk_level": "high"
+  },
+  "ZS": {
+    "beat_probability": 0.82,
+    "expected_reaction": "positive if guidance strong; muted upside given high beat expectations already priced in",
+    "fetched_at": "2026-08-21T21:20:55.948735+00:00",
+    "key_metrics_to_watch": [
+      "billings/calculated billings growth",
+      "net retention rate (NRR)",
+      "FY guidance & margin trajectory"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Consistent 4-qtr beats (7-12%) suggest another beat likely, but declining sequential revenue trend is concerning and may cap upside despite EPS strength.",
+    "risk_level": "medium"
   }
 }
