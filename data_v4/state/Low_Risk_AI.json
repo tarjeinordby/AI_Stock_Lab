@@ -1,23 +1,23 @@
 {
-  "cash": 5871.562329753917,
+  "cash": 4940.722419753917,
   "cooldowns": {},
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10181.33397848469,
-  "last_execution_date": "2026-08-21",
+  "last_execution_date": "2026-08-24",
   "portfolio_id": "a9e8ea54-ee02-4745-8d8e-ef4bda63d621",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
     "ABNB": {
-      "avg_price": 185.0,
+      "avg_price": 186.57950878051028,
       "buy_date": "2026-08-14",
       "buy_score": 65.7,
-      "highest_price": 186.97000122070312,
-      "is_partial": true,
-      "last_price": 186.97000122070312,
-      "market_value": 1409.7188656932315,
+      "highest_price": 189.0,
+      "is_partial": false,
+      "last_price": 189.0,
+      "market_value": 2354.934677095195,
       "pyramid_min_price": 188.7,
-      "pyramid_remaining_value": 929.91,
-      "shares": 7.539813106323785
+      "pyramid_remaining_value": 0.0,
+      "shares": 12.459971836482515
     },
     "DDOG": {
       "avg_price": 222.77000427246094,
@@ -25,8 +25,8 @@
       "buy_score": 71.1,
       "highest_price": 257.3500061035156,
       "is_partial": false,
-      "last_price": 235.14999389648438,
-      "market_value": 531.6025829974857,
+      "last_price": 233.52499389648438,
+      "market_value": 527.9289524646642,
       "pyramid_min_price": 227.2254,
       "pyramid_remaining_value": 0.0,
       "shares": 2.2606957125055382
@@ -37,8 +37,8 @@
       "buy_score": 70.7,
       "highest_price": 157.86000061035156,
       "is_partial": false,
-      "last_price": 157.41000366210938,
-      "market_value": 1838.2146543791018,
+      "last_price": 157.25999450683594,
+      "market_value": 1836.4628659215741,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 11.677876955806106
@@ -49,8 +49,8 @@
       "buy_score": 89.4,
       "highest_price": 467.625,
       "is_partial": false,
-      "last_price": 423.0150146484375,
-      "market_value": 511.7351769099478,
+      "last_price": 413.8699951171875,
+      "market_value": 500.67214598760927,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 0.0,
       "shares": 1.2097328917160175
@@ -59,6 +59,6 @@
   "strategy": "Low_Risk_AI",
   "weekly_meta": {
     "buys_this_week": 0,
-    "iso_week": "2026-W34"
+    "iso_week": "2026-W35"
   }
 }

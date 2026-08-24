@@ -5,7 +5,7 @@
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10123.936300588417,
-  "last_execution_date": "2026-08-21",
+  "last_execution_date": "2026-08-24",
   "portfolio_id": "c11f0a84-11f6-417b-bc1e-5b4b78bf863e",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
@@ -13,10 +13,10 @@
       "avg_price": 180.49000549316406,
       "buy_date": "2026-08-18",
       "buy_score": 71.5,
-      "highest_price": 186.97000122070312,
+      "highest_price": 189.0,
       "is_partial": true,
-      "last_price": 186.97000122070312,
-      "market_value": 2323.6582376943215,
+      "last_price": 189.0,
+      "market_value": 2348.8870089155107,
       "pyramid_min_price": 184.0998,
       "pyramid_remaining_value": 1495.42,
       "shares": 12.427973592145559
@@ -27,8 +27,8 @@
       "buy_score": 71.5,
       "highest_price": 156.38999938964844,
       "is_partial": false,
-      "last_price": 135.27000427246094,
-      "market_value": 1862.8771911168005,
+      "last_price": 133.91580200195312,
+      "market_value": 1844.2277312054491,
       "pyramid_min_price": 147.2319,
       "pyramid_remaining_value": 0.0,
       "shares": 13.771546775178567
@@ -39,8 +39,8 @@
       "buy_score": 70.9,
       "highest_price": 157.86000061035156,
       "is_partial": false,
-      "last_price": 157.41000366210938,
-      "market_value": 4135.975111809612,
+      "last_price": 157.25999450683594,
+      "market_value": 4132.033595271144,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 26.27517321381776
@@ -51,8 +51,8 @@
       "buy_score": 88.0,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 423.0150146484375,
-      "market_value": 938.4067131600013,
+      "last_price": 413.8699951171875,
+      "market_value": 918.1196135939575,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 683.59,
       "shares": 2.2183768439990232
@@ -60,7 +60,7 @@
   },
   "strategy": "Max_Return_AI",
   "weekly_meta": {
-    "buys_this_week": 1,
-    "iso_week": "2026-W34"
+    "buys_this_week": 0,
+    "iso_week": "2026-W35"
   }
 }
