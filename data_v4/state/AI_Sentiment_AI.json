@@ -4,8 +4,8 @@
     "ARM": "2026-08-06"
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
-  "highest_portfolio_value": 10061.766161827258,
-  "last_execution_date": "2026-08-26",
+  "highest_portfolio_value": 10167.837084911302,
+  "last_execution_date": "2026-08-28",
   "portfolio_id": "35d41e09-8201-4d6e-a1a6-d6c099770057",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
@@ -15,8 +15,8 @@
       "buy_score": 65.7,
       "highest_price": 190.3000030517578,
       "is_partial": false,
-      "last_price": 190.3000030517578,
-      "market_value": 3331.0778382610806,
+      "last_price": 187.86000061035156,
+      "market_value": 3288.367181784314,
       "pyramid_min_price": 188.7,
       "pyramid_remaining_value": 0.0,
       "shares": 17.50434989407275
@@ -25,10 +25,10 @@
       "avg_price": 144.34500122070312,
       "buy_date": "2026-08-06",
       "buy_score": 72.4,
-      "highest_price": 156.38999938964844,
+      "highest_price": 166.13999938964844,
       "is_partial": false,
-      "last_price": 128.0,
-      "market_value": 576.0832545493938,
+      "last_price": 166.13999938964844,
+      "market_value": 747.7380590564295,
       "pyramid_min_price": 147.2319,
       "pyramid_remaining_value": 0.0,
       "shares": 4.500650426167139
@@ -39,8 +39,8 @@
       "buy_score": 70.8,
       "highest_price": 159.72000122070312,
       "is_partial": false,
-      "last_price": 159.72000122070312,
-      "market_value": 3445.68863971092,
+      "last_price": 158.3000030517578,
+      "market_value": 3415.0545831009144,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 21.57330712106384
@@ -51,8 +51,8 @@
       "buy_score": 88.6,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 418.45001220703125,
-      "market_value": 711.3950421998256,
+      "last_price": 423.0150146484375,
+      "market_value": 719.1558738636081,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 523.87,
       "shares": 1.7000717444067313
