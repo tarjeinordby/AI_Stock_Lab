@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T00:21:28.099266+00:00",
+    "fetched_at": "2026-09-01T22:58:17.039304+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -29,24 +29,24 @@
     "summary": "Ingen data"
   },
   "ASML": {
-    "fetched_at": "2026-08-29T03:03:39.487715+00:00",
-    "key_factors": [
-      "Overwhelming analyst support (117 buy/strongBuy vs 4 sell)",
-      "Monopoly position in HBM lithography critical to AI infrastructure"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with AI tailwinds offset near-term weakness"
-  },
-  "BILL": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T00:21:46.846988+00:00",
+    "fetched_at": "2026-09-01T22:58:41.265993+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "BILL": {
+    "fetched_at": "2026-09-01T22:58:30.377316+00:00",
+    "key_factors": [
+      "Perfect 4Q earnings beat streak demonstrates operational excellence",
+      "42 buy/strongBuy vs 28 hold ratings show strong analyst conviction"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with consistent execution offset by valuation concerns"
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
@@ -70,7 +70,7 @@
   },
   "DDOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T00:21:39.126737+00:00",
+    "fetched_at": "2026-09-01T22:58:22.561681+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -87,24 +87,24 @@
     "summary": "Ingen data"
   },
   "ELF": {
+    "fetched_at": "2026-09-01T22:58:35.777698+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4 consecutive beats)",
+      "Overwhelming analyst support (33 buy/strongBuy vs 0 sell ratings)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with positive momentum; valuation attractive after pullback"
+  },
+  "HOOD": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-07T21:35:39.920929+00:00",
+    "fetched_at": "2026-09-01T22:58:33.050729+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
-  },
-  "HOOD": {
-    "fetched_at": "2026-08-29T03:03:52.723153+00:00",
-    "key_factors": [
-      "84% buy/strongBuy ratings provide fundamental confidence",
-      "Regulatory losses (Nevada gaming appeals) create near-term uncertainty"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong analyst support offsets regulatory headwinds; valuation discount attracti"
   },
   "IONQ": {
     "error": "Ugyldig JSON-respons",
@@ -162,7 +162,7 @@
   },
   "PANW": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T00:21:41.786690+00:00",
+    "fetched_at": "2026-09-01T22:58:27.961591+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -170,15 +170,13 @@
     "summary": "Ingen data"
   },
   "PLTR": {
-    "fetched_at": "2026-08-29T03:03:55.144530+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters)",
-      "Overwhelming buy/strongBuy consensus (59 vs 6 sell ratings)"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong fundamentals offset valuation concerns; solid analyst support"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-01T22:58:25.402410+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -235,15 +233,13 @@
     "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
-    "fetched_at": "2026-06-20T08:34:26.701687+00:00",
-    "key_factors": [
-      "Perfect earnings record (4/4 beats) demonstrates operational excellence",
-      "Overwhelming analyst support (134 buy/strongBuy vs 1 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamental setup with consistent execution and institutional tailwinds"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-01T22:58:38.583874+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "SOFI": {
     "fetched_at": "2026-06-20T08:34:29.526596+00:00",
@@ -270,7 +266,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T00:21:36.249869+00:00",
+    "fetched_at": "2026-09-01T22:58:19.688709+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
