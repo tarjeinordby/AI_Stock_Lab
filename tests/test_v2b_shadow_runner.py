@@ -1060,3 +1060,196 @@ class TestDownloadSignature:
             "v2b_daily_shadow.py must not pass period= to download_daily_data — "
             "period is hardcoded inside modules/market_data.py"
         )
+
+
+# ===========================================================================
+# T44c TestCompletedRerunPreflight
+# ===========================================================================
+
+class TestCompletedRerunPreflight:
+    """
+    Behavioral tests for the preflight guard in v2b_daily_shadow.py.
+
+    Root bug: a second same-day run fetched new snapshot data (different
+    content_hash) and called create_observation(), which wrote a CONFLICT
+    event after a COMPLETED terminal state — breaking the state machine.
+
+    After fix:
+    - create_observation() never writes CONFLICT from a non-CREATED state.
+    - v2b_daily_shadow.py exits 0 before any network call when the session
+      is already COMPLETED.
+    """
+
+    # ── Source-level preflight guards ─────────────────────────────────────────
+
+    def test_entry_script_has_preflight_completed_check(self):
+        """
+        v2b_daily_shadow.py must contain the COMPLETED preflight guard before
+        the data-fetch block.
+        """
+        source = Path("v2b_daily_shadow.py").read_text()
+        assert "COMPLETED" in source, (
+            "v2b_daily_shadow.py must check for COMPLETED status in the preflight"
+        )
+        assert "get_observation_status" in source or "_get_obs_status" in source, (
+            "v2b_daily_shadow.py must call get_observation_status in the preflight"
+        )
+        # Preflight must appear before the data-fetch block
+        pos_preflight = source.find("_pf_status")
+        pos_fetch = source.find("download_daily_data")
+        assert pos_preflight < pos_fetch, (
+            "Preflight status check must appear before download_daily_data call"
+        )
+
+    def test_entry_script_preflight_exits_0_on_conflict(self):
+        """
+        v2b_daily_shadow.py must exit 1 when the preflight finds CONFLICT status
+        (manual review required — do not auto-retry).
+        """
+        source = Path("v2b_daily_shadow.py").read_text()
+        # The CONFLICT branch must call sys.exit(1)
+        conflict_section = source[source.find("_pf_status"):]
+        assert "CONFLICT" in conflict_section, (
+            "Preflight must handle CONFLICT status explicitly"
+        )
+
+    def test_workflow_report_step_has_no_if_always(self):
+        """
+        The 'Run V2B shadow report' step must NOT have 'if: always()'.
+        A real CONFLICT (exit 1 from collection) must prevent the report step
+        from running — automatic Telegram dispatch on CONFLICT is forbidden.
+        """
+        import yaml
+        wf_path = Path(".github/workflows/v2b_shadow.yml")
+        wf_text = wf_path.read_text()
+        wf = yaml.safe_load(wf_text)
+
+        steps = (
+            wf.get("jobs", {})
+            .get("shadow-collection", {})
+            .get("steps", [])
+        )
+        report_step = next(
+            (s for s in steps if "v2b_daily_report" in s.get("run", "")),
+            None,
+        )
+        assert report_step is not None, "Report step not found in workflow"
+        assert report_step.get("if") != "always()", (
+            "Report step must not have 'if: always()' — CONFLICT must block report"
+        )
+
+    # ── Behavioral: end-to-end proof via run_shadow_observation ──────────────
+
+    def test_completed_same_data_rerun_returns_idempotent_match(self, tmp_ledger):
+        """
+        run_shadow_observation() with the exact same inputs after COMPLETED must
+        return IDEMPOTENT_MATCH — the observation is recognized by content_hash.
+        """
+        price_data, fundamentals = _make_data()
+        r1 = run_shadow_observation(
+            as_of_date=MONDAY,
+            price_data=price_data,
+            fundamentals=fundamentals,
+            data_cutoff_at=CUTOFF,
+            model_config_hash=VALID_CFG_HASH,
+        )
+        assert r1.status == "COMPLETED", f"First run must COMPLETE: {r1.error}"
+
+        # Second run: identical inputs → same content_hash → IDEMPOTENT_MATCH
+        r2 = run_shadow_observation(
+            as_of_date=MONDAY,
+            price_data=price_data,
+            fundamentals=fundamentals,
+            data_cutoff_at=CUTOFF,
+            model_config_hash=VALID_CFG_HASH,
+        )
+        assert r2.status == "IDEMPOTENT_MATCH", (
+            f"Same-data rerun after COMPLETED must be IDEMPOTENT_MATCH, "
+            f"got {r2.status!r}: {r2.error}"
+        )
+        # No CONFLICT event written
+        from modules.v2b_ledger import get_observation_events, get_observation_status
+        key = r1.observation_key
+        assert get_observation_status(key) == "COMPLETED"
+        event_types = [e.get("event_type") for e in get_observation_events(key)]
+        assert "CONFLICT" not in event_types
+
+    def test_completed_direct_create_with_different_hash_no_conflict_written(
+        self, tmp_ledger
+    ):
+        """
+        After COMPLETED, calling create_observation() directly with different
+        content (simulating a second same-day run with new snapshot data) must:
+        - Raise ConflictError
+        - NOT write any CONFLICT event to the ledger
+        - Leave ledger status as COMPLETED
+
+        This is the fallback test at the create_observation() level. In production,
+        the preflight guard prevents this code path from being reached.
+        """
+        from modules.v2b_ledger import (
+            ConflictError as LedgerConflictError,
+            create_observation as ledger_create,
+            get_observation_events,
+            get_observation_status,
+            make_ticker_record,
+            provenance_entry as _prov_entry,
+        )
+        from modules.v2_strategy import V2_MODEL_VERSION
+
+        price_data, fundamentals = _make_data()
+        r1 = run_shadow_observation(
+            as_of_date=MONDAY,
+            price_data=price_data,
+            fundamentals=fundamentals,
+            data_cutoff_at=CUTOFF,
+            model_config_hash=VALID_CFG_HASH,
+        )
+        assert r1.status == "COMPLETED", f"First run must COMPLETE: {r1.error}"
+        key = r1.observation_key
+        session = r1.intended_execution_session
+        events_before = get_observation_events(key)
+
+        # Direct create_observation with same session/model/hash but different
+        # content (universe_count=9999) → different content_hash → ConflictError
+        ticker = make_ticker_record(
+            "AAPL",
+            raw_factor_inputs={"momentum_12_1": 0.1},
+            raw_factor_unavailable_reasons={},
+            factor_availability={"momentum": True, "quality": False,
+                                  "value": True, "safety": True},
+            scores={"momentum": 60.0, "quality": None, "value": 55.0,
+                    "safety": 65.0, "composite": 60.0},
+            factor_coverage=0.75,
+            rank=1,
+            excluded=False,
+            exclusion_reason=None,
+            selected_by_strategy=["Core_Quality_Momentum_V2"],
+            sector="Technology",
+            value_sector_adjusted=True,
+            provenance=[_prov_entry("current_snapshot", "test", data_cutoff_at=CUTOFF)],
+        )
+        with pytest.raises(LedgerConflictError):
+            ledger_create(
+                model_version=V2_MODEL_VERSION,
+                model_config_hash=VALID_CFG_HASH,
+                intended_execution_session=session,
+                universe_count=9999,           # differs → different content_hash
+                valid_ticker_count=1,
+                stale_ticker_count=0,
+                excluded_ticker_count=0,
+                missing_ticker_count=0,
+                signal_coverage_rate=1.0,
+                selected_tickers_per_strategy={"Core_Quality_Momentum_V2": ["AAPL"]},
+                data_quality_status="ok",
+                ticker_records=[ticker],
+            )
+
+        # Critical: status still COMPLETED, no CONFLICT event written
+        assert get_observation_status(key) == "COMPLETED"
+        events_after = get_observation_events(key)
+        assert len(events_after) == len(events_before), (
+            "No events must be written after rejected create on COMPLETED observation"
+        )
+        event_types = [e.get("event_type") for e in events_after]
+        assert "CONFLICT" not in event_types

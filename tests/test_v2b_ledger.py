@@ -1760,3 +1760,219 @@ class TestCreateObservationDuplicateDetection:
         idx = ledger._rebuild_idx()
         assert idx.get(key) == "2026-08"
         assert len(idx) == 1
+
+
+# ---------------------------------------------------------------------------
+# T_COMPLETED_RERUN — state-machine hardening: COMPLETED → rerun must never
+# write a CONFLICT event, and the preflight exits cleanly.
+# ---------------------------------------------------------------------------
+
+
+def _create_and_complete(
+    session=VALID_SESSION, cfg_hash=VALID_CFG_HASH, universe_count=500
+) -> dict:
+    """Create an observation and advance it to COMPLETED. Returns the created event."""
+    ev = _create(session=session, cfg_hash=cfg_hash, universe_count=universe_count)
+    key = ev["observation_key"]
+    transition_observation(key, "COLLECTING")
+    transition_observation(key, "COMPLETED")
+    assert get_observation_status(key) == "COMPLETED"
+    return ev
+
+
+class TestCompletedRerun:
+    """
+    Behavioral tests for the COMPLETED → second-create hardening.
+
+    Root bug: create_observation() compared content_hash without checking the
+    current status. A second run on the same day (different snapshot data →
+    different content_hash) would write CONFLICT after COMPLETED, violating
+    the state machine contract.
+
+    After fix: CONFLICT may only be written from CREATED status (per the state
+    machine). Any other status raises ConflictError without mutating the ledger.
+    """
+
+    # ── Core guard: COMPLETED → new create with different hash ────────────────
+
+    def test_completed_new_hash_raises_conflict_without_writing_event(self, tmp_ledger):
+        """
+        After COMPLETED: create_observation() with a different content_hash must
+        raise ConflictError but must NOT write any new event to the ledger.
+        Status must remain COMPLETED.
+        """
+        ev = _create_and_complete()
+        key = ev["observation_key"]
+        events_before = get_observation_events(key)
+        event_count_before = len(events_before)
+
+        # Second create: different universe_count → different content_hash
+        with pytest.raises(ConflictError, match="COMPLETED"):
+            create_observation(
+                model_version=VALID_MODEL,
+                model_config_hash=VALID_CFG_HASH,
+                intended_execution_session=VALID_SESSION,
+                universe_count=999,        # differs → different content_hash
+                valid_ticker_count=480,
+                stale_ticker_count=5,
+                excluded_ticker_count=10,
+                missing_ticker_count=5,
+                signal_coverage_rate=0.85,
+                selected_tickers_per_strategy={"Core_Quality_Momentum_V2": ["AAPL"]},
+                data_quality_status="ok",
+                ticker_records=[_ticker()],
+            )
+
+        # Status must still be COMPLETED — no new event written
+        assert get_observation_status(key) == "COMPLETED"
+        events_after = get_observation_events(key)
+        assert len(events_after) == event_count_before, (
+            f"No events must be written after COMPLETED rerun with different hash — "
+            f"found {len(events_after) - event_count_before} new event(s)"
+        )
+
+        # Specifically: no CONFLICT event must exist
+        event_types = [e.get("event_type") for e in events_after]
+        assert "CONFLICT" not in event_types, (
+            f"CONFLICT event must not be written after COMPLETED — found in {event_types}"
+        )
+
+    def test_completed_same_hash_returns_idempotent_match(self):
+        """
+        After COMPLETED: create_observation() with the SAME content_hash must
+        return IDEMPOTENT_MATCH and leave the ledger unchanged.
+        """
+        ev = _create_and_complete()
+        key = ev["observation_key"]
+        events_before = get_observation_events(key)
+
+        result = _create(session=VALID_SESSION)  # same arguments → same content_hash
+        assert result["event_type"] == "IDEMPOTENT_MATCH"
+        assert get_observation_status(key) == "COMPLETED"
+        assert len(get_observation_events(key)) == len(events_before)
+
+    # ── CREATED → CONFLICT still works ────────────────────────────────────────
+
+    def test_created_different_hash_still_writes_conflict(self, tmp_ledger):
+        """
+        The valid path: CREATED status + different content_hash must still write
+        CONFLICT and raise ConflictError (state machine allows this transition).
+        """
+        _create()  # status = CREATED
+        with pytest.raises(ConflictError):
+            _create(universe_count=501)  # different hash from CREATED state
+
+        key = make_observation_key(VALID_MODEL, VALID_CFG_HASH, VALID_SESSION)
+        assert get_observation_status(key) == "CONFLICT"
+        event_types = [e.get("event_type") for e in get_observation_events(key)]
+        assert "CONFLICT" in event_types, "CONFLICT event must be written from CREATED state"
+
+    # ── Existing CONFLICT is terminal ─────────────────────────────────────────
+
+    def test_existing_conflict_is_terminal_blocks_further_creates(self, tmp_ledger):
+        """
+        Once CONFLICT is the current status, any further create attempt must raise
+        ConflictError WITHOUT writing another event.
+        """
+        _conflict_pair()
+        key = make_observation_key(VALID_MODEL, VALID_CFG_HASH, VALID_SESSION)
+        assert get_observation_status(key) == "CONFLICT"
+        events_before = get_observation_events(key)
+
+        with pytest.raises(ConflictError):
+            _create(universe_count=502)  # any different hash
+
+        # Status unchanged, no new event
+        assert get_observation_status(key) == "CONFLICT"
+        assert len(get_observation_events(key)) == len(events_before)
+
+    def test_existing_conflict_idempotent_match_still_works(self):
+        """
+        If CONFLICT exists and the exact same content_hash is submitted again,
+        IDEMPOTENT_MATCH is returned (no write, consistent with idempotency contract).
+        """
+        ev = _create()  # status = CREATED
+        key = ev["observation_key"]
+        with pytest.raises(ConflictError):
+            _create(universe_count=501)
+
+        # Re-submit the original content — should be idempotent
+        result = _create()  # original universe_count=500
+        assert result["event_type"] == "IDEMPOTENT_MATCH"
+
+    # ── COLLECTING → new create does not write CONFLICT ───────────────────────
+
+    def test_collecting_different_hash_does_not_write_conflict(self, tmp_ledger):
+        """
+        COLLECTING is a transient (non-terminal) state that also does not allow
+        CONFLICT transition. A second create with different hash must not write
+        any event and must raise ConflictError.
+        """
+        ev = _create()
+        key = ev["observation_key"]
+        transition_observation(key, "COLLECTING")
+        assert get_observation_status(key) == "COLLECTING"
+        events_before = get_observation_events(key)
+
+        with pytest.raises(ConflictError, match="COLLECTING"):
+            _create(universe_count=503)
+
+        assert get_observation_status(key) == "COLLECTING"
+        assert len(get_observation_events(key)) == len(events_before)
+
+    # ── Race-path: parallel creates cannot produce COMPLETED → CONFLICT ───────
+
+    def test_parallel_creates_after_completed_both_raise_without_writing(self, tmp_ledger):
+        """
+        Two concurrent threads both calling create_observation() with different
+        content after the observation is COMPLETED must both raise ConflictError
+        and neither must write a CONFLICT event to the ledger.
+        """
+        import threading
+
+        ev = _create_and_complete()
+        key = ev["observation_key"]
+        events_before = get_observation_events(key)
+        errors: list[Exception] = []
+        results: list[str] = []
+        lock = threading.Lock()
+
+        def attempt(n: int) -> None:
+            try:
+                create_observation(
+                    model_version=VALID_MODEL,
+                    model_config_hash=VALID_CFG_HASH,
+                    intended_execution_session=VALID_SESSION,
+                    universe_count=1000 + n,    # each thread has different content
+                    valid_ticker_count=480,
+                    stale_ticker_count=5,
+                    excluded_ticker_count=10,
+                    missing_ticker_count=5,
+                    signal_coverage_rate=0.85,
+                    selected_tickers_per_strategy={"Core_Quality_Momentum_V2": ["AAPL"]},
+                    data_quality_status="ok",
+                    ticker_records=[_ticker()],
+                )
+                with lock:
+                    results.append("ok")
+            except ConflictError:
+                with lock:
+                    errors.append(ConflictError())
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=attempt, args=(i,)) for i in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All must have raised ConflictError — none succeeded
+        assert len(results) == 0, f"No create should succeed after COMPLETED, got: {results}"
+        assert len(errors) == 3, f"All 3 threads must raise ConflictError"
+        assert all(isinstance(e, ConflictError) for e in errors)
+
+        # No new events written
+        assert len(get_observation_events(key)) == len(events_before)
+        assert get_observation_status(key) == "COMPLETED"
