@@ -1238,8 +1238,17 @@ def create_observation(
             prior_creation = key_events[0]
             prior_hash = prior_creation.get("content_hash")
 
+            # Derive current status before any content_hash decision.
+            # CONFLICT events may only be written from CREATED status
+            # (per _TRANSITIONS["CREATED"] = {"COLLECTING", "CONFLICT"}).
+            # A terminal status other than CREATED must never produce a new CONFLICT
+            # event — doing so would mutate the ledger in a state the state machine
+            # does not permit and could corrupt the audit trail.
+            current_status = _derive_status(key_events)
+
             if prior_hash == content_hash:
-                # Idempotent — do not write. Will repair index after lock release.
+                # Idempotent — same content regardless of current status.
+                # Do not write. Will repair index after lock release.
                 _is_idempotent = True
                 _event_result = {
                     "event_type": "IDEMPOTENT_MATCH",
@@ -1250,8 +1259,21 @@ def create_observation(
                     "timestamp_utc": _now_iso(),
                     "order_creation_blocked": _ORDER_CREATION_BLOCKED,
                 }
+            elif current_status != "CREATED":
+                # Content differs but the observation has already advanced past
+                # CREATED (e.g. COMPLETED, COLLECTING, CONFLICT, FAILED_*).
+                # The state machine does not allow a CONFLICT transition from
+                # any of these states — never write to the ledger here.
+                raise ConflictError(
+                    f"observation_key {observation_key[:16]}… is in state "
+                    f"{current_status!r} — CONFLICT event not written. "
+                    f"Ledger is unchanged. "
+                    f"Prior={prior_hash[:16] if prior_hash else 'None'}… "
+                    f"New={content_hash[:16]}…"
+                )
             else:
-                # Conflict — write CONFLICT event then raise
+                # current_status == "CREATED" and content_hash differs.
+                # This is the only valid origin state for a CONFLICT transition.
                 conflict_run_id = str(uuid.uuid4())
                 prev_hash = _last_event_hash(key_events)
                 conflict_ev = _build_event(

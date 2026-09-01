@@ -60,6 +60,55 @@ except CalendarUnavailableError as exc:
     print(f"NYSE calendar unavailable: {exc}. Exiting cleanly.")
     sys.exit(0)
 
+# ── Preflight: idempotent completed-session guard ────────────────────────────
+# Compute observation_key BEFORE any network call.
+# If the session is already COMPLETED in the ledger, a re-run would fetch new
+# snapshot data (different content_hash) and hit create_observation() — which
+# would previously write a CONFLICT event after a terminal COMPLETED state.
+# Now: exit 0 here so the workflow proceeds cleanly to the report step.
+#
+# Fail-closed rules:
+#   COMPLETED   → exit 0  (idempotent — report step will handle Telegram)
+#   CONFLICT    → exit 1  (manual review required; do not auto-retry)
+#   Corruption  → exit 1  (fail-closed)
+#   CREATED/COLLECTING/None → proceed to normal collection
+try:
+    from modules.v2b_ledger import (
+        CorruptionError as _LedgerCorruptionError,
+        ConflictError as _LedgerConflictError,
+        make_observation_key as _make_obs_key,
+        get_observation_status as _get_obs_status,
+    )
+    from modules.v2b_shadow_runner import validate_session as _validate_session
+    from modules.versioning import get_model_config_hash as _get_cfg_hash
+    from modules.v2_strategy import V2_MODEL_VERSION as _V2_MODEL_VERSION
+
+    _pf_model_cfg_hash = _get_cfg_hash(_V2_MODEL_VERSION)
+    if _pf_model_cfg_hash:
+        _pf_session = _validate_session(AS_OF_DATE)
+        _pf_obs_key = _make_obs_key(_V2_MODEL_VERSION, _pf_model_cfg_hash, _pf_session)
+        _pf_status = _get_obs_status(_pf_obs_key)
+        if _pf_status == "COMPLETED":
+            print(
+                f"Preflight: session {_pf_session!r} is already COMPLETED. "
+                "Idempotent rerun — skipping data fetch. "
+                "Workflow continues to report step."
+            )
+            sys.exit(0)
+        if _pf_status == "CONFLICT":
+            print(
+                f"Preflight: session {_pf_session!r} is in CONFLICT state. "
+                "Manual review required. Aborting collection."
+            )
+            sys.exit(1)
+except _LedgerCorruptionError as _pf_exc:
+    print(f"Preflight: ledger corrupt — aborting: {_pf_exc}")
+    sys.exit(1)
+except Exception as _pf_exc:
+    # Non-critical preflight failure (e.g. config not found, calendar unavailable).
+    # Fall through to normal collection; the collection itself will fail-close if needed.
+    print(f"Preflight check skipped: {_pf_exc}")
+
 # ── Data cutoff timestamp ──────────────────────────────────────────────────────
 DATA_CUTOFF_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
