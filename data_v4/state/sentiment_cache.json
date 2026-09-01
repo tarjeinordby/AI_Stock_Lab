@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-29T03:03:31.020626+00:00",
+    "fetched_at": "2026-09-01T00:21:28.099266+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -40,15 +40,13 @@
     "summary": "Strong fundamentals with AI tailwinds offset near-term weakness"
   },
   "BILL": {
-    "fetched_at": "2026-08-28T05:05:08.312420+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
-      "Strong analyst consensus: 73% buy/strongBuy vs 0% sell"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong fundamentals offset by valuation concerns; bullish near-term outlook"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-01T00:21:46.846988+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
@@ -60,26 +58,24 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "fetched_at": "2026-08-29T03:03:44.960497+00:00",
+    "fetched_at": "2026-09-01T00:21:44.274952+00:00",
     "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution excellence",
-      "Overwhelming analyst support (125 buy/strongBuy vs 3 sell) signals confidence"
+      "Exceptional earnings consistency (4/4 beats)",
+      "Overwhelming bullish analyst consensus (125/168 buy+)"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals offset valuation concerns; consistent execution supports 6-1"
+    "summary": "Strong fundamentals offset near-term AI sector volatility concerns"
   },
   "DDOG": {
-    "fetched_at": "2026-08-28T05:05:00.064642+00:00",
-    "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "Overwhelming analyst consensus (129 buy/strongBuy vs 12 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with sector momentum; valuation discount offers entry"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-01T00:21:39.126737+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -120,13 +116,15 @@
     "summary": "Ingen data"
   },
   "MDB": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-28T05:05:14.265507+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-01T00:21:51.940204+00:00",
+    "key_factors": [
+      "Perfect 4Q earnings beat streak demonstrates execution",
+      "93 bullish ratings (23 strong buy) vs 0 sell ratings"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals offset near-term AI uncertainty; consistent execution."
   },
   "NET": {
     "fetched_at": "2026-06-11T12:37:03.898475+00:00",
@@ -152,19 +150,19 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-08-28T05:04:51.197095+00:00",
+    "fetched_at": "2026-09-01T00:21:31.119459+00:00",
     "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "98 buy/strongBuy vs 3 sell ratings shows analyst consensus"
+      "Perfect 4Q earnings beat streak building momentum",
+      "98 buy/strongBuy vs 3 strongSell shows overwhelming analyst support"
     ],
-    "raw_score": 0.78,
-    "score": 0.89,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with positive momentum; AI tailwinds support growth"
+    "summary": "Strong positive setup: perfect earnings, bullish consensus, near 52w highs"
   },
   "PANW": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-29T03:03:42.252679+00:00",
+    "fetched_at": "2026-09-01T00:21:41.786690+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -192,13 +190,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-29T03:03:34.013849+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-01T00:21:33.477084+00:00",
+    "key_factors": [
+      "Fox acquisition announcement provides strategic validation and likely premium",
+      "Consistent 4-quarter earnings beats demonstrate execution strength"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with transformational catalyst; valuation concern mitigated "
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -270,7 +270,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-29T03:03:36.782041+00:00",
+    "fetched_at": "2026-09-01T00:21:36.249869+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -278,15 +278,15 @@
     "summary": "Ingen data"
   },
   "U": {
-    "fetched_at": "2026-08-29T03:03:50.210144+00:00",
+    "fetched_at": "2026-09-01T00:21:49.564971+00:00",
     "key_factors": [
-      "Strong analyst consensus: 52 buy/strongBuy vs 27 hold (65% positive)",
-      "Recent insider selling by CEO/COO despite rising price signals caution"
+      "Significant insider selling across multiple executives contradicts bullish sentiment",
+      "Strong analyst consensus (52 buys/strong buys vs 27 holds) provides fundamental support"
     ],
-    "raw_score": 0.62,
-    "score": 0.81,
+    "raw_score": 0.35,
+    "score": 0.675,
     "source": "claude",
-    "summary": "Bullish fundamentals tempered by insider selling and valuation concerns."
+    "summary": "Mixed signals: Strong analyst support offset by insider selling and valuation co"
   },
   "UBER": {
     "error": "Ugyldig JSON-respons",
