@@ -962,9 +962,44 @@ def _mark_send_ambiguous(
     yyyymm: str,
     _now: Callable[[], datetime] | None = None,
 ) -> None:
-    """Under monthly lock: write SEND_AMBIGUOUS event (exception during send)."""
+    """
+    Under monthly lock: write SEND_AMBIGUOUS for the given claim_id.
+
+    State-aware:
+      - claim_id must be the active (last) claim
+      - Idempotent: SEND_AMBIGUOUS already written for this claim_id → return
+      - Forbidden: SEND_CONFIRMED → AMBIGUOUS (raises ValueError)
+      - Stale/superseded claim_id raises ValueError
+      - Corrupt chain raises CorruptionError
+    """
     with _monthly_report_lock(yyyymm):
         all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        state, active_ev = _reduce_send_state(key_events)
+
+        active_cid = active_ev.get("claim_id") if active_ev else None
+
+        if active_cid != claim_id:
+            raise ValueError(
+                f"_mark_send_ambiguous: claim_id {claim_id!r} is not the active "
+                f"claim (active: {active_cid!r}, state: {state!r}) — "
+                "stale or superseded"
+            )
+
+        if state == "SEND_CONFIRMED":
+            raise ValueError(
+                f"_mark_send_ambiguous: claim {claim_id!r} is already SEND_CONFIRMED — "
+                "CONFIRMED → AMBIGUOUS is forbidden"
+            )
+
+        if state == "SEND_AMBIGUOUS":
+            return  # Idempotent
+
+        if state != "SEND_CLAIMED":
+            raise CorruptionError(
+                f"_mark_send_ambiguous: unexpected state {state!r} for claim {claim_id!r}"
+            )
+
         prev_hash = _last_event_hash_for_key(all_events, report_key)
         body: dict[str, Any] = {
             "event_type": "SEND_AMBIGUOUS",
@@ -976,6 +1011,70 @@ def _mark_send_ambiguous(
             "resolved_at": _now_iso(_now),
         }
         _build_and_append_event(yyyymm, body, prev_hash)
+
+
+def _reconcile_after_confirm_failure(
+    report_key: str,
+    claim_id: str,
+    reason: str,
+    obs_key: str,
+    session: str,
+    yyyymm: str,
+    _now: Callable[[], datetime] | None = None,
+) -> str:
+    """
+    Called when _confirm_send() raised AFTER Telegram was already sent.
+
+    Under monthly lock: reads current ledger state and reconciles:
+      - SEND_CONFIRMED already written (write succeeded, exception was post-write):
+        return "CONFIRMED" — no SEND_AMBIGUOUS needed
+      - SEND_CLAIMED still open (write failed before or during append):
+        write SEND_AMBIGUOUS, return "AMBIGUOUS"
+      - SEND_AMBIGUOUS already written (concurrent reconciliation):
+        return "AMBIGUOUS" (idempotent)
+      - Stale/superseded claim_id: raises ValueError (fail-closed)
+      - Corrupt chain: raises CorruptionError (fail-closed)
+
+    Returns "CONFIRMED" | "AMBIGUOUS".
+    """
+    with _monthly_report_lock(yyyymm):
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        state, active_ev = _reduce_send_state(key_events)
+
+        active_cid = active_ev.get("claim_id") if active_ev else None
+
+        if active_cid != claim_id:
+            raise ValueError(
+                f"_reconcile: claim_id {claim_id!r} is not the active claim "
+                f"(active: {active_cid!r}, state: {state!r}) — "
+                "stale or superseded; cannot reconcile"
+            )
+
+        if state == "SEND_CONFIRMED":
+            return "CONFIRMED"  # Write succeeded before the exception — no AMBIGUOUS
+
+        if state == "SEND_AMBIGUOUS":
+            return "AMBIGUOUS"  # Already reconciled by a concurrent call
+
+        if state != "SEND_CLAIMED":
+            raise CorruptionError(
+                f"_reconcile: unexpected state {state!r} for claim {claim_id!r}"
+            )
+
+        # Write failed before or during append — delivery uncertain
+        prev_hash = _last_event_hash_for_key(all_events, report_key)
+        body: dict[str, Any] = {
+            "event_type": "SEND_AMBIGUOUS",
+            "report_key": report_key,
+            "observation_key": obs_key,
+            "intended_execution_session": session,
+            "original_claim_id": claim_id,
+            "reason": f"confirm_failed_after_send — {reason}",
+            "resolved_at": _now_iso(_now),
+        }
+        _build_and_append_event(yyyymm, body, prev_hash)
+        return "AMBIGUOUS"
 
 
 def record_telegram_sent(report_key: str, obs_key: str, session: str) -> None:
@@ -1162,23 +1261,65 @@ def run_shadow_report(
         result.telegram_status = "SKIPPED"
         return result
 
+    # Phase 1: Build report content — local, no side-effects; failure is safe to abort
     try:
         report_content = build_report_content(obs_event)
         message = format_telegram_message(report_content)
+    except Exception as exc:
+        result.detail = f"Report build failed before send: {exc}"
+        result.telegram_status = "FAILED"
+        return result
+
+    # Phase 2: Send to Telegram — after this point delivery is uncertain on any exception
+    send_exc: BaseException | None = None
+    try:
         send_telegram_fn(message)
-        # Send succeeded — confirm under lock
+    except Exception as exc:
+        send_exc = exc
+
+    if send_exc is not None:
+        # Message was NOT sent (exception before delivery). Write SEND_AMBIGUOUS.
+        try:
+            _mark_send_ambiguous(
+                report_key, claim_id, str(send_exc), obs_key, session, yyyymm, _now
+            )
+        except Exception as mark_exc:
+            result.detail = (
+                f"Telegram send failed AND AMBIGUOUS write failed — "
+                f"send: {send_exc!r}  mark: {mark_exc!r}"
+            )
+            result.telegram_status = "AMBIGUOUS"
+            return result
+        result.detail = f"Telegram send failed (AMBIGUOUS): {send_exc}"
+        result.telegram_status = "AMBIGUOUS"
+        return result
+
+    # Phase 3: Confirm — message was delivered; record it under lock
+    try:
         _confirm_send(report_key, claim_id, obs_key, session, yyyymm, _now)
         result.telegram_sent = True
         result.telegram_status = "CONFIRMED"
-    except Exception as exc:
-        # Send raised — delivery uncertain (AMBIGUOUS)
+    except Exception as confirm_exc:
+        # _confirm_send threw after Telegram was already sent.
+        # Reconcile under lock: read current state and write AMBIGUOUS only if needed.
         try:
-            _mark_send_ambiguous(
-                report_key, claim_id, str(exc), obs_key, session, yyyymm, _now
+            reconciled = _reconcile_after_confirm_failure(
+                report_key, claim_id, str(confirm_exc),
+                obs_key, session, yyyymm, _now,
             )
-        except Exception:
-            pass
-        result.detail = f"Telegram send failed (AMBIGUOUS): {exc}"
-        result.telegram_status = "AMBIGUOUS"
+            result.telegram_sent = True  # Message WAS delivered to Telegram
+            result.telegram_status = reconciled
+            if reconciled == "AMBIGUOUS":
+                result.detail = (
+                    f"Send succeeded but confirm failed — reconciled as AMBIGUOUS: "
+                    f"{confirm_exc}"
+                )
+        except Exception as reconcile_exc:
+            result.telegram_sent = True
+            result.telegram_status = "AMBIGUOUS"
+            result.detail = (
+                f"Send succeeded, confirm failed, reconciliation failed — "
+                f"confirm: {confirm_exc!r}  reconcile: {reconcile_exc!r}"
+            )
 
     return result

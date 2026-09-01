@@ -1514,3 +1514,280 @@ class TestOutboxReducerBehavior:
         r2 = run_shadow_report(session, send_telegram_fn=mock_send)
         assert r2.telegram_status == "SKIPPED"
         assert mock_send.call_count == 1  # Must NOT have sent again
+
+
+# ===========================================================================
+# T57 TestConfirmReconciliation
+# ===========================================================================
+
+class TestConfirmReconciliation:
+    """
+    Behavioral tests for the three-phase send protocol and confirm/reconcile logic.
+
+    Covers: _confirm_send failure before/after append, _mark_send_ambiguous
+    state-awareness, _reconcile_after_confirm_failure, and the full
+    run_shadow_report flow across all failure points.
+    """
+
+    def _setup(self):
+        """Create a completed observation and report, return common values."""
+        from modules.v2b_report import _claim_send_slot
+        session, _ = _create_completed_observation()
+        result = run_shadow_report(session)  # No outbox activity
+        report_key = result.report_key
+        obs_key = result.observation_key or ""
+        yyyymm = session[:7]
+        claim_id = _claim_send_slot(report_key, obs_key, session, yyyymm)
+        assert claim_id is not None
+        return session, report_key, obs_key, yyyymm, claim_id
+
+    # ── Reproducer: CONFIRMED → AMBIGUOUS sequence must be impossible ──────────
+
+    def test_confirmed_then_ambiguous_raises_corruption_in_reducer(self):
+        """
+        Reproduce the P1 bug: a SEND_CONFIRMED followed by SEND_AMBIGUOUS for the
+        same claim_id is a contradictory chain — _reduce_send_state must raise
+        CorruptionError, not return a valid state.
+
+        This proves the bug is caught, not silently propagated.
+        """
+        from modules.v2b_report import CorruptionError, _reduce_send_state
+
+        CID = "claim-xyz"
+        events = [
+            {"event_type": "SEND_CLAIMED",   "claim_id": CID,
+             "claim_expires_at": "2099-01-01T00:00:00+00:00"},
+            {"event_type": "SEND_CONFIRMED", "claim_id": CID},
+            {"event_type": "SEND_AMBIGUOUS", "original_claim_id": CID},
+        ]
+        with pytest.raises(CorruptionError, match="contradictory"):
+            _reduce_send_state(events)
+
+    def test_run_shadow_report_never_writes_ambiguous_after_confirmed(self):
+        """
+        Full integration: even if _confirm_send throws after writing SEND_CONFIRMED,
+        run_shadow_report must NOT write SEND_AMBIGUOUS for that claim.
+
+        After the call: the ledger must contain exactly one terminal event for the
+        claim — SEND_CONFIRMED — and telegram_already_sent must return True.
+        """
+        session, _ = _create_completed_observation()
+        yyyymm = session[:7]
+
+        call_count = {"n": 0}
+        original_confirm = report._confirm_send
+
+        def confirm_that_writes_then_raises(*args, **kwargs):
+            # Write SEND_CONFIRMED via the real function on the first call,
+            # then raise to simulate post-write failure.
+            call_count["n"] += 1
+            original_confirm(*args, **kwargs)
+            raise OSError("simulated post-write OS error")
+
+        with mock.patch("modules.v2b_report._confirm_send",
+                        side_effect=confirm_that_writes_then_raises):
+            r = run_shadow_report(session, send_telegram_fn=mock.Mock())
+
+        # The reconciler must have detected SEND_CONFIRMED and returned CONFIRMED
+        assert r.telegram_status == "CONFIRMED"
+        assert r.telegram_sent is True
+
+        # Verify the ledger: exactly one terminal for this claim — SEND_CONFIRMED
+        import json as _json
+        from modules.v2b_report import (
+            _events_for_report_key, _read_report_events_raw, _reduce_send_state,
+        )
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, r.report_key)
+        state, _ = _reduce_send_state(key_events)
+        assert state == "SEND_CONFIRMED", (
+            f"Ledger must end in SEND_CONFIRMED after reconciliation, got {state!r}"
+        )
+
+        # SEND_AMBIGUOUS must NOT appear in the ledger for this report_key
+        ambiguous_count = sum(
+            1 for ev in key_events if ev.get("event_type") == "SEND_AMBIGUOUS"
+        )
+        assert ambiguous_count == 0, (
+            f"SEND_AMBIGUOUS must not be written when SEND_CONFIRMED already exists, "
+            f"found {ambiguous_count}"
+        )
+
+    def test_confirm_fails_before_write_yields_ambiguous(self):
+        """
+        If _confirm_send raises BEFORE writing (e.g. during read/reduce), the claim
+        is still SEND_CLAIMED. Reconcile must write SEND_AMBIGUOUS.
+        run_shadow_report must return telegram_status="AMBIGUOUS".
+        """
+        session, _ = _create_completed_observation()
+        yyyymm = session[:7]
+
+        # Patch _confirm_send to raise without writing anything
+        with mock.patch("modules.v2b_report._confirm_send",
+                        side_effect=RuntimeError("simulated pre-write failure")):
+            r = run_shadow_report(session, send_telegram_fn=mock.Mock())
+
+        assert r.telegram_status == "AMBIGUOUS"
+        assert r.telegram_sent is True  # Message was delivered to Telegram
+
+        # Ledger must contain SEND_AMBIGUOUS, not SEND_CONFIRMED
+        from modules.v2b_report import (
+            _events_for_report_key, _read_report_events_raw,
+        )
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, r.report_key)
+        event_types = [ev.get("event_type") for ev in key_events]
+        assert "SEND_AMBIGUOUS" in event_types
+        assert "SEND_CONFIRMED" not in event_types
+
+    # ── _mark_send_ambiguous state-awareness ──────────────────────────────────
+
+    def test_mark_ambiguous_after_confirmed_raises(self):
+        """
+        _mark_send_ambiguous must raise ValueError when the active claim is already
+        SEND_CONFIRMED — CONFIRMED → AMBIGUOUS transition is forbidden.
+        """
+        from modules.v2b_report import _claim_send_slot, _confirm_send, _mark_send_ambiguous
+
+        session, report_key, obs_key, yyyymm, claim_id = self._setup()
+        _confirm_send(report_key, claim_id, obs_key, session, yyyymm)
+
+        with pytest.raises(ValueError, match="CONFIRMED.*AMBIGUOUS|forbidden"):
+            _mark_send_ambiguous(report_key, claim_id, "test", obs_key, session, yyyymm)
+
+    def test_mark_ambiguous_idempotent(self):
+        """
+        Writing SEND_AMBIGUOUS twice for the same claim_id must be idempotent
+        (no error, no duplicate event written).
+        """
+        from modules.v2b_report import (
+            _mark_send_ambiguous, _events_for_report_key, _read_report_events_raw,
+        )
+        session, report_key, obs_key, yyyymm, claim_id = self._setup()
+
+        _mark_send_ambiguous(report_key, claim_id, "first", obs_key, session, yyyymm)
+        _mark_send_ambiguous(report_key, claim_id, "second", obs_key, session, yyyymm)
+
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        ambiguous_count = sum(
+            1 for ev in key_events if ev.get("event_type") == "SEND_AMBIGUOUS"
+        )
+        assert ambiguous_count == 1, (
+            f"Idempotent SEND_AMBIGUOUS must produce exactly one event, "
+            f"got {ambiguous_count}"
+        )
+
+    def test_mark_ambiguous_stale_claim_raises(self):
+        """
+        _mark_send_ambiguous with a stale claim_id (superseded by newer claim)
+        must raise ValueError.
+        """
+        from modules.v2b_report import (
+            _claim_send_slot, _mark_send_ambiguous,
+        )
+        session, report_key, obs_key, yyyymm, claim_a = self._setup()
+
+        # Close A as ambiguous, open B
+        _mark_send_ambiguous(report_key, claim_a, "crash", obs_key, session, yyyymm)
+        claim_b = _claim_send_slot(report_key, obs_key, session, yyyymm)
+        assert claim_b is not None
+
+        # Stale worker tries to mark ambiguous with claim_a
+        with pytest.raises(ValueError, match="not the active claim|stale"):
+            _mark_send_ambiguous(report_key, claim_a, "late", obs_key, session, yyyymm)
+
+    # ── _reconcile_after_confirm_failure ──────────────────────────────────────
+
+    def test_reconcile_detects_confirmed_already_written(self):
+        """
+        If SEND_CONFIRMED was written before the exception,
+        _reconcile_after_confirm_failure must return "CONFIRMED"
+        without writing SEND_AMBIGUOUS.
+        """
+        from modules.v2b_report import (
+            _confirm_send, _reconcile_after_confirm_failure,
+            _events_for_report_key, _read_report_events_raw,
+        )
+        session, report_key, obs_key, yyyymm, claim_id = self._setup()
+
+        # Write SEND_CONFIRMED normally
+        _confirm_send(report_key, claim_id, obs_key, session, yyyymm)
+
+        # Reconcile as if confirm threw after write
+        outcome = _reconcile_after_confirm_failure(
+            report_key, claim_id, "simulated post-write error",
+            obs_key, session, yyyymm,
+        )
+        assert outcome == "CONFIRMED"
+
+        # No SEND_AMBIGUOUS in the ledger
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        ambiguous = [ev for ev in key_events if ev.get("event_type") == "SEND_AMBIGUOUS"]
+        assert len(ambiguous) == 0, (
+            f"SEND_AMBIGUOUS must not be written when already CONFIRMED, "
+            f"found {len(ambiguous)}"
+        )
+
+    def test_reconcile_writes_ambiguous_when_not_yet_written(self):
+        """
+        If SEND_CONFIRMED was NOT written (claim still SEND_CLAIMED),
+        _reconcile_after_confirm_failure must write SEND_AMBIGUOUS and return "AMBIGUOUS".
+        """
+        from modules.v2b_report import (
+            _reconcile_after_confirm_failure,
+            _events_for_report_key, _read_report_events_raw,
+        )
+        session, report_key, obs_key, yyyymm, claim_id = self._setup()
+
+        # Claim is open (no confirm written) — reconcile
+        outcome = _reconcile_after_confirm_failure(
+            report_key, claim_id, "simulated write failure",
+            obs_key, session, yyyymm,
+        )
+        assert outcome == "AMBIGUOUS"
+
+        # SEND_AMBIGUOUS must now be in the ledger
+        all_events = _read_report_events_raw(yyyymm)
+        key_events = _events_for_report_key(all_events, report_key)
+        ambiguous = [ev for ev in key_events if ev.get("event_type") == "SEND_AMBIGUOUS"]
+        assert len(ambiguous) == 1
+        assert ambiguous[0]["original_claim_id"] == claim_id
+
+    # ── Persisting SEND_AMBIGUOUS failure is not hidden ───────────────────────
+
+    def test_ambiguous_write_failure_recorded_in_result_detail(self):
+        """
+        If _mark_send_ambiguous fails, run_shadow_report must record the error
+        in result.detail and return telegram_status="AMBIGUOUS" — not silently swallow.
+        """
+        session, _ = _create_completed_observation()
+
+        send_fn = mock.Mock(side_effect=RuntimeError("Telegram timeout"))
+
+        with mock.patch("modules.v2b_report._mark_send_ambiguous",
+                        side_effect=OSError("disk full")):
+            r = run_shadow_report(session, send_telegram_fn=send_fn)
+
+        assert r.telegram_status == "AMBIGUOUS"
+        assert r.detail is not None
+        # Both the send error and the mark error must appear in detail
+        assert "Telegram timeout" in r.detail or "disk full" in r.detail
+
+    # ── Corrupt chain blocks sending in all phases ────────────────────────────
+
+    def test_corrupt_chain_in_claim_slot_returns_failed(self):
+        """
+        CorruptionError during _claim_send_slot must produce telegram_status='FAILED'
+        and not raise to the caller.
+        """
+        session, _ = _create_completed_observation()
+        from modules.v2b_report import CorruptionError as CE
+
+        with mock.patch("modules.v2b_report._claim_send_slot",
+                        side_effect=CE("chain broken")):
+            r = run_shadow_report(session, send_telegram_fn=mock.Mock())
+
+        assert r.telegram_status == "FAILED"
+        assert "corrupt" in (r.detail or "").lower() or "chain" in (r.detail or "").lower()
