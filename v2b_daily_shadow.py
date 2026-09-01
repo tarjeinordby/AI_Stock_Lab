@@ -79,7 +79,7 @@ try:
         tickers = ["SPY"] + tickers
 
     print(f"Downloading price data for {len(tickers)} tickers...")
-    price_data = download_daily_data(tickers, period="2y")
+    price_data = download_daily_data(tickers)
     spy_prices = price_data.pop("SPY", None)
 
     print("Fetching fundamentals...")

@@ -1004,3 +1004,59 @@ class TestManualDateRestriction:
         assert "ANTHROPIC_API_KEY" not in workflow_text, (
             "V2B.2 workflow must not include ANTHROPIC_API_KEY"
         )
+
+
+# ===========================================================================
+# T44b TestDownloadSignature
+# ===========================================================================
+
+class TestDownloadSignature:
+    """
+    Regression test for TypeError: download_daily_data() got an unexpected
+    keyword argument 'period'.
+
+    v2b_daily_shadow.py called download_daily_data(tickers, period="2y") but the
+    function signature is download_daily_data(tickers, chunk_size=80); period="2y"
+    is hardcoded internally.  This test calls the function with the same argument
+    pattern used by the entry script to catch any signature mismatch before
+    the nightly GitHub Actions run.
+    """
+
+    def test_download_daily_data_accepts_no_period_kwarg(self, monkeypatch):
+        """
+        download_daily_data(tickers) must not raise TypeError.
+        Calling it with period= must raise TypeError (confirming the guard works).
+        Network is replaced with a no-op so the test is offline and fast.
+        """
+        import modules.market_data as md
+
+        # Patch yfinance so no real HTTP calls are made
+        empty_df = pd.DataFrame()
+        monkeypatch.setattr(md.yf, "download", lambda *a, **kw: empty_df)
+
+        tickers = ["AAPL"]
+
+        # The call used by v2b_daily_shadow.py — must NOT raise TypeError
+        try:
+            md.download_daily_data(tickers)
+        except TypeError as exc:
+            pytest.fail(
+                f"download_daily_data(tickers) raised TypeError — "
+                f"signature mismatch: {exc}"
+            )
+
+        # Confirm the guard: passing period= is still invalid
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            md.download_daily_data(tickers, period="2y")
+
+    def test_entry_script_does_not_pass_period_kwarg(self):
+        """
+        v2b_daily_shadow.py must not pass period= to download_daily_data.
+        This is a source-level guard that would have caught the original bug
+        before any network call was made.
+        """
+        source = Path("v2b_daily_shadow.py").read_text()
+        assert "download_daily_data(tickers, period=" not in source, (
+            "v2b_daily_shadow.py must not pass period= to download_daily_data — "
+            "period is hardcoded inside modules/market_data.py"
+        )
