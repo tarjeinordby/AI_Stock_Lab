@@ -1,1 +1,1 @@
-{"schema_version": 1, "record_type": "signal_run", "year_month": "2026-09", "ids": {"run-2026-09-01-89997607db12": true, "run-2026-09-02-69fdda9c081e": true}, "count": 2, "last_updated": "2026-09-01T22:58:41.880Z"}
+{"schema_version": 1, "record_type": "signal_run", "year_month": "2026-09", "ids": {"run-2026-09-01-89997607db12": true, "run-2026-09-02-69fdda9c081e": true, "run-2026-09-03-284e5fc8731d": true}, "count": 3, "last_updated": "2026-09-02T22:58:14.513Z"}

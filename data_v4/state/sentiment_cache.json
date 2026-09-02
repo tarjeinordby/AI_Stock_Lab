@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:17.039304+00:00",
+    "fetched_at": "2026-09-02T22:57:48.571567+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -38,15 +38,13 @@
     "summary": "Ingen data"
   },
   "BILL": {
-    "fetched_at": "2026-09-01T22:58:30.377316+00:00",
-    "key_factors": [
-      "Perfect 4Q earnings beat streak demonstrates operational excellence",
-      "42 buy/strongBuy vs 28 hold ratings show strong analyst conviction"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with consistent execution offset by valuation concerns"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-02T22:58:02.288764+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
@@ -58,19 +56,19 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "fetched_at": "2026-09-01T00:21:44.274952+00:00",
+    "fetched_at": "2026-09-02T22:58:04.884112+00:00",
     "key_factors": [
-      "Exceptional earnings consistency (4/4 beats)",
-      "Overwhelming bullish analyst consensus (125/168 buy+)"
+      "121 buy/strongBuy ratings vs 3 sell - overwhelming consensus",
+      "Perfect 4Q earnings beat streak demonstrates execution"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals offset near-term AI sector volatility concerns"
+    "summary": "Strong fundamentals offset valuation concerns; consistent execution supports ups"
   },
   "DDOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:22.561681+00:00",
+    "fetched_at": "2026-09-02T22:57:59.756189+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -87,19 +85,17 @@
     "summary": "Ingen data"
   },
   "ELF": {
-    "fetched_at": "2026-09-01T22:58:35.777698+00:00",
-    "key_factors": [
-      "Perfect earnings track record (4 consecutive beats)",
-      "Overwhelming analyst support (33 buy/strongBuy vs 0 sell ratings)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with positive momentum; valuation attractive after pullback"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-02T22:58:14.153518+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "HOOD": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:33.050729+00:00",
+    "fetched_at": "2026-09-02T22:58:10.916118+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -150,15 +146,13 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-09-01T00:21:31.119459+00:00",
-    "key_factors": [
-      "Perfect 4Q earnings beat streak building momentum",
-      "98 buy/strongBuy vs 3 strongSell shows overwhelming analyst support"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong positive setup: perfect earnings, bullish consensus, near 52w highs"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-02T22:57:51.337831+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PANW": {
     "error": "Ugyldig JSON-respons",
@@ -171,7 +165,7 @@
   },
   "PLTR": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:25.402410+00:00",
+    "fetched_at": "2026-09-02T22:58:07.975818+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -188,15 +182,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-09-01T00:21:33.477084+00:00",
+    "fetched_at": "2026-09-02T22:57:53.943606+00:00",
     "key_factors": [
-      "Fox acquisition announcement provides strategic validation and likely premium",
-      "Consistent 4-quarter earnings beats demonstrate execution strength"
+      "Fox acquisition at $96 provides near-term support and potential upside",
+      "Perfect earnings track record (4/4 beats) demonstrates operational strength"
     ],
-    "raw_score": 0.72,
-    "score": 0.86,
+    "raw_score": 0.62,
+    "score": 0.81,
     "source": "claude",
-    "summary": "Strong fundamentals with transformational catalyst; valuation concern mitigated "
+    "summary": "Fox acquisition catalyst with strong earnings, but valuation concerns temper ups"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -266,7 +260,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:19.688709+00:00",
+    "fetched_at": "2026-09-02T22:57:56.806329+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
