@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-02T22:57:48.571567+00:00",
+    "fetched_at": "2026-09-03T22:57:10.465401+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -38,13 +38,15 @@
     "summary": "Ingen data"
   },
   "BILL": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-02T22:58:02.288764+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-03T22:57:23.745595+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4 consecutive beats)",
+      "Bullish analyst consensus (41 buy/strongBuy vs 28 hold)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with consistent execution, but valuation recovery incomplete"
   },
   "CELH": {
     "error": "Ugyldig JSON-respons",
@@ -56,19 +58,19 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "fetched_at": "2026-09-02T22:58:04.884112+00:00",
+    "fetched_at": "2026-09-03T22:57:26.474466+00:00",
     "key_factors": [
-      "121 buy/strongBuy ratings vs 3 sell - overwhelming consensus",
-      "Perfect 4Q earnings beat streak demonstrates execution"
+      "Perfect earnings track record (4 consecutive beats)",
+      "Overwhelmingly positive analyst sentiment (121 buy/strongBuy vs 3 sell)"
     ],
-    "raw_score": 0.72,
-    "score": 0.86,
+    "raw_score": 0.78,
+    "score": 0.89,
     "source": "claude",
-    "summary": "Strong fundamentals offset valuation concerns; consistent execution supports ups"
+    "summary": "Strong bullish setup with consistent execution and AI tailwinds."
   },
   "DDOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-02T22:57:59.756189+00:00",
+    "fetched_at": "2026-09-03T22:57:21.021488+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -95,7 +97,7 @@
   },
   "HOOD": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-02T22:58:10.916118+00:00",
+    "fetched_at": "2026-09-03T22:57:34.375158+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -146,13 +148,15 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-02T22:57:51.337831+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-03T22:57:13.149722+00:00",
+    "key_factors": [
+      "Perfect 4Q earnings beat streak demonstrates operational excellence",
+      "Overwhelming analyst support (99 buy-rated vs 2 sell)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with consistent execution offset by valuation and macro head"
   },
   "PANW": {
     "error": "Ugyldig JSON-respons",
@@ -165,7 +169,7 @@
   },
   "PLTR": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-02T22:58:07.975818+00:00",
+    "fetched_at": "2026-09-03T22:57:29.127838+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -182,15 +186,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-09-02T22:57:53.943606+00:00",
+    "fetched_at": "2026-09-03T22:57:15.787698+00:00",
     "key_factors": [
-      "Fox acquisition at $96 provides near-term support and potential upside",
-      "Perfect earnings track record (4/4 beats) demonstrates operational strength"
+      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
+      "Near 52w high valuation leaves limited upside cushion"
     ],
     "raw_score": 0.62,
     "score": 0.81,
     "source": "claude",
-    "summary": "Fox acquisition catalyst with strong earnings, but valuation concerns temper ups"
+    "summary": "Strong fundamentals with consistent execution offset by mixed analyst view"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -205,7 +209,7 @@
   },
   "SHOP": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-08-29T03:03:47.658347+00:00",
+    "fetched_at": "2026-09-03T22:57:31.842432+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -260,7 +264,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-02T22:57:56.806329+00:00",
+    "fetched_at": "2026-09-03T22:57:18.619387+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
