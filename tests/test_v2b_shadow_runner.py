@@ -1126,7 +1126,7 @@ class TestCompletedRerunPreflight:
 
         steps = (
             wf.get("jobs", {})
-            .get("shadow-collection", {})
+            .get("shadow-collection-report", {})
             .get("steps", [])
         )
         report_step = next(

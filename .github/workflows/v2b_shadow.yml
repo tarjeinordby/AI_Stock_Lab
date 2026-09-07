@@ -3,7 +3,15 @@ name: V2B Shadow Collection + Report
 # SHADOW ONLY — this workflow never creates orders, fills, or trades.
 # It records V2 factor scores to the V2B ledger for prospective OOS evaluation
 # and sends a clearly labeled "V2 SHADOW — INGEN HANDLER" Telegram report.
-# order_creation_blocked = True is a structural invariant in both scripts.
+# order_creation_blocked = True is a structural invariant in all scripts.
+#
+# Two-job structure (V2B.4):
+#   Job 1: shadow-collection-report — collection + report + commit observation/report
+#   Job 2: outcome-tracker          — fresh checkout, run outcome tracker, commit outcomes
+#
+# Job 2 needs: shadow-collection-report (runs even if job 1 fails — if: always())
+# Outcome outcomes are committed separately so an outcome tracker failure never
+# prevents observation/report data from being committed (and vice versa).
 
 on:
   workflow_dispatch:
@@ -26,7 +34,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  shadow-collection:
+  # ── Job 1: Shadow collection + report ──────────────────────────────────────
+  shadow-collection-report:
     runs-on: ubuntu-latest
 
     env:
@@ -81,12 +90,78 @@ jobs:
           # Conflict-safe push: pull --rebase on failure, up to 3 attempts
           for attempt in 1 2 3; do
             if git push origin main; then
-              echo "Push OK ✅"
+              echo "Push OK"
               exit 0
             fi
             echo "Push failed (attempt $attempt/3) — pulling and retrying..."
             git pull --rebase origin main
           done
 
-          echo "Push failed after 3 attempts ❌"
+          echo "Push failed after 3 attempts"
+          exit 1
+
+  # ── Job 2: Outcome tracker ──────────────────────────────────────────────────
+  outcome-tracker:
+    runs-on: ubuntu-latest
+    needs: shadow-collection-report
+    if: always()
+
+    steps:
+      - name: Check out repository (fresh from origin/main)
+        # Fresh checkout ensures we see any observation data committed by job 1.
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run V2B outcome tracker
+        # Exit codes:
+        #   0 — all outcomes processed successfully
+        #   1 — transport errors (commit step skipped — retry tomorrow)
+        #   2 — integrity failure (CorruptionError) or import error
+        #   3 — not a trading session today (soft skip)
+        # allow_failure_exit: 1 and 3 are expected non-error exits.
+        id: run_tracker
+        run: |
+          python v2b_daily_outcome.py
+          echo "tracker_exit=$?" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Commit V2B outcome data
+        # Only commit on exit code 0 — do not commit partial data on transport errors.
+        if: steps.run_tracker.outcome == 'success'
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          # Only stage V2B outcome files — never V1 state or other data
+          git add data_v4/v2b_outcomes/*.jsonl data_v4/v2b_outcomes/v2b_outcome_idx.json 2>/dev/null || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "V2B outcomes: $(date -u +%Y-%m-%d)"
+          else
+            echo "No V2B outcome changes to commit."
+            exit 0
+          fi
+
+          # Conflict-safe push: pull --rebase on failure, up to 3 attempts
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "Push OK"
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt/3) — pulling and retrying..."
+            git pull --rebase origin main
+          done
+
+          echo "Push failed after 3 attempts"
           exit 1
