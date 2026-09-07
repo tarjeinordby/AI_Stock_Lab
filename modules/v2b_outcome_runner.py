@@ -1,40 +1,52 @@
 """
 V2B.4 — Signal outcome runner.
 
-Coordinates the daily outcome tracking process:
-  1. Validate / rebuild the outcome index (fail-closed on corruption)
+Daily outcome tracking cycle:
+  1. Validate / rebuild the outcome index (fail-closed under global lock)
   2. Scan COMPLETED V2B observations >= OUTCOME_TRACKING_START_SESSION
-  3. Repair missing PENDING events idempotently for Factor_Only_Core_V2
+  3. Repair missing PENDING events idempotently (ObservationValidationError propagates)
   4. Process matured PENDINGs (exit_session reached):
-       - Fetch adjusted prices via yfinance (up to 3 retries, backoff [2, 5]s)
-       - If all prices present → OUTCOME_RECORDED (may write before grace)
-       - If prices missing and grace NOT yet elapsed → OUTCOME_FETCH_DEFERRED
-       - If prices missing and grace elapsed → OUTCOME_INCOMPLETE or OUTCOME_UNAVAILABLE
+       - Empty selected_tickers → OUTCOME_UNAVAILABLE immediately (no fetch, no grace)
+       - Fetch adjusted prices via yfinance (3 retries, [2,5]s backoff)
+       - Transport failure → collect error, keep PENDING, exit 1 at end
+       - Valid response, ALL symbols absent → FETCH_DEFERRED, keep PENDING (provider failure)
+       - Valid response, some missing prices:
+           → always write FETCH_DEFERRED first
+           → if grace not elapsed: keep PENDING
+           → if grace elapsed: write INCOMPLETE or UNAVAILABLE
+       - All prices present → OUTCOME_RECORDED immediately
+
+Terminal classification (on missing data after grace):
+  - No complete ticker pair  → OUTCOME_UNAVAILABLE
+  - ≥1 complete ticker       → OUTCOME_INCOMPLETE
+
+Exit codes from run_outcome_tracker():
+  0 — all outcomes processed successfully
+  1 — one or more transport errors (outcomes kept PENDING for retry)
+  CorruptionError / OutcomeValidationError / etc. propagate to caller for exit 2
 
 V1 isolation: no imports from V1 execution modules.
-  Does NOT import: modules.portfolio, modules.orders, modules.fills,
-                   modules.ledger, modules.state
-  Does NOT call:   execute_buy, execute_sell, execute_pyramid_fill
-  Does NOT create: orders, fills, trades, or position changes
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
-# ── V2B.4 constants (imported from pure ledger module) ───────────────────────
 from modules.v2b_outcome import (  # noqa: E402
+    ADJUSTMENT_MODE,
+    DATA_SOURCE,
     GRACE_SESSIONS,
     HOLDING_SESSIONS_TUPLE,
     OUTCOME_DEFINITION_VERSION,
     OUTCOME_TRACKING_START_SESSION,
     STRATEGY_ID,
     ObservationValidationError,
+    OutcomeValidationError,
     compute_exit_session,
     create_pending,
     list_pending_outcomes,
@@ -44,21 +56,18 @@ from modules.v2b_outcome import (  # noqa: E402
     validate_and_rebuild_index,
 )
 
-# ── V2B shadow ledger (read-only: observation_key + selected tickers) ────────
 from modules.v2b_ledger import (  # noqa: E402
     get_observation_events,
     list_observations,
 )
 
-# ── Exchange calendar ─────────────────────────────────────────────────────────
 from modules.exchange_calendar import (  # noqa: E402
     is_trading_session,
     sessions_between_count,
 )
 
-# ── Retry configuration ───────────────────────────────────────────────────────
 _MAX_FETCH_ATTEMPTS: int = 3
-_RETRY_BACKOFFS: list[float] = [2.0, 5.0]  # seconds between attempts 1→2 and 2→3
+_RETRY_BACKOFFS: list[float] = [2.0, 5.0]
 
 _FIELD_MAP: dict[str, str] = {
     "adjusted_open": "Open",
@@ -66,22 +75,19 @@ _FIELD_MAP: dict[str, str] = {
 }
 
 
-# ── yfinance fetch helpers ────────────────────────────────────────────────────
+# ── yfinance helpers ──────────────────────────────────────────────────────────
 
 
 def _fetch_ohlcv_with_retry(
     symbols: list[str],
     provider_start: str,
     provider_end_exclusive: str,
-) -> "Optional[object]":  # returns pd.DataFrame | None
+) -> "Optional[object]":
     """
-    Download OHLCV data from yfinance with up to 3 attempts and
-    backoff of [2, 5] seconds between retries.
-
-    Returns the DataFrame on success, None after 3 transport failures.
-    Sanitised logging: ticker list is truncated at 10 symbols in log output.
+    Download OHLCV data (auto_adjust=True) with up to 3 attempts.
+    Returns the DataFrame on success (may be empty), None after 3 transport failures.
     """
-    import yfinance as yf  # local import to isolate yfinance dependency
+    import yfinance as yf  # noqa: PLC0415
 
     log_symbols = symbols[:10] + (["…"] if len(symbols) > 10 else [])
     for attempt in range(1, _MAX_FETCH_ATTEMPTS + 1):
@@ -111,7 +117,7 @@ def _fetch_ohlcv_with_retry(
 
 
 def _extract_price(
-    df: "object",  # pd.DataFrame
+    df: "object",
     symbol: str,
     session_date: str,
     field: str,
@@ -120,13 +126,10 @@ def _extract_price(
     Extract a single price from a yfinance DataFrame.
 
     Handles both single-ticker (flat columns) and multi-ticker (MultiIndex
-    columns with (field_name, ticker) pairs) DataFrames.
-
-    field must be "adjusted_open" or "adjusted_close" — mapped to "Open"/"Close"
-    (yfinance auto_adjust=True already adjusts Open and Close).
-
-    Returns None if the symbol, column, or date row is absent.
+    columns with (field_name, ticker) pairs).  auto_adjust=True maps
+    'adjusted_open' → 'Open' and 'adjusted_close' → 'Close'.
     """
+    import math as _math  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
 
     if df is None or df.empty:
@@ -137,52 +140,54 @@ def _extract_price(
         return None
 
     cols = df.columns
-    # MultiIndex check: (field_name, ticker) tuples
     if isinstance(cols, pd.MultiIndex):
         if (yf_col, symbol) not in cols:
             return None
         series = df[(yf_col, symbol)]
     else:
-        # Single-ticker download — columns are plain strings
         if yf_col not in cols:
             return None
         series = df[yf_col]
 
-    # Match date — index may be datetime or date
-    session_dt = pd.Timestamp(session_date)
-    if session_dt not in series.index:
-        # Try matching by date (timezone may differ)
-        matched = [
-            v for idx_val, v in series.items()
-            if str(idx_val)[:10] == session_date
-        ]
-        if not matched:
+    # Use boolean mask to handle duplicate-index DataFrames cleanly
+    mask = series.index.normalize() == pd.Timestamp(session_date)
+    if not mask.any():
+        # Fallback: string-prefix match for non-standard index
+        mask2 = [str(i)[:10] == session_date for i in series.index]
+        if not any(mask2):
             return None
-        value = matched[0]
+        value = series.iloc[[i for i, m in enumerate(mask2) if m][0]]
     else:
-        value = series[session_dt]
+        value = series[mask].iloc[0]
 
-    import math  # noqa: PLC0415
-    if value is None or (isinstance(value, float) and math.isnan(value)):
+    if value is None or (isinstance(value, float) and _math.isnan(value)):
         return None
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _next_calendar_day(date_str: str) -> str:
-    """Return the calendar day after date_str (YYYY-MM-DD), used as yfinance end."""
+    """Return the calendar day after date_str — used as yfinance end (exclusive)."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     return (dt + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-# ── Observation validation ────────────────────────────────────────────────────
+def _compute_return_pct(entry: float, exit_: float) -> float:
+    return ((exit_ - entry) / entry) * 100.0
+
+
+# ── Observation validation (repair step) ─────────────────────────────────────
 
 
 def _extract_selected_tickers(observation_key: str) -> list[str]:
     """
-    Read the V2B observation's CREATED event and return
+    Read the V2B observation's OBSERVATION_CREATED event and return
     selected_tickers_per_strategy[STRATEGY_ID].
 
-    Raises ObservationValidationError on structural problems.
+    Raises ObservationValidationError on any structural problem.
+    Explicitly empty list (selected_tickers=[]) is valid — caller handles it.
     """
     events = get_observation_events(observation_key)
     created_ev = next(
@@ -196,31 +201,29 @@ def _extract_selected_tickers(observation_key: str) -> list[str]:
     stps = created_ev.get("selected_tickers_per_strategy")
     if not isinstance(stps, dict):
         raise ObservationValidationError(
-            f"Observation {observation_key[:16]}…: selected_tickers_per_strategy is missing or not a dict"
+            f"Observation {observation_key[:16]}…: "
+            f"selected_tickers_per_strategy is missing or not a dict"
         )
-
     if STRATEGY_ID not in stps:
         raise ObservationValidationError(
-            f"Observation {observation_key[:16]}…: selected_tickers_per_strategy has no {STRATEGY_ID!r} key"
+            f"Observation {observation_key[:16]}…: "
+            f"selected_tickers_per_strategy missing {STRATEGY_ID!r} key"
         )
-
     tickers = stps[STRATEGY_ID]
     if not isinstance(tickers, list):
         raise ObservationValidationError(
-            f"Observation {observation_key[:16]}…: selected_tickers_per_strategy[{STRATEGY_ID!r}] is not a list"
+            f"Observation {observation_key[:16]}…: "
+            f"selected_tickers_per_strategy[{STRATEGY_ID!r}] is not a list"
         )
-
     for t in tickers:
         if not isinstance(t, str) or not t.strip():
             raise ObservationValidationError(
-                f"Observation {observation_key[:16]}…: invalid ticker {t!r} in {STRATEGY_ID}"
+                f"Observation {observation_key[:16]}…: invalid ticker {t!r}"
             )
-
     if len(tickers) != len(set(tickers)):
         raise ObservationValidationError(
-            f"Observation {observation_key[:16]}…: duplicate tickers in {STRATEGY_ID}: {tickers}"
+            f"Observation {observation_key[:16]}…: duplicate tickers in {STRATEGY_ID}"
         )
-
     return tickers
 
 
@@ -230,20 +233,22 @@ def _extract_selected_tickers(observation_key: str) -> list[str]:
 def _repair_pending_for_observation(
     observation_key: str,
     entry_session: str,
-    today_str: str,
-    transport_errors: list[str],
 ) -> None:
     """
     For one COMPLETED observation, ensure PENDING events exist for all
     HOLDING_SESSIONS_TUPLE holding-session counts.  Idempotent.
 
-    Empty ticker list → ObservationValidationError is logged and skipped.
+    ObservationValidationError propagates immediately (no catch/skip).
+    Empty ticker list is explicitly valid.
     """
-    try:
-        selected_tickers = _extract_selected_tickers(observation_key)
-    except ObservationValidationError as exc:
-        log.warning("Skipping observation %s…: %s", observation_key[:16], exc)
-        return
+    # entry_session must be a valid NYSE trading session
+    if not is_trading_session(entry_session):
+        raise ObservationValidationError(
+            f"Observation {observation_key[:16]}… entry_session={entry_session!r} "
+            f"is not a NYSE trading session"
+        )
+
+    selected_tickers = _extract_selected_tickers(observation_key)
 
     for n in HOLDING_SESSIONS_TUPLE:
         exit_session = compute_exit_session(entry_session, n)
@@ -258,7 +263,7 @@ def _repair_pending_for_observation(
         )
         if result == "IDEMPOTENT_MATCH":
             log.debug(
-                "Observation %s… N=%d: PENDING already exists (idempotent)",
+                "PENDING already exists (idempotent): obs=%s… N=%d",
                 observation_key[:16], n,
             )
         else:
@@ -271,243 +276,73 @@ def _repair_pending_for_observation(
 # ── Per-outcome processing ────────────────────────────────────────────────────
 
 
-def _compute_per_ticker_return(entry: float, exit_: float) -> float:
-    return ((exit_ - entry) / entry) * 100.0
-
-
-def _process_one_pending(
-    pending_event: dict,
-    today_str: str,
-    transport_errors: list[str],
-) -> None:
-    """
-    Process a single matured PENDING event.
-
-    Steps:
-      1. Skip if exit_session has not yet been reached
-      2. Fetch yfinance prices (entry_session open, exit_session close) for all
-         selected_tickers + SPY
-      3. On transport failure: add to transport_errors, continue (no FETCH_DEFERRED)
-      4. On valid response with all prices → write OUTCOME_RECORDED immediately
-      5. On valid response with missing prices and grace not elapsed → FETCH_DEFERRED
-      6. On valid response with missing prices and grace elapsed → OUTCOME_INCOMPLETE
-         or OUTCOME_UNAVAILABLE
-    """
-    outcome_key = pending_event["outcome_key"]
-    observation_key = pending_event["observation_key"]
-    holding_sessions = pending_event["holding_sessions"]
-    entry_session = pending_event["entry_session"]
-    exit_session = pending_event["exit_session"]
-    selected_tickers: list[str] = pending_event.get("selected_tickers", [])
-    exit_partition_yyyymm = pending_event["exit_partition_yyyymm"]
-
-    # Don't process until exit_session has been reached
-    if exit_session > today_str:
-        return
-
-    # All symbols to fetch: selected tickers + SPY as benchmark
-    all_symbols = list(selected_tickers) + (["SPY"] if "SPY" not in selected_tickers else [])
-
-    provider_start = entry_session
-    provider_end_exclusive = _next_calendar_day(exit_session)
-
-    from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
-    fetched_at = _dt.now(_tz.utc).isoformat()
-
-    df = _fetch_ohlcv_with_retry(all_symbols, provider_start, provider_end_exclusive)
-    if df is None:
-        # Transport failure — keep PENDING, record for exit-code
-        transport_errors.append(
-            f"outcome_key={outcome_key[:16]}… (obs={observation_key[:16]}… N={holding_sessions})"
-        )
-        return
-
-    # Extract prices
-    entry_prices: dict[str, float] = {}
-    exit_prices: dict[str, float] = {}
-    unavailable_tickers: list[str] = []
-    unavailable_reasons: dict[str, str] = {}
-    missing_price_points: list[dict] = []
-
-    for ticker in selected_tickers:
-        ep = _extract_price(df, ticker, entry_session, "adjusted_open")
-        xp = _extract_price(df, ticker, exit_session, "adjusted_close")
-        if ep is None:
-            missing_price_points.append(
-                {"symbol": ticker, "field": "adjusted_open", "session": entry_session}
-            )
-        if xp is None:
-            missing_price_points.append(
-                {"symbol": ticker, "field": "adjusted_close", "session": exit_session}
-            )
-        if ep is not None and xp is not None:
-            entry_prices[ticker] = ep
-            exit_prices[ticker] = xp
-        else:
-            unavailable_tickers.append(ticker)
-            missing_fields = []
-            if ep is None:
-                missing_fields.append(f"adjusted_open@{entry_session}")
-            if xp is None:
-                missing_fields.append(f"adjusted_close@{exit_session}")
-            unavailable_reasons[ticker] = "price_row_missing: " + ", ".join(missing_fields)
-
-    # SPY prices
-    spy_entry_price = _extract_price(df, "SPY", entry_session, "adjusted_open")
-    spy_exit_price = _extract_price(df, "SPY", exit_session, "adjusted_close")
-
-    if spy_entry_price is None:
-        missing_price_points.append(
-            {"symbol": "SPY", "field": "adjusted_open", "session": entry_session}
-        )
-    if spy_exit_price is None:
-        missing_price_points.append(
-            {"symbol": "SPY", "field": "adjusted_close", "session": exit_session}
-        )
-
-    # Grace elapsed check
-    grace_elapsed = sessions_between_count(exit_session, today_str) >= GRACE_SESSIONS
-
-    # If any prices are missing (tickers or SPY)
-    if missing_price_points:
-        if not grace_elapsed:
-            # Write FETCH_DEFERRED (idempotent — deduplicated within the ledger)
-            from zoneinfo import ZoneInfo  # noqa: PLC0415
-            attempt_date = _dt.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-            result = record_fetch_deferred(
-                outcome_key=outcome_key,
-                attempted_at=fetched_at,
-                attempt_date=attempt_date,
-                missing_price_points=missing_price_points,
-                source="yfinance",
-                detail=(
-                    f"N={holding_sessions} exit={exit_session} "
-                    f"missing {len(missing_price_points)} price point(s)"
-                ),
-            )
-            if result is None:
-                log.debug(
-                    "FETCH_DEFERRED deduplicated: %s… N=%d",
-                    outcome_key[:16], holding_sessions,
-                )
-            else:
-                log.info(
-                    "FETCH_DEFERRED: %s… N=%d exit=%s missing=%d",
-                    outcome_key[:16], holding_sessions, exit_session,
-                    len(missing_price_points),
-                )
-            return
-
-        # Grace has elapsed — terminate
-        # Classify: INCOMPLETE vs UNAVAILABLE
-        # UNAVAILABLE: no usable ticker prices at all, or SPY missing (no official signal)
-        has_any_ticker_price = bool(entry_prices)  # at least one complete ticker pair
-        has_spy = spy_entry_price is not None and spy_exit_price is not None
-
-        if not has_any_ticker_price and not has_spy:
-            terminal_type = "OUTCOME_UNAVAILABLE"
-        else:
-            terminal_type = "OUTCOME_INCOMPLETE"
-
-        _write_terminal(
-            outcome_key=outcome_key,
-            terminal_type=terminal_type,
-            pending_event=pending_event,
-            entry_prices=entry_prices,
-            exit_prices=exit_prices,
-            spy_entry_price=spy_entry_price,
-            spy_exit_price=spy_exit_price,
-            unavailable_tickers=unavailable_tickers,
-            unavailable_reasons=unavailable_reasons,
-            fetched_at=fetched_at,
-            provider_start=provider_start,
-            provider_end_exclusive=provider_end_exclusive,
-            today_str=today_str,
-        )
-        return
-
-    # All prices present (including SPY) → OUTCOME_RECORDED
-    _write_terminal(
-        outcome_key=outcome_key,
-        terminal_type="OUTCOME_RECORDED",
-        pending_event=pending_event,
-        entry_prices=entry_prices,
-        exit_prices=exit_prices,
-        spy_entry_price=spy_entry_price,
-        spy_exit_price=spy_exit_price,
-        unavailable_tickers=[],
-        unavailable_reasons={},
-        fetched_at=fetched_at,
-        provider_start=provider_start,
-        provider_end_exclusive=provider_end_exclusive,
-        today_str=today_str,
-    )
-
-
 def _write_terminal(
-    outcome_key: str,
     terminal_type: str,
     pending_event: dict,
+    complete_tickers: list[str],
     entry_prices: dict[str, float],
     exit_prices: dict[str, float],
     spy_entry_price: float | None,
     spy_exit_price: float | None,
     unavailable_tickers: list[str],
     unavailable_reasons: dict[str, str],
-    fetched_at: str,
-    provider_start: str,
+    fetched_at: str | None,
     provider_end_exclusive: str,
     today_str: str,
 ) -> None:
-    """Compute return metrics and write terminal event."""
-    selected_tickers: list[str] = pending_event.get("selected_tickers", [])
+    """Build the terminal payload, validate, and write to ledger."""
+    outcome_key = pending_event["outcome_key"]
+    observation_key = pending_event["observation_key"]
+    holding_sessions = pending_event["holding_sessions"]
     entry_session = pending_event["entry_session"]
     exit_session = pending_event["exit_session"]
-    holding_sessions = pending_event["holding_sessions"]
-    observation_key = pending_event["observation_key"]
+    exit_partition_yyyymm = pending_event["exit_partition_yyyymm"]
+    selected_tickers = pending_event.get("selected_tickers", [])
 
-    # Per-ticker returns (only where both entry and exit prices are available)
-    per_ticker_return_pct: dict[str, float] = {}
-    for ticker in selected_tickers:
-        if ticker in entry_prices and ticker in exit_prices:
-            per_ticker_return_pct[ticker] = _compute_per_ticker_return(
-                entry_prices[ticker], exit_prices[ticker]
-            )
+    per_ticker_return_pct: dict[str, float] = {
+        t: _compute_return_pct(entry_prices[t], exit_prices[t])
+        for t in complete_tickers
+    }
 
-    # SPY return
     spy_return_pct: float | None = None
     if spy_entry_price is not None and spy_exit_price is not None:
-        spy_return_pct = _compute_per_ticker_return(spy_entry_price, spy_exit_price)
+        spy_return_pct = _compute_return_pct(spy_entry_price, spy_exit_price)
 
-    # Aggregate metrics — null if ANY selected_ticker or SPY price is missing
-    all_tickers_available = set(per_ticker_return_pct.keys()) == set(selected_tickers)
-    spy_available = spy_return_pct is not None
+    all_complete = (
+        set(complete_tickers) == set(selected_tickers)
+        and spy_return_pct is not None
+    )
 
-    portfolio_return_complete = all_tickers_available and spy_available
-
-    if all_tickers_available and selected_tickers:
-        available_subset_return_pct = sum(per_ticker_return_pct.values()) / len(selected_tickers)
-    elif per_ticker_return_pct:
-        available_subset_return_pct = sum(per_ticker_return_pct.values()) / len(per_ticker_return_pct)
-    else:
-        available_subset_return_pct = None
-
-    if portfolio_return_complete and selected_tickers:
-        portfolio_return_pct: float | None = sum(per_ticker_return_pct.values()) / len(selected_tickers)
-        forward_alpha_vs_spy: float | None = portfolio_return_pct - spy_return_pct  # type: ignore[operator]
-        hit_rate_vs_spy: float | None = (
-            sum(1 for r in per_ticker_return_pct.values() if r > spy_return_pct)  # type: ignore[operator]
-            / len(selected_tickers)
+    if terminal_type == "OUTCOME_RECORDED":
+        portfolio_return_pct: float | None = (
+            sum(per_ticker_return_pct.values()) / len(selected_tickers)
+            if selected_tickers else None
         )
-    elif portfolio_return_complete and not selected_tickers:
-        # Empty ticker list — UNAVAILABLE per design
-        portfolio_return_pct = None
-        forward_alpha_vs_spy = None
-        hit_rate_vs_spy = None
+        forward_alpha: float | None = (
+            portfolio_return_pct - spy_return_pct
+            if portfolio_return_pct is not None and spy_return_pct is not None
+            else None
+        )
+        hit_rate: float | None = (
+            sum(1 for r in per_ticker_return_pct.values() if r > spy_return_pct)
+            / len(selected_tickers)
+            if selected_tickers and spy_return_pct is not None
+            else None
+        )
+        available_subset: float | None = None  # null in RECORDED per schema
+        portfolio_return_complete = bool(all_complete)
     else:
+        # INCOMPLETE or UNAVAILABLE
         portfolio_return_pct = None
-        forward_alpha_vs_spy = None
-        hit_rate_vs_spy = None
+        forward_alpha = None
+        hit_rate = None
+        portfolio_return_complete = False
+        if complete_tickers:
+            available_subset = (
+                sum(per_ticker_return_pct.values()) / len(complete_tickers)
+            )
+        else:
+            available_subset = None
 
     payload: dict = {
         "event_type": terminal_type,
@@ -518,6 +353,7 @@ def _write_terminal(
         "holding_sessions": holding_sessions,
         "entry_session": entry_session,
         "exit_session": exit_session,
+        "exit_partition_yyyymm": exit_partition_yyyymm,
         "selected_tickers": sorted(selected_tickers),
         "unavailable_tickers": sorted(unavailable_tickers),
         "unavailable_reasons": unavailable_reasons,
@@ -529,12 +365,12 @@ def _write_terminal(
         "spy_return_pct": spy_return_pct,
         "portfolio_return_pct": portfolio_return_pct,
         "portfolio_return_complete": portfolio_return_complete,
-        "forward_alpha_vs_spy": forward_alpha_vs_spy,
-        "hit_rate_vs_spy": hit_rate_vs_spy,
-        "available_subset_return_pct": available_subset_return_pct,
-        "adjustment_mode": "auto_adjust=True",
-        "data_source": "yfinance",
-        "fetch_date_range": f"{provider_start}/{provider_end_exclusive}",
+        "forward_alpha_vs_spy": forward_alpha,
+        "hit_rate_vs_spy": hit_rate,
+        "available_subset_return_pct": available_subset,
+        "adjustment_mode": ADJUSTMENT_MODE,
+        "data_source": DATA_SOURCE,
+        "fetch_date_range": [entry_session, exit_session],
         "provider_end_exclusive": provider_end_exclusive,
         "fetched_at": fetched_at,
         "measurement_date": today_str,
@@ -543,15 +379,194 @@ def _write_terminal(
 
     result = record_terminal(outcome_key=outcome_key, terminal_payload=payload)
     if result == "IDEMPOTENT_MATCH":
-        log.debug("Terminal %s idempotent: %s… N=%d", terminal_type, outcome_key[:16], holding_sessions)
+        log.debug(
+            "%s idempotent: %s… N=%d",
+            terminal_type, outcome_key[:16], holding_sessions,
+        )
     else:
         log.info(
-            "%s: %s… N=%d portfolio_return_pct=%s alpha=%s hit_rate=%s",
+            "%s: %s… N=%d portfolio_return=%s alpha=%s hit_rate=%s",
             terminal_type, outcome_key[:16], holding_sessions,
             f"{portfolio_return_pct:.4f}%" if portfolio_return_pct is not None else "null",
-            f"{forward_alpha_vs_spy:.4f}%" if forward_alpha_vs_spy is not None else "null",
-            f"{hit_rate_vs_spy:.2%}" if hit_rate_vs_spy is not None else "null",
+            f"{forward_alpha:.4f}%" if forward_alpha is not None else "null",
+            f"{hit_rate:.2%}" if hit_rate is not None else "null",
         )
+
+
+def _process_one_pending(
+    pending_event: dict,
+    today_str: str,
+    transport_errors: list[str],
+) -> None:
+    """
+    Process a single matured PENDING event.
+
+    Raises any non-transport error (CorruptionError, OutcomeValidationError, etc.)
+    so it propagates to the caller for exit code 2.
+    Only actual transport failures (None from fetch) are collected in transport_errors.
+    """
+    outcome_key = pending_event["outcome_key"]
+    observation_key = pending_event["observation_key"]
+    holding_sessions = pending_event["holding_sessions"]
+    entry_session = pending_event["entry_session"]
+    exit_session = pending_event["exit_session"]
+    selected_tickers: list[str] = pending_event.get("selected_tickers", [])
+
+    # Guard: only process matured outcomes
+    if exit_session > today_str:
+        return
+
+    # Empty ticker list → immediate UNAVAILABLE (no fetch, no grace check)
+    if not selected_tickers:
+        provider_end_exclusive = _next_calendar_day(exit_session)
+        _write_terminal(
+            terminal_type="OUTCOME_UNAVAILABLE",
+            pending_event=pending_event,
+            complete_tickers=[],
+            entry_prices={},
+            exit_prices={},
+            spy_entry_price=None,
+            spy_exit_price=None,
+            unavailable_tickers=[],
+            unavailable_reasons={},
+            fetched_at=None,
+            provider_end_exclusive=provider_end_exclusive,
+            today_str=today_str,
+        )
+        return
+
+    all_symbols = list(selected_tickers) + (
+        ["SPY"] if "SPY" not in selected_tickers else []
+    )
+    provider_end_exclusive = _next_calendar_day(exit_session)
+    fetched_at = datetime.now(timezone.utc).isoformat()
+
+    df = _fetch_ohlcv_with_retry(all_symbols, entry_session, provider_end_exclusive)
+    if df is None:
+        # Transport failure — keep PENDING, record for exit-code 1
+        transport_errors.append(
+            f"outcome_key={outcome_key[:16]}… N={holding_sessions} "
+            f"(obs={observation_key[:16]}…)"
+        )
+        return
+
+    # Extract prices
+    entry_prices: dict[str, float] = {}
+    exit_prices: dict[str, float] = {}
+    missing_price_points: list[dict] = []
+
+    for ticker in selected_tickers:
+        ep = _extract_price(df, ticker, entry_session, "adjusted_open")
+        xp = _extract_price(df, ticker, exit_session, "adjusted_close")
+        if ep is not None and xp is not None:
+            entry_prices[ticker] = ep
+            exit_prices[ticker] = xp
+        else:
+            if ep is None:
+                missing_price_points.append(
+                    {"symbol": ticker, "field": "adjusted_open", "session": entry_session}
+                )
+            if xp is None:
+                missing_price_points.append(
+                    {"symbol": ticker, "field": "adjusted_close", "session": exit_session}
+                )
+
+    spy_entry_price = _extract_price(df, "SPY", entry_session, "adjusted_open")
+    spy_exit_price = _extract_price(df, "SPY", exit_session, "adjusted_close")
+    if spy_entry_price is None:
+        missing_price_points.append(
+            {"symbol": "SPY", "field": "adjusted_open", "session": entry_session}
+        )
+    if spy_exit_price is None:
+        missing_price_points.append(
+            {"symbol": "SPY", "field": "adjusted_close", "session": exit_session}
+        )
+
+    complete_tickers = [
+        t for t in selected_tickers if t in entry_prices and t in exit_prices
+    ]
+    all_complete = (
+        len(complete_tickers) == len(selected_tickers)
+        and spy_entry_price is not None
+        and spy_exit_price is not None
+    )
+
+    # All symbols absent → provider-level failure (treat like transport failure)
+    if not entry_prices and not exit_prices and spy_entry_price is None and spy_exit_price is None:
+        log.warning(
+            "All symbols absent from valid yfinance response: %s… N=%d exit=%s "
+            "— writing FETCH_DEFERRED, keeping PENDING",
+            outcome_key[:16], holding_sessions, exit_session,
+        )
+        record_fetch_deferred(
+            outcome_key=outcome_key,
+            attempted_at=fetched_at,
+            attempt_date=today_str,
+            missing_price_points=missing_price_points,
+            source="yfinance",
+            detail=f"N={holding_sessions} exit={exit_session}: all symbols absent from response",
+        )
+        return
+
+    if not all_complete:
+        # Some prices missing → always write FETCH_DEFERRED first
+        record_fetch_deferred(
+            outcome_key=outcome_key,
+            attempted_at=fetched_at,
+            attempt_date=today_str,
+            missing_price_points=missing_price_points,
+            source="yfinance",
+            detail=(
+                f"N={holding_sessions} exit={exit_session} "
+                f"missing {len(missing_price_points)} price point(s)"
+            ),
+        )
+
+        # Then check grace
+        grace_elapsed = sessions_between_count(exit_session, today_str) >= GRACE_SESSIONS
+        if not grace_elapsed:
+            return  # keep PENDING
+
+        # Grace elapsed → determine terminal type and build reasons
+        unavailable_tickers = [t for t in selected_tickers if t not in complete_tickers]
+        unavailable_reasons = {t: "price_missing_after_grace" for t in unavailable_tickers}
+
+        if not complete_tickers:
+            terminal_type = "OUTCOME_UNAVAILABLE"
+        else:
+            terminal_type = "OUTCOME_INCOMPLETE"
+
+        _write_terminal(
+            terminal_type=terminal_type,
+            pending_event=pending_event,
+            complete_tickers=complete_tickers,
+            entry_prices=entry_prices,
+            exit_prices=exit_prices,
+            spy_entry_price=spy_entry_price,
+            spy_exit_price=spy_exit_price,
+            unavailable_tickers=unavailable_tickers,
+            unavailable_reasons=unavailable_reasons,
+            fetched_at=fetched_at,
+            provider_end_exclusive=provider_end_exclusive,
+            today_str=today_str,
+        )
+        return
+
+    # All prices present → OUTCOME_RECORDED
+    _write_terminal(
+        terminal_type="OUTCOME_RECORDED",
+        pending_event=pending_event,
+        complete_tickers=complete_tickers,
+        entry_prices=entry_prices,
+        exit_prices=exit_prices,
+        spy_entry_price=spy_entry_price,
+        spy_exit_price=spy_exit_price,
+        unavailable_tickers=[],
+        unavailable_reasons={},
+        fetched_at=fetched_at,
+        provider_end_exclusive=provider_end_exclusive,
+        today_str=today_str,
+    )
 
 
 # ── Main runner entry point ───────────────────────────────────────────────────
@@ -562,19 +577,20 @@ def run_outcome_tracker(today_str: str) -> int:
     Run the full V2B.4 outcome tracking cycle for today_str (YYYY-MM-DD).
 
     Returns:
-      0 — all operations succeeded
-      1 — one or more transport errors occurred (outcomes kept PENDING for retry)
+      0 — all outcomes processed successfully
+      1 — one or more transport errors (outcomes kept PENDING for retry)
 
-    Raises CorruptionError if any hash chain or index integrity check fails
-    (fail-closed — exit 2 in the entry point wrapper).
+    Non-transport errors (CorruptionError, OutcomeValidationError, ObservationValidationError,
+    InvalidTransitionError, ContentConflictError, unexpected exceptions) propagate to the
+    caller, which maps them to exit code 2.
     """
     log.info("V2B.4 outcome tracker starting for %s", today_str)
 
-    # Step 1: Validate / rebuild index (fail-closed)
+    # Step 1: validate / rebuild index (under global lock, fail-closed)
     validate_and_rebuild_index()
     log.debug("Index validated/rebuilt")
 
-    # Step 2: Scan COMPLETED observations >= OUTCOME_TRACKING_START_SESSION
+    # Step 2: scan COMPLETED observations >= tracking start
     all_obs = list_observations()
     eligible = [
         obs for obs in all_obs
@@ -585,52 +601,41 @@ def run_outcome_tracker(today_str: str) -> int:
 
     transport_errors: list[str] = []
 
-    # Step 3: Repair — ensure PENDING events exist for all holding-session counts
+    # Step 3: repair — ensure PENDING events exist for all holding-session counts
+    # ObservationValidationError propagates immediately (no catch/skip)
     for obs in eligible:
         observation_key = obs["observation_key"]
-        entry_session = obs["intended_execution_session"]
+        entry_session = obs.get("intended_execution_session")
         if not entry_session:
-            log.warning("Observation %s… has no intended_execution_session — skipping", observation_key[:16])
-            continue
-        if not is_trading_session(entry_session):
-            log.warning(
-                "Observation %s… entry_session=%s is not a trading session — skipping",
-                observation_key[:16], entry_session,
+            raise ObservationValidationError(
+                f"Observation {observation_key[:16]}… has no intended_execution_session"
             )
-            continue
         _repair_pending_for_observation(
             observation_key=observation_key,
             entry_session=entry_session,
-            today_str=today_str,
-            transport_errors=transport_errors,
         )
 
-    # Step 4: Process matured PENDINGs
+    # Step 4: process matured PENDINGs
+    # Only transport errors are collected; all other errors propagate
     pending_outcomes = list_pending_outcomes()
     log.info("Found %d PENDING outcomes to evaluate", len(pending_outcomes))
 
     for pending_ev in pending_outcomes:
         exit_session = pending_ev.get("exit_session", "")
         if exit_session > today_str:
-            # Not yet matured
             continue
-        try:
-            _process_one_pending(
-                pending_event=pending_ev,
-                today_str=today_str,
-                transport_errors=transport_errors,
-            )
-        except Exception as exc:  # noqa: BLE001
-            ok = pending_ev.get("outcome_key", "?")[:16]
-            log.error(
-                "Unexpected error processing outcome %s…: %s — keeping PENDING",
-                ok, exc, exc_info=True,
-            )
-            transport_errors.append(f"unexpected_error: outcome_key={ok}…")
+        # Intentionally no broad exception handler here.
+        # CorruptionError, OutcomeValidationError, ContentConflictError, etc.
+        # propagate to the caller for exit code 2.
+        _process_one_pending(
+            pending_event=pending_ev,
+            today_str=today_str,
+            transport_errors=transport_errors,
+        )
 
     if transport_errors:
         log.error(
-            "V2B.4 outcome tracker finished with %d error(s):\n  %s",
+            "V2B.4 outcome tracker finished with %d transport error(s):\n  %s",
             len(transport_errors), "\n  ".join(transport_errors),
         )
         return 1

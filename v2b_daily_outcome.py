@@ -5,10 +5,9 @@ Invoked from GitHub Actions job 2 (outcome-tracker) after job 1
 (shadow-collection-report) completes.
 
 Exit codes:
-  0 — all outcomes processed successfully (commit outcomes)
+  0 — success: outcomes processed (commit) OR non-trading session (no commit needed)
   1 — one or more transport errors (retry tomorrow; do NOT commit)
-  2 — integrity failure (CorruptionError) or calendar unavailable
-  3 — not a trading session today (soft skip — do NOT commit)
+  2 — corruption / conflict / validation / unexpected internal error (red job)
 
 V1 isolation: this file does NOT import from V1 execution modules.
 """
@@ -40,11 +39,17 @@ def main() -> int:
 
     if not is_trading_session(today_str):
         log.info("Not a trading session (%s) — V2B.4 outcome tracker: skip", today_str)
-        return 3
+        return 0
 
     # ── Run outcome tracker ───────────────────────────────────────────────────
     try:
-        from modules.v2b_outcome import CorruptionError
+        from modules.v2b_outcome import (
+            ContentConflictError,
+            CorruptionError,
+            InvalidTransitionError,
+            ObservationValidationError,
+            OutcomeValidationError,
+        )
         from modules.v2b_outcome_runner import run_outcome_tracker
     except Exception as exc:
         log.error("Import error: %s", exc)
@@ -54,6 +59,14 @@ def main() -> int:
         exit_code = run_outcome_tracker(today_str)
     except CorruptionError as exc:
         log.error("INTEGRITY FAILURE — fail-closed: %s", exc)
+        return 2
+    except (
+        ContentConflictError,
+        InvalidTransitionError,
+        ObservationValidationError,
+        OutcomeValidationError,
+    ) as exc:
+        log.error("Validation / conflict error: %s: %s", type(exc).__name__, exc)
         return 2
     except Exception as exc:
         log.error("Unexpected error in outcome tracker: %s", exc, exc_info=True)

@@ -21,3 +21,7 @@ data_v4/ledger/fills.jsonl.lock
 data_v4/v2b_ledger/*.lock
 data_v4/v2b_ledger/.ev_*
 data_v4/v2b_ledger/.idx_*
+
+# V2B.4 outcome ledger runtime files (must not be committed)
+data_v4/v2b_outcomes/*.lock
+data_v4/v2b_outcomes/*.tmp

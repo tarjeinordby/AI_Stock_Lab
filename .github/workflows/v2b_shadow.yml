@@ -125,26 +125,20 @@ jobs:
 
       - name: Run V2B outcome tracker
         # Exit codes:
-        #   0 — all outcomes processed successfully
-        #   1 — transport errors (commit step skipped — retry tomorrow)
-        #   2 — integrity failure (CorruptionError) or import error
-        #   3 — not a trading session today (soft skip)
-        # allow_failure_exit: 1 and 3 are expected non-error exits.
-        id: run_tracker
-        run: |
-          python v2b_daily_outcome.py
-          echo "tracker_exit=$?" >> "$GITHUB_OUTPUT"
-        continue-on-error: true
+        #   0 — success: outcomes processed OR non-trading session (green job)
+        #   1 — transport errors (red job — retry tomorrow; commit step skipped)
+        #   2 — integrity/validation/conflict/import error (red job)
+        run: python v2b_daily_outcome.py
 
       - name: Commit V2B outcome data
-        # Only commit on exit code 0 — do not commit partial data on transport errors.
-        if: steps.run_tracker.outcome == 'success'
+        # Only runs on exit 0 from the tracker (step above succeeds).
+        # Exits 1 and 2 cause the step above to fail, so this step is skipped.
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
 
-          # Only stage V2B outcome files — never V1 state or other data
-          git add data_v4/v2b_outcomes/*.jsonl data_v4/v2b_outcomes/v2b_outcome_idx.json 2>/dev/null || true
+          # Stage all V2B outcome files — never V1 state or other data
+          git add --all -- data_v4/v2b_outcomes/
 
           if ! git diff --cached --quiet; then
             git commit -m "V2B outcomes: $(date -u +%Y-%m-%d)"

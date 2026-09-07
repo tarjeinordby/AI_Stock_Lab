@@ -13,47 +13,55 @@ EVENTSTUDY ONLY — not a portfolio simulation:
 
 File layout (relative to repo root):
   data_v4/v2b_outcomes/{YYYY-MM}_v2b_outcomes.jsonl  (partitioned by exit_session month)
-  data_v4/v2b_outcomes/v2b_outcomes.lock             (single global lock — no deadlock)
+  data_v4/v2b_outcomes/v2b_outcomes.lock             (single global lock)
   data_v4/v2b_outcomes/v2b_outcome_idx.json          (outcome_key → exit_partition_yyyymm)
 
 Outcome key:
   SHA-256(observation_key + "|" + strategy_id + "|" + str(holding_sessions)
           + "|" + outcome_definition_version)
 
-Holding sessions — inclusive counting:
-  N=1: exit_session = entry_session (same-day close)
-  N=5: exit_session = 4th NYSE session after entry_session (entry = day 1, exit = day 5)
+Locking — single global lock, held for full transaction:
+  read events → validate chain → compute transition → append to JSONL
+  → fsync JSONL → update index → fsync index dir → release lock
 
-Locking — single global lock (deadlock-free):
-  Held for the complete transaction:
-    read events → validate chain → compute transition → append to JSONL
-    → fsync JSONL → update in-memory index → save index atomically → release lock
-
-  Startup validation (validate_and_rebuild_index) runs before any write.
-  It does not need the global lock because GitHub Actions serialises runs via
-  concurrency groups.  After startup, the index is trusted within the lock.
+  validate_and_rebuild_index() also runs under the global lock.
+  No deadlock possible (sequential, not nested).
 
 State machine:
-  OUTCOME_PENDING → OUTCOME_RECORDED     (terminal: all tickers + SPY complete)
-  OUTCOME_PENDING → OUTCOME_INCOMPLETE   (terminal: partial data after grace period)
-  OUTCOME_PENDING → OUTCOME_UNAVAILABLE  (terminal: no usable data after grace period)
+  OUTCOME_PENDING → OUTCOME_RECORDED     (all tickers + SPY complete)
+  OUTCOME_PENDING → OUTCOME_INCOMPLETE   (some data after grace period)
+  OUTCOME_PENDING → OUTCOME_UNAVAILABLE  (no complete tickers after grace / empty list)
   Non-terminal helper: OUTCOME_FETCH_DEFERRED  (valid response, missing price rows)
 
+Event sequence invariants (per outcome_key):
+  [0]   OUTCOME_PENDING           (exactly one, always first)
+  [1..] OUTCOME_FETCH_DEFERRED    (zero or more)
+  [-1]  terminal event            (zero or one, always last)
+  Unknown event_type → CorruptionError
+
 Hash chain (record_version="1"):
-  event_hash = SHA-256(canonical_json(event_body_without_event_hash_field))
-  previous_event_hash = event_hash of prior event for same outcome_key (null for first)
-  Broken chains raise CorruptionError — fail-closed.
+  event_hash = SHA-256(canonical_json(event_body_excluding_event_hash))
+  previous_event_hash = event_hash of prior event (null for first)
+  Broken chains → CorruptionError (fail-closed)
 
 Idempotency:
-  PENDING  : pending_content_hash compared — IDEMPOTENT_MATCH or ContentConflictError
-  Terminals: terminal_content_hash compared — IDEMPOTENT_MATCH or ContentConflictError
-  FETCH_DEFERRED: deduplicated by (outcome_key, attempt_date, sorted missing_price_points)
+  PENDING  : pending_content_hash compared
+  Terminals: terminal_content_hash compared (includes exit_partition_yyyymm)
+  FETCH_DEFERRED: (outcome_key, attempt_date, sorted missing_price_points)
 
-Isolation: zero imports from V1 execution modules.
+Terminal payload validation (record_terminal):
+  Identity fields verified against PENDING.
+  State invariants verified per terminal type.
+  Schema constants verified: adjustment_mode, data_source, fetch_date_range.
+  Metrics recalculated and compared within 1e-9 tolerance.
+  First invalid payload → OutcomeValidationError (no write).
+
+JSONL integrity: any invalid non-empty line → CorruptionError (no lenient last-line skip).
+
+V1 isolation: no imports from V1 execution modules.
   Does NOT import: modules.portfolio, modules.orders, modules.fills,
                    modules.ledger, modules.state
   Does NOT call:   execute_buy, execute_sell, execute_pyramid_fill
-  Does NOT create: orders, fills, trades, or position changes
 """
 
 from __future__ import annotations
@@ -61,52 +69,40 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator, Literal
 
-import pandas as pd
-
 # ── Structural invariant ──────────────────────────────────────────────────────
 _ORDER_CREATION_BLOCKED: bool = True
 
 # ── Configuration constants ───────────────────────────────────────────────────
 
-# Pre-registered activation date for event_study_v1.
-# Only COMPLETED observations with intended_execution_session >= this date
-# are eligible for outcome tracking.  Immutable after V2B.4 activation.
 OUTCOME_TRACKING_START_SESSION: str = "2026-09-08"
-
-# Number of NYSE sessions strictly after exit_session that must have elapsed
-# before a missing-data PENDING may be terminated as INCOMPLETE or UNAVAILABLE.
 GRACE_SESSIONS: int = 5
-
-# Outcome definition version — part of the outcome_key.
-# Change this if the measurement definition changes (entry/exit timing, price type, etc.)
 OUTCOME_DEFINITION_VERSION: str = "event_study_v1"
-
-# Only strategy tracked in V2B.4.0
 STRATEGY_ID: str = "Factor_Only_Core_V2"
-
-# Valid holding session counts
 HOLDING_SESSIONS_TUPLE: tuple[int, ...] = (1, 5, 21, 63)
-
 RECORD_VERSION: str = "1"
+
+# Schema constants — required in every terminal payload
+ADJUSTMENT_MODE: str = "split_and_dividend_adjusted"
+DATA_SOURCE: str = "yfinance_daily_ohlcv"
 
 OUTCOME_DIR: Path = Path(__file__).parent.parent / "data_v4" / "v2b_outcomes"
 
-_HEX64_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
-_DATE_RE = __import__("re").compile(r"^\d{4}-\d{2}-\d{2}$")
-_YYYYMM_RE = __import__("re").compile(r"^\d{4}-\d{2}$")
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
 
 class CorruptionError(RuntimeError):
-    """Broken hash chain, tampered event_hash, invalid JSON, or duplicate key."""
+    """Broken hash chain, tampered event, invalid JSON, or duplicate key."""
 
 
 class InvalidTransitionError(RuntimeError):
@@ -118,7 +114,11 @@ class ContentConflictError(RuntimeError):
 
 
 class ObservationValidationError(ValueError):
-    """Observation data is structurally invalid (missing/duplicate tickers, etc.)."""
+    """Observation data is structurally invalid (missing key, duplicate tickers, etc.)."""
+
+
+class OutcomeValidationError(ValueError):
+    """Terminal payload fails invariant validation — no ledger write performed."""
 
 
 # ── State machine ─────────────────────────────────────────────────────────────
@@ -141,12 +141,10 @@ _ALL_EVENT_TYPES: frozenset[str] = _TERMINAL_STATES | _NON_TERMINAL_EVENTS
 
 
 def _canonical_json(obj: object) -> str:
-    """Strict canonical JSON for hashing.  Raises ValueError on NaN/Inf."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _store_json(obj: object) -> str:
-    """JSON for on-disk storage — same strict rules as canonical."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
@@ -164,7 +162,6 @@ def make_outcome_key(
     holding_sessions: int,
     outcome_definition_version: str,
 ) -> str:
-    """Deterministic outcome key.  Unique per strategy and definition version."""
     payload = (
         f"{observation_key}|{strategy_id}|{holding_sessions}|{outcome_definition_version}"
     )
@@ -180,7 +177,6 @@ def make_pending_content_hash(
     exit_partition_yyyymm: str,
     selected_tickers: list[str],
 ) -> str:
-    """Content hash for a PENDING event.  Used for idempotency comparison."""
     body = {
         "strategy_id": strategy_id,
         "outcome_definition_version": outcome_definition_version,
@@ -195,11 +191,9 @@ def make_pending_content_hash(
 
 def make_terminal_content_hash(payload: dict) -> str:
     """
-    Content hash for a terminal event (RECORDED / INCOMPLETE / UNAVAILABLE).
-
-    Covers all semantic result fields.  Excludes volatile timestamps
-    (fetched_at, measurement_date) and hash chain fields (event_hash,
-    previous_event_hash).
+    Content hash for a terminal event.  Covers all semantic result fields.
+    Excludes volatile timestamps (fetched_at, measurement_date) and chain fields.
+    Includes exit_partition_yyyymm.
     """
     body = {
         "event_type": payload["event_type"],
@@ -210,6 +204,7 @@ def make_terminal_content_hash(payload: dict) -> str:
         "holding_sessions": payload["holding_sessions"],
         "entry_session": payload["entry_session"],
         "exit_session": payload["exit_session"],
+        "exit_partition_yyyymm": payload.get("exit_partition_yyyymm"),
         "selected_tickers": sorted(payload["selected_tickers"]),
         "unavailable_tickers": sorted(payload.get("unavailable_tickers") or []),
         "unavailable_reasons": payload.get("unavailable_reasons") or {},
@@ -237,15 +232,8 @@ def make_terminal_content_hash(payload: dict) -> str:
 
 def compute_exit_session(entry_session: str, holding_sessions: int) -> str:
     """
-    Compute exit_session using inclusive holding-session counting.
-
-    entry_session counts as day 1, so:
-      holding_sessions=1  →  exit = entry_session  (same-day close)
-      holding_sessions=5  →  exit = 4th NYSE session after entry_session
-      holding_sessions=21 →  exit = 20th NYSE session after entry_session
-      holding_sessions=63 →  exit = 62nd NYSE session after entry_session
-
-    Uses the NYSE calendar; raises CalendarUnavailableError if unavailable.
+    Compute exit_session (inclusive counting: entry_session = day 1).
+    N=1 → same day.  N>1 → (N-1)th NYSE session after entry_session.
     """
     if holding_sessions not in HOLDING_SESSIONS_TUPLE:
         raise ValueError(
@@ -255,12 +243,6 @@ def compute_exit_session(entry_session: str, holding_sessions: int) -> str:
         return entry_session
     from modules.exchange_calendar import nth_session_after  # noqa: PLC0415
     return nth_session_after(entry_session, holding_sessions - 1)
-
-
-def _ny_today() -> str:
-    """Current date in America/New_York as YYYY-MM-DD."""
-    from zoneinfo import ZoneInfo  # noqa: PLC0415
-    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
 
 def _utc_now_iso() -> str:
@@ -305,14 +287,25 @@ def _global_lock() -> Generator[None, None, None]:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
+# ── Directory fsync ───────────────────────────────────────────────────────────
+
+
+def _fsync_dir(directory: Path) -> None:
+    """fsync directory so rename of atomic-write temp-files is crash-durable."""
+    fd = os.open(str(directory), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 # ── JSONL I/O ─────────────────────────────────────────────────────────────────
 
 
 def _read_jsonl(path: Path) -> list[dict]:
     """
-    Read all events from a JSONL file.
-    Incomplete last line is tolerated (skipped with a warning).
-    Any non-last-line JSON error raises CorruptionError (fail-closed).
+    Read all events from a JSONL file.  Fail-closed: any invalid non-empty line
+    raises CorruptionError.  Empty file returns [].
     """
     if not path.exists():
         return []
@@ -325,17 +318,10 @@ def _read_jsonl(path: Path) -> list[dict]:
         try:
             events.append(json.loads(stripped))
         except json.JSONDecodeError as exc:
-            if i == len(lines) - 1:
-                import warnings  # noqa: PLC0415
-                warnings.warn(
-                    f"v2b_outcome: incomplete last line in {path.name} — skipped",
-                    stacklevel=2,
-                )
-            else:
-                raise CorruptionError(
-                    f"v2b_outcome: JSON parse error at line {i + 1} in {path.name} "
-                    f"(non-last line — fail-closed): {exc}"
-                ) from exc
+            raise CorruptionError(
+                f"v2b_outcome: JSON parse error at line {i + 1} in {path.name} "
+                f"(fail-closed — manual recovery required): {exc}"
+            ) from exc
     return events
 
 
@@ -353,7 +339,6 @@ def _append_event_to_disk(event: dict, path: Path) -> None:
 
 
 def _load_idx() -> dict[str, str]:
-    """Load index from disk.  Returns {} if absent or unreadable."""
     p = _idx_path()
     if not p.exists():
         return {}
@@ -364,7 +349,7 @@ def _load_idx() -> dict[str, str]:
 
 
 def _save_idx_atomic(idx: dict[str, str]) -> None:
-    """Write index atomically via tempfile + rename and fsync."""
+    """Write index atomically via tempfile + rename, then fsync the directory."""
     OUTCOME_DIR.mkdir(parents=True, exist_ok=True)
     p = _idx_path()
     data = _store_json(idx) + "\n"
@@ -375,6 +360,7 @@ def _save_idx_atomic(idx: dict[str, str]) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_path, p)
+        _fsync_dir(OUTCOME_DIR)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -387,71 +373,121 @@ def _save_idx_atomic(idx: dict[str, str]) -> None:
 
 
 def _verify_chain(events: list[dict], outcome_key: str, source: str) -> None:
-    """
-    Verify the hash chain for a sequence of events belonging to outcome_key.
-    Raises CorruptionError on any violation.
-    """
+    """Verify SHA-256 hash chain for a sequence of events.  Fail-closed."""
     prev_hash: str | None = None
     for i, ev in enumerate(events):
-        ev_type = ev.get("event_type", "?")
+        et = ev.get("event_type", "?")
 
-        # event_hash must be present and 64 hex chars
         ev_hash = ev.get("event_hash")
         if not isinstance(ev_hash, str) or not _HEX64_RE.match(ev_hash):
             raise CorruptionError(
                 f"v2b_outcome: missing/invalid event_hash at position {i} "
-                f"(type={ev_type}) in {source}"
+                f"(type={et}) in {source}"
             )
-
-        # previous_event_hash field must be present
         if "previous_event_hash" not in ev:
             raise CorruptionError(
                 f"v2b_outcome: missing previous_event_hash field at position {i} "
-                f"(type={ev_type}) in {source}"
+                f"(type={et}) in {source}"
             )
         peh = ev["previous_event_hash"]
         if i == 0:
             if peh is not None:
                 raise CorruptionError(
                     f"v2b_outcome: first event must have previous_event_hash=null "
-                    f"at position 0 (type={ev_type}) in {source}, got {peh!r}"
+                    f"at position 0 (type={et}) in {source}, got {peh!r}"
                 )
         else:
             if peh != prev_hash:
                 raise CorruptionError(
-                    f"v2b_outcome: broken chain at position {i} (type={ev_type}) "
+                    f"v2b_outcome: broken chain at position {i} (type={et}) "
                     f"in {source}: expected previous_event_hash={prev_hash!r}, "
                     f"got {peh!r}"
                 )
 
-        # Recompute event_hash and compare
         body_for_hash = {k: v for k, v in ev.items() if k != "event_hash"}
         expected_hash = _compute_event_hash(body_for_hash)
         if ev_hash != expected_hash:
             raise CorruptionError(
-                f"v2b_outcome: event_hash mismatch at position {i} (type={ev_type}) "
+                f"v2b_outcome: event_hash mismatch at position {i} (type={et}) "
                 f"in {source}: stored={ev_hash!r}, computed={expected_hash!r}"
             )
-
         prev_hash = ev_hash
 
 
 def _get_chain_tip(events: list[dict]) -> str | None:
-    """Return event_hash of the last event in the chain, or None if empty."""
     if not events:
         return None
     return events[-1]["event_hash"]
+
+
+# ── Event sequence validation ─────────────────────────────────────────────────
+
+
+def _validate_event_sequence(events: list[dict], source: str) -> None:
+    """
+    Validate state machine sequence for events belonging to one outcome_key.
+
+    Invariants:
+    - First event is exactly OUTCOME_PENDING
+    - Middle events are only OUTCOME_FETCH_DEFERRED
+    - At most one terminal event; it must be the last event
+    - All event_type values are known (_ALL_EVENT_TYPES)
+    - All events share the same outcome_key
+    """
+    if not events:
+        return
+
+    for i, ev in enumerate(events):
+        et = ev.get("event_type")
+        if et not in _ALL_EVENT_TYPES:
+            raise CorruptionError(
+                f"v2b_outcome: unknown event_type {et!r} at position {i} in {source}"
+            )
+
+    if events[0].get("event_type") != "OUTCOME_PENDING":
+        raise CorruptionError(
+            f"v2b_outcome: first event is {events[0].get('event_type')!r}, "
+            f"expected OUTCOME_PENDING in {source}"
+        )
+
+    ok = events[0].get("outcome_key")
+    for i, ev in enumerate(events):
+        if ev.get("outcome_key") != ok:
+            raise CorruptionError(
+                f"v2b_outcome: mismatched outcome_key at position {i} in {source}"
+            )
+
+    terminal_events = [e for e in events if e.get("event_type") in _TERMINAL_STATES]
+    if len(terminal_events) > 1:
+        raise CorruptionError(
+            f"v2b_outcome: multiple terminal events in {source}: "
+            f"{[e['event_type'] for e in terminal_events]}"
+        )
+
+    if terminal_events:
+        if events[-1].get("event_type") not in _TERMINAL_STATES:
+            raise CorruptionError(
+                f"v2b_outcome: terminal event is not the last event in {source}"
+            )
+        for ev in events[1:-1]:
+            if ev.get("event_type") != "OUTCOME_FETCH_DEFERRED":
+                raise CorruptionError(
+                    f"v2b_outcome: unexpected {ev.get('event_type')!r} between "
+                    f"PENDING and terminal in {source}"
+                )
+    else:
+        for ev in events[1:]:
+            if ev.get("event_type") != "OUTCOME_FETCH_DEFERRED":
+                raise CorruptionError(
+                    f"v2b_outcome: unexpected {ev.get('event_type')!r} after "
+                    f"PENDING (no terminal yet) in {source}"
+                )
 
 
 # ── Status derivation ─────────────────────────────────────────────────────────
 
 
 def _derive_status(events: list[dict]) -> str | None:
-    """
-    Derive current status from event list.
-    Returns None if no events, 'OUTCOME_PENDING' if pending with no terminal,
-    or the terminal state type if one exists.
-    """
     if not events:
         return None
     for ev in events:
@@ -469,10 +505,9 @@ def _read_all_events_for_key(
 ) -> tuple[list[dict], str | None]:
     """
     Return (events, partition_yyyymm) for outcome_key, or ([], None) if not found.
-    Scans from index first; falls back to full JSONL scan on index miss.
-    Raises CorruptionError if the key appears in multiple partitions.
+    Fast path via index; falls back to full scan on index miss.
+    Raises CorruptionError if key appears in multiple partitions.
     """
-    # Fast path via index
     known_partition = idx.get(outcome_key)
     if known_partition:
         path = _ledger_path(known_partition)
@@ -480,16 +515,14 @@ def _read_all_events_for_key(
         key_events = [e for e in all_events if e.get("outcome_key") == outcome_key]
         if key_events:
             return key_events, known_partition
-        # Index points to wrong partition — fall through to full scan
 
-    # Slow path: scan all partitions
     found_partition: str | None = None
     found_events: list[dict] = []
     for path in _all_jsonl_paths():
-        events_in_file = _read_jsonl(path)
-        key_events = [e for e in events_in_file if e.get("outcome_key") == outcome_key]
+        all_events = _read_jsonl(path)
+        key_events = [e for e in all_events if e.get("outcome_key") == outcome_key]
         if key_events:
-            part = path.name[:7]  # YYYY-MM prefix
+            part = path.name[:7]
             if found_partition is not None and found_partition != part:
                 raise CorruptionError(
                     f"v2b_outcome: outcome_key {outcome_key[:16]}… appears in multiple "
@@ -501,53 +534,303 @@ def _read_all_events_for_key(
     return found_events, found_partition
 
 
+# ── Terminal payload validation ───────────────────────────────────────────────
+
+
+def _validate_identity_fields(payload: dict, pending_event: dict) -> None:
+    """Verify terminal payload identity fields exactly match the original PENDING."""
+    for field in (
+        "outcome_key",
+        "observation_key",
+        "strategy_id",
+        "outcome_definition_version",
+        "holding_sessions",
+        "entry_session",
+        "exit_session",
+        "exit_partition_yyyymm",
+    ):
+        pval = pending_event.get(field)
+        tval = payload.get(field)
+        if pval != tval:
+            raise OutcomeValidationError(
+                f"Terminal payload {field!r} mismatch with PENDING: "
+                f"pending={pval!r}, payload={tval!r}"
+            )
+
+    pending_tickers = sorted(pending_event.get("selected_tickers", []))
+    payload_tickers = sorted(payload.get("selected_tickers", []))
+    if pending_tickers != payload_tickers:
+        raise OutcomeValidationError(
+            f"Terminal payload selected_tickers mismatch: "
+            f"pending={pending_tickers}, payload={payload_tickers}"
+        )
+
+
+def _validate_schema_fields(payload: dict, pending_event: dict) -> None:
+    """Verify required schema constants are present and correct."""
+    adj = payload.get("adjustment_mode")
+    if adj != ADJUSTMENT_MODE:
+        raise OutcomeValidationError(
+            f"adjustment_mode must be {ADJUSTMENT_MODE!r}, got {adj!r}"
+        )
+    src = payload.get("data_source")
+    if src != DATA_SOURCE:
+        raise OutcomeValidationError(
+            f"data_source must be {DATA_SOURCE!r}, got {src!r}"
+        )
+    expected_fdr = [pending_event["entry_session"], pending_event["exit_session"]]
+    fdr = payload.get("fetch_date_range")
+    if fdr != expected_fdr:
+        raise OutcomeValidationError(
+            f"fetch_date_range must be {expected_fdr!r}, got {fdr!r}"
+        )
+
+
+def _check_close(label: str, expected: float, actual: object) -> None:
+    """Raise OutcomeValidationError if actual doesn't match expected within 1e-9."""
+    if actual is None or not isinstance(actual, (int, float)):
+        raise OutcomeValidationError(
+            f"{label}: expected finite float {expected:.10f}, got {actual!r}"
+        )
+    if not math.isclose(float(actual), expected, rel_tol=1e-9, abs_tol=1e-9):
+        raise OutcomeValidationError(
+            f"{label}: expected {expected:.10f}, got {float(actual):.10f}"
+        )
+
+
+def _validate_recorded_invariants(payload: dict) -> None:
+    """OUTCOME_RECORDED: all tickers + SPY complete, aggregates verified, subset null."""
+    selected_tickers = payload.get("selected_tickers", [])
+    entry_prices = payload.get("entry_prices", {})
+    exit_prices = payload.get("exit_prices", {})
+
+    if not selected_tickers:
+        raise OutcomeValidationError(
+            "OUTCOME_RECORDED requires non-empty selected_tickers"
+        )
+    for t in selected_tickers:
+        ep = entry_prices.get(t)
+        xp = exit_prices.get(t)
+        if ep is None or not (isinstance(ep, (int, float)) and ep > 0 and math.isfinite(ep)):
+            raise OutcomeValidationError(
+                f"OUTCOME_RECORDED: missing/invalid entry_price for {t!r}: {ep!r}"
+            )
+        if xp is None or not (isinstance(xp, (int, float)) and xp > 0 and math.isfinite(xp)):
+            raise OutcomeValidationError(
+                f"OUTCOME_RECORDED: missing/invalid exit_price for {t!r}: {xp!r}"
+            )
+    if set(entry_prices.keys()) != set(selected_tickers):
+        raise OutcomeValidationError(
+            "OUTCOME_RECORDED: entry_prices keys must equal selected_tickers"
+        )
+    if set(exit_prices.keys()) != set(selected_tickers):
+        raise OutcomeValidationError(
+            "OUTCOME_RECORDED: exit_prices keys must equal selected_tickers"
+        )
+
+    spy_ep = payload.get("spy_entry_price")
+    spy_xp = payload.get("spy_exit_price")
+    if spy_ep is None or not (isinstance(spy_ep, (int, float)) and spy_ep > 0 and math.isfinite(spy_ep)):
+        raise OutcomeValidationError(
+            f"OUTCOME_RECORDED: missing/invalid spy_entry_price: {spy_ep!r}"
+        )
+    if spy_xp is None or not (isinstance(spy_xp, (int, float)) and spy_xp > 0 and math.isfinite(spy_xp)):
+        raise OutcomeValidationError(
+            f"OUTCOME_RECORDED: missing/invalid spy_exit_price: {spy_xp!r}"
+        )
+
+    if payload.get("unavailable_tickers"):
+        raise OutcomeValidationError(
+            "OUTCOME_RECORDED: unavailable_tickers must be empty"
+        )
+    if payload.get("portfolio_return_complete") is not True:
+        raise OutcomeValidationError(
+            "OUTCOME_RECORDED: portfolio_return_complete must be True"
+        )
+    if payload.get("available_subset_return_pct") is not None:
+        raise OutcomeValidationError(
+            "OUTCOME_RECORDED: available_subset_return_pct must be null"
+        )
+
+    per_ticker_pct = payload.get("per_ticker_return_pct", {})
+    if set(per_ticker_pct.keys()) != set(selected_tickers):
+        raise OutcomeValidationError(
+            "OUTCOME_RECORDED: per_ticker_return_pct keys must equal selected_tickers"
+        )
+    for t in selected_tickers:
+        expected_r = ((exit_prices[t] - entry_prices[t]) / entry_prices[t]) * 100.0
+        _check_close(f"per_ticker_return_pct[{t!r}]", expected_r, per_ticker_pct.get(t))
+
+    expected_spy = ((spy_xp - spy_ep) / spy_ep) * 100.0
+    _check_close("spy_return_pct", expected_spy, payload.get("spy_return_pct"))
+
+    expected_pf = sum(
+        ((exit_prices[t] - entry_prices[t]) / entry_prices[t]) * 100.0
+        for t in selected_tickers
+    ) / len(selected_tickers)
+    _check_close("portfolio_return_pct", expected_pf, payload.get("portfolio_return_pct"))
+    _check_close(
+        "forward_alpha_vs_spy",
+        expected_pf - expected_spy,
+        payload.get("forward_alpha_vs_spy"),
+    )
+
+    expected_hr = sum(
+        1 for t in selected_tickers
+        if ((exit_prices[t] - entry_prices[t]) / entry_prices[t]) * 100.0 > expected_spy
+    ) / len(selected_tickers)
+    _check_close("hit_rate_vs_spy", expected_hr, payload.get("hit_rate_vs_spy"))
+
+
+def _validate_incomplete_invariants(payload: dict) -> None:
+    """OUTCOME_INCOMPLETE: ≥1 complete ticker, ≥1 missing, aggregates null, subset verified."""
+    selected_tickers = payload.get("selected_tickers", [])
+    entry_prices = payload.get("entry_prices", {})
+    exit_prices = payload.get("exit_prices", {})
+
+    complete_tickers = [
+        t for t in selected_tickers if t in entry_prices and t in exit_prices
+    ]
+    if not complete_tickers:
+        raise OutcomeValidationError(
+            "OUTCOME_INCOMPLETE: requires at least one complete ticker (entry + exit prices)"
+        )
+
+    spy_complete = (
+        payload.get("spy_entry_price") is not None
+        and payload.get("spy_exit_price") is not None
+    )
+    missing_tickers = [t for t in selected_tickers if t not in complete_tickers]
+    if not missing_tickers and spy_complete:
+        raise OutcomeValidationError(
+            "OUTCOME_INCOMPLETE: no missing data found — should use OUTCOME_RECORDED"
+        )
+
+    if payload.get("portfolio_return_complete") is not False:
+        raise OutcomeValidationError(
+            "OUTCOME_INCOMPLETE: portfolio_return_complete must be False"
+        )
+    for field in ("portfolio_return_pct", "forward_alpha_vs_spy", "hit_rate_vs_spy"):
+        if payload.get(field) is not None:
+            raise OutcomeValidationError(f"OUTCOME_INCOMPLETE: {field} must be null")
+
+    per_ticker_pct = payload.get("per_ticker_return_pct", {})
+    for t in complete_tickers:
+        ep, xp = entry_prices[t], exit_prices[t]
+        _check_close(
+            f"per_ticker_return_pct[{t!r}]",
+            ((xp - ep) / ep) * 100.0,
+            per_ticker_pct.get(t),
+        )
+
+    expected_subset = sum(
+        ((exit_prices[t] - entry_prices[t]) / entry_prices[t]) * 100.0
+        for t in complete_tickers
+    ) / len(complete_tickers)
+    _check_close(
+        "available_subset_return_pct",
+        expected_subset,
+        payload.get("available_subset_return_pct"),
+    )
+
+    for t, reason in (payload.get("unavailable_reasons") or {}).items():
+        if reason != "price_missing_after_grace":
+            raise OutcomeValidationError(
+                f"OUTCOME_INCOMPLETE: unavailable_reasons[{t!r}] must be "
+                f"'price_missing_after_grace', got {reason!r}"
+            )
+
+
+def _validate_unavailable_invariants(payload: dict) -> None:
+    """OUTCOME_UNAVAILABLE: no complete selected ticker, all aggregates null."""
+    selected_tickers = payload.get("selected_tickers", [])
+    entry_prices = payload.get("entry_prices", {})
+    exit_prices = payload.get("exit_prices", {})
+
+    complete = [t for t in selected_tickers if t in entry_prices and t in exit_prices]
+    if complete:
+        raise OutcomeValidationError(
+            f"OUTCOME_UNAVAILABLE: has complete tickers {complete} — "
+            f"should use INCOMPLETE or RECORDED"
+        )
+    if payload.get("portfolio_return_complete") is not False:
+        raise OutcomeValidationError(
+            "OUTCOME_UNAVAILABLE: portfolio_return_complete must be False"
+        )
+    for field in (
+        "portfolio_return_pct",
+        "forward_alpha_vs_spy",
+        "hit_rate_vs_spy",
+        "available_subset_return_pct",
+    ):
+        if payload.get(field) is not None:
+            raise OutcomeValidationError(f"OUTCOME_UNAVAILABLE: {field} must be null")
+
+    for t, reason in (payload.get("unavailable_reasons") or {}).items():
+        if reason != "price_missing_after_grace":
+            raise OutcomeValidationError(
+                f"OUTCOME_UNAVAILABLE: unavailable_reasons[{t!r}] must be "
+                f"'price_missing_after_grace', got {reason!r}"
+            )
+
+
+def _validate_terminal_payload(payload: dict, pending_event: dict) -> None:
+    """Full validation of a terminal payload.  Raises OutcomeValidationError on any failure."""
+    _validate_identity_fields(payload, pending_event)
+    _validate_schema_fields(payload, pending_event)
+    et = payload["event_type"]
+    if et == "OUTCOME_RECORDED":
+        _validate_recorded_invariants(payload)
+    elif et == "OUTCOME_INCOMPLETE":
+        _validate_incomplete_invariants(payload)
+    elif et == "OUTCOME_UNAVAILABLE":
+        _validate_unavailable_invariants(payload)
+
+
 # ── Startup validation ────────────────────────────────────────────────────────
 
 
 def validate_and_rebuild_index() -> dict[str, str]:
     """
-    Scan all JSONL partition files, verify hash chains, detect duplicate keys
-    across partitions, and rebuild the index if it is missing or stale.
+    Scan all JSONL partitions under the global lock, verify hash chains and event
+    sequences, detect duplicate keys, and rebuild the index if stale.
 
-    Called once at runner startup before any writes.
-    Raises CorruptionError on any integrity violation.
-    Returns the validated/rebuilt index dict.
+    Raises CorruptionError on any integrity violation (fail-closed).
+    Returns the validated index dict.
     """
     OUTCOME_DIR.mkdir(parents=True, exist_ok=True)
-    new_idx: dict[str, str] = {}
-    partition_for_key: dict[str, str] = {}
 
-    for path in _all_jsonl_paths():
-        partition = path.name[:7]
-        all_events = _read_jsonl(path)
+    with _global_lock():
+        new_idx: dict[str, str] = {}
+        partition_for_key: dict[str, str] = {}
 
-        # Group events by outcome_key
-        by_key: dict[str, list[dict]] = {}
-        for ev in all_events:
-            ok = ev.get("outcome_key")
-            if not ok:
-                raise CorruptionError(
-                    f"v2b_outcome: event missing outcome_key in {path.name}"
-                )
-            by_key.setdefault(ok, []).append(ev)
+        for path in _all_jsonl_paths():
+            partition = path.name[:7]
+            all_events = _read_jsonl(path)
 
-        for ok, events in by_key.items():
-            # Global uniqueness: same key must not appear in multiple partitions
-            if ok in partition_for_key and partition_for_key[ok] != partition:
-                raise CorruptionError(
-                    f"v2b_outcome: outcome_key {ok[:16]}… appears in both "
-                    f"{partition_for_key[ok]!r} and {partition!r}"
-                )
-            partition_for_key[ok] = partition
+            by_key: dict[str, list[dict]] = {}
+            for ev in all_events:
+                ok = ev.get("outcome_key")
+                if not ok:
+                    raise CorruptionError(
+                        f"v2b_outcome: event missing outcome_key in {path.name}"
+                    )
+                by_key.setdefault(ok, []).append(ev)
 
-            # Verify hash chain
-            _verify_chain(events, ok, path.name)
-            new_idx[ok] = partition
+            for ok, events in by_key.items():
+                if ok in partition_for_key and partition_for_key[ok] != partition:
+                    raise CorruptionError(
+                        f"v2b_outcome: outcome_key {ok[:16]}… appears in both "
+                        f"{partition_for_key[ok]!r} and {partition!r}"
+                    )
+                partition_for_key[ok] = partition
+                _verify_chain(events, ok, path.name)
+                _validate_event_sequence(events, path.name)
+                new_idx[ok] = partition
 
-    # Rebuild index if it differs from current
-    current_idx = _load_idx()
-    if new_idx != current_idx:
-        _save_idx_atomic(new_idx)
+        current_idx = _load_idx()
+        if new_idx != current_idx:
+            _save_idx_atomic(new_idx)
 
     return new_idx
 
@@ -565,22 +848,15 @@ def create_pending(
     selected_tickers: list[str],
 ) -> dict | Literal["IDEMPOTENT_MATCH"]:
     """
-    Create an OUTCOME_PENDING event for the given parameters.
+    Create an OUTCOME_PENDING event.  Empty selected_tickers is valid.
 
-    Validates that selected_tickers contains no duplicates and no empty strings.
-    sorted(selected_tickers) is used for all hash computations.
-
-    Returns:
-      dict                — new PENDING event (written to ledger)
-      "IDEMPOTENT_MATCH"  — identical PENDING already exists
+    Returns "IDEMPOTENT_MATCH" if identical PENDING already exists.
 
     Raises:
-      ContentConflictError   — same outcome_key, different semantic content
-      InvalidTransitionError — outcome already in a terminal state (unless content matches)
-      CorruptionError        — broken chain or invalid data
-      ObservationValidationError — invalid tickers
+      ObservationValidationError — non-string, empty-string, or duplicate tickers
+      ContentConflictError       — same key, different content
+      CorruptionError            — broken chain or corrupt data
     """
-    # Validate tickers
     if not isinstance(selected_tickers, list):
         raise ObservationValidationError(
             f"selected_tickers must be a list, got {type(selected_tickers).__name__}"
@@ -607,25 +883,18 @@ def create_pending(
 
     with _global_lock():
         idx = _load_idx()
-        existing_events, existing_partition = _read_all_events_for_key(outcome_key, idx)
+        existing_events, _ = _read_all_events_for_key(outcome_key, idx)
 
         if existing_events:
             _verify_chain(existing_events, outcome_key, f"outcome_key={outcome_key[:16]}…")
-            first_ev = existing_events[0]
-            stored_pch = first_ev.get("pending_content_hash")
-
-            # Compare against the original PENDING event's content hash
+            stored_pch = existing_events[0].get("pending_content_hash")
             if stored_pch == pch:
                 return "IDEMPOTENT_MATCH"
-            else:
-                raise ContentConflictError(
-                    f"outcome_key {outcome_key[:16]}… already exists with different "
-                    f"content (strategy/tickers/sessions mismatch). "
-                    f"stored_pch={stored_pch!r} != new_pch={pch!r}"
-                )
+            raise ContentConflictError(
+                f"outcome_key {outcome_key[:16]}… already exists with different content. "
+                f"stored_pch={stored_pch!r} != new_pch={pch!r}"
+            )
 
-        # New outcome — write PENDING
-        created_at = _utc_now_iso()
         event_body: dict = {
             "event_type": "OUTCOME_PENDING",
             "record_version": RECORD_VERSION,
@@ -639,7 +908,7 @@ def create_pending(
             "exit_partition_yyyymm": exit_partition_yyyymm,
             "selected_tickers": sorted_tickers,
             "pending_content_hash": pch,
-            "created_at": created_at,
+            "created_at": _utc_now_iso(),
             "order_creation_blocked": True,
             "previous_event_hash": None,
         }
@@ -649,7 +918,6 @@ def create_pending(
 
         path = _ledger_path(exit_partition_yyyymm)
         _append_event_to_disk(event_body, path)
-
         idx[outcome_key] = exit_partition_yyyymm
         _save_idx_atomic(idx)
 
@@ -668,44 +936,35 @@ def record_fetch_deferred(
     Record that a valid yfinance response was received but price rows were missing.
 
     Deduplicates by (outcome_key, attempt_date, canonical sorted missing_price_points).
-    Returns None if deduplicated (identical event already exists for today).
-    Raises CorruptionError / InvalidTransitionError on integrity violations.
-
-    missing_price_points: list of {symbol, field, session} dicts.
+    Returns None if deduplicated.  missing_price_points: [{symbol, field, session}].
     """
-    _canonical_missing = sorted(
-        missing_price_points,
-        key=lambda x: (_canonical_json(x),),
-    )
-    canonical_mpp_str = _canonical_json(_canonical_missing)
+    canonical_missing = sorted(missing_price_points, key=lambda x: _canonical_json(x))
+    canonical_mpp_str = _canonical_json(canonical_missing)
 
     with _global_lock():
         idx = _load_idx()
         existing_events, partition = _read_all_events_for_key(outcome_key, idx)
         if not existing_events:
             raise InvalidTransitionError(
-                f"record_fetch_deferred: outcome_key {outcome_key[:16]}… not found in ledger"
+                f"record_fetch_deferred: outcome_key {outcome_key[:16]}… not found"
             )
         _verify_chain(existing_events, outcome_key, f"outcome_key={outcome_key[:16]}…")
 
         status = _derive_status(existing_events)
         if status in _TERMINAL_STATES:
             raise InvalidTransitionError(
-                f"record_fetch_deferred: outcome_key {outcome_key[:16]}… is already in "
-                f"terminal state {status!r} — FETCH_DEFERRED not allowed"
+                f"record_fetch_deferred: outcome_key {outcome_key[:16]}… is already "
+                f"terminal ({status!r}) — FETCH_DEFERRED not allowed"
             )
 
-        # Deduplication check
         for ev in existing_events:
             if ev.get("event_type") != "OUTCOME_FETCH_DEFERRED":
                 continue
             if ev.get("attempt_date") != attempt_date:
                 continue
-            stored_mpp = ev.get("missing_price_points", [])
-            if _canonical_json(stored_mpp) == canonical_mpp_str:
-                return None  # deduplicated
+            if _canonical_json(ev.get("missing_price_points", [])) == canonical_mpp_str:
+                return None
 
-        # Build and append FETCH_DEFERRED event
         chain_tip = _get_chain_tip(existing_events)
         event_body: dict = {
             "event_type": "OUTCOME_FETCH_DEFERRED",
@@ -715,7 +974,7 @@ def record_fetch_deferred(
             "outcome_definition_version": existing_events[0].get("outcome_definition_version"),
             "attempted_at": attempted_at,
             "attempt_date": attempt_date,
-            "missing_price_points": _canonical_missing,
+            "missing_price_points": canonical_missing,
             "missing_data_class": "price_row_missing",
             "source": source,
             "detail": detail,
@@ -728,7 +987,6 @@ def record_fetch_deferred(
 
         path = _ledger_path(partition)
         _append_event_to_disk(event_body, path)
-        # index partition unchanged — no index update needed
 
     return event_body
 
@@ -740,22 +998,28 @@ def record_terminal(
     """
     Write a terminal event (OUTCOME_RECORDED / OUTCOME_INCOMPLETE / OUTCOME_UNAVAILABLE).
 
-    terminal_payload must include 'event_type' and all semantic result fields.
-    terminal_content_hash is computed and stored in the event; used for idempotency.
+    Validates terminal_payload against the original PENDING and state invariants
+    before any write.  An invalid payload raises OutcomeValidationError with no write.
 
-    Returns:
-      dict                — written terminal event
-      "IDEMPOTENT_MATCH"  — identical terminal event already exists
+    Returns "IDEMPOTENT_MATCH" if identical terminal already exists.
 
     Raises:
-      ContentConflictError   — same outcome_key + same event_type but different content
-      InvalidTransitionError — same outcome_key but different terminal type already exists,
-                               or attempt to terminate a non-PENDING outcome
-      CorruptionError        — broken chain
+      OutcomeValidationError  — payload fails validation (no write)
+      ContentConflictError    — same type but different content
+      InvalidTransitionError  — wrong type already written, or no PENDING found
+      CorruptionError         — broken chain
     """
-    event_type = terminal_payload["event_type"]
+    event_type = terminal_payload.get("event_type", "")
     if event_type not in _TERMINAL_STATES:
-        raise ValueError(f"record_terminal: event_type {event_type!r} is not a terminal state")
+        raise ValueError(
+            f"record_terminal: event_type {event_type!r} is not a terminal state"
+        )
+
+    payload_ok = terminal_payload.get("outcome_key")
+    if payload_ok != outcome_key:
+        raise OutcomeValidationError(
+            f"record_terminal: payload outcome_key {payload_ok!r} != argument {outcome_key!r}"
+        )
 
     tch = make_terminal_content_hash(terminal_payload)
 
@@ -764,35 +1028,43 @@ def record_terminal(
         existing_events, partition = _read_all_events_for_key(outcome_key, idx)
         if not existing_events:
             raise InvalidTransitionError(
-                f"record_terminal: outcome_key {outcome_key[:16]}… not found in ledger"
+                f"record_terminal: outcome_key {outcome_key[:16]}… not found"
             )
         _verify_chain(existing_events, outcome_key, f"outcome_key={outcome_key[:16]}…")
 
         status = _derive_status(existing_events)
         if status in _TERMINAL_STATES:
-            # Find the stored terminal event
-            terminal_ev = next(e for e in existing_events if e.get("event_type") in _TERMINAL_STATES)
+            terminal_ev = next(
+                e for e in existing_events if e.get("event_type") in _TERMINAL_STATES
+            )
             stored_type = terminal_ev.get("event_type")
             if stored_type != event_type:
                 raise InvalidTransitionError(
-                    f"record_terminal: outcome_key {outcome_key[:16]}… is already in "
-                    f"terminal state {stored_type!r} — cannot transition to {event_type!r}"
+                    f"record_terminal: outcome_key {outcome_key[:16]}… is already "
+                    f"{stored_type!r} — cannot transition to {event_type!r}"
                 )
             stored_tch = terminal_ev.get("terminal_content_hash")
             if stored_tch == tch:
                 return "IDEMPOTENT_MATCH"
-            else:
-                raise ContentConflictError(
-                    f"record_terminal: outcome_key {outcome_key[:16]}… already has "
-                    f"{event_type!r} with different content. "
-                    f"stored_tch={stored_tch!r} != new_tch={tch!r}"
-                )
+            raise ContentConflictError(
+                f"record_terminal: outcome_key {outcome_key[:16]}… already has "
+                f"{event_type!r} with different content."
+            )
 
         if status != "OUTCOME_PENDING":
             raise InvalidTransitionError(
-                f"record_terminal: outcome_key {outcome_key[:16]}… has unexpected status "
-                f"{status!r} — only OUTCOME_PENDING may transition to terminal"
+                f"record_terminal: unexpected status {status!r} — only PENDING may terminate"
             )
+
+        first_ev = existing_events[0]
+        if first_ev.get("event_type") != "OUTCOME_PENDING":
+            raise CorruptionError(
+                f"record_terminal: first event for {outcome_key[:16]}… is "
+                f"{first_ev.get('event_type')!r}, expected OUTCOME_PENDING"
+            )
+
+        # Validate payload before any write (raises OutcomeValidationError on failure)
+        _validate_terminal_payload(terminal_payload, first_ev)
 
         chain_tip = _get_chain_tip(existing_events)
         event_body: dict = dict(terminal_payload)
@@ -801,7 +1073,6 @@ def record_terminal(
         event_body["terminal_content_hash"] = tch
         event_body["order_creation_blocked"] = True
         event_body["previous_event_hash"] = chain_tip
-        # Remove event_hash if caller accidentally included it
         event_body.pop("event_hash", None)
         event_body["event_hash"] = _compute_event_hash(
             {k: v for k, v in event_body.items() if k != "event_hash"}
@@ -809,7 +1080,6 @@ def record_terminal(
 
         path = _ledger_path(partition)
         _append_event_to_disk(event_body, path)
-        # index partition unchanged — no index update needed
 
     return event_body
 
@@ -818,36 +1088,25 @@ def record_terminal(
 
 
 def get_outcome_events(outcome_key: str) -> list[dict]:
-    """Return all events for the given outcome_key in append order."""
     idx = _load_idx()
     events, _ = _read_all_events_for_key(outcome_key, idx)
     return events
 
 
 def get_outcome_status(outcome_key: str) -> str | None:
-    """Return current outcome status, or None if outcome_key not found."""
     return _derive_status(get_outcome_events(outcome_key))
 
 
 def list_pending_outcomes() -> list[dict]:
-    """
-    Return the initial OUTCOME_PENDING event for every outcome that is still
-    in PENDING status (no terminal event written yet).
-
-    Used by the runner to find outcomes that have matured (exit_session passed).
-    """
+    """Return the initial PENDING event for every outcome still in PENDING status."""
     result: list[dict] = []
     idx = _load_idx()
-
     for outcome_key, partition in idx.items():
         path = _ledger_path(partition)
         all_events = _read_jsonl(path)
         key_events = [e for e in all_events if e.get("outcome_key") == outcome_key]
         if not key_events:
             continue
-        status = _derive_status(key_events)
-        if status == "OUTCOME_PENDING":
-            first_ev = key_events[0]
-            result.append(first_ev)
-
+        if _derive_status(key_events) == "OUTCOME_PENDING":
+            result.append(key_events[0])
     return result
