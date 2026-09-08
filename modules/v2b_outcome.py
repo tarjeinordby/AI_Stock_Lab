@@ -74,7 +74,7 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Generator, Literal
 
@@ -97,6 +97,7 @@ DATA_SOURCE: str = "yfinance_daily_ohlcv"
 OUTCOME_DIR: Path = Path(__file__).parent.parent / "data_v4" / "v2b_outcomes"
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
@@ -585,6 +586,40 @@ def _validate_schema_fields(payload: dict, pending_event: dict) -> None:
             f"fetch_date_range must be {expected_fdr!r}, got {fdr!r}"
         )
 
+    # provider_end_exclusive: calendar day after exit_session
+    exit_session = pending_event["exit_session"]
+    expected_pex = (
+        datetime.strptime(exit_session, "%Y-%m-%d") + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+    pex = payload.get("provider_end_exclusive")
+    if pex != expected_pex:
+        raise OutcomeValidationError(
+            f"provider_end_exclusive must be {expected_pex!r} "
+            f"(calendar day after exit_session={exit_session!r}), got {pex!r}"
+        )
+
+    # measurement_date: required, must be YYYY-MM-DD
+    measurement_date = payload.get("measurement_date")
+    if not isinstance(measurement_date, str) or not _DATE_RE.match(measurement_date):
+        raise OutcomeValidationError(
+            f"measurement_date must be a YYYY-MM-DD string, got {measurement_date!r}"
+        )
+
+    # fetched_at: non-null iff selected_tickers is non-empty
+    selected_tickers = pending_event.get("selected_tickers", [])
+    fetched_at = payload.get("fetched_at")
+    if selected_tickers:
+        if not isinstance(fetched_at, str) or not fetched_at.strip():
+            raise OutcomeValidationError(
+                f"fetched_at must be a non-empty ISO timestamp string for "
+                f"non-empty selected_tickers, got {fetched_at!r}"
+            )
+    else:
+        if fetched_at is not None:
+            raise OutcomeValidationError(
+                f"fetched_at must be null for empty selected_tickers, got {fetched_at!r}"
+            )
+
 
 def _check_close(label: str, expected: float, actual: object) -> None:
     """Raise OutcomeValidationError if actual doesn't match expected within 1e-9."""
@@ -706,6 +741,34 @@ def _validate_incomplete_invariants(payload: dict) -> None:
             "OUTCOME_INCOMPLETE: no missing data found — should use OUTCOME_RECORDED"
         )
 
+    # Exact key set checks — no extra or missing keys allowed
+    if set(entry_prices.keys()) != set(complete_tickers):
+        raise OutcomeValidationError(
+            f"OUTCOME_INCOMPLETE: entry_prices keys must be exactly "
+            f"{sorted(complete_tickers)}, got {sorted(entry_prices.keys())}"
+        )
+    if set(exit_prices.keys()) != set(complete_tickers):
+        raise OutcomeValidationError(
+            f"OUTCOME_INCOMPLETE: exit_prices keys must be exactly "
+            f"{sorted(complete_tickers)}, got {sorted(exit_prices.keys())}"
+        )
+
+    # unavailable_tickers must exactly match missing selected_tickers
+    unavailable = sorted(payload.get("unavailable_tickers") or [])
+    if unavailable != sorted(missing_tickers):
+        raise OutcomeValidationError(
+            f"OUTCOME_INCOMPLETE: unavailable_tickers must exactly match missing "
+            f"selected_tickers {sorted(missing_tickers)}, got {unavailable}"
+        )
+
+    # unavailable_reasons keys must exactly match unavailable_tickers
+    reasons = payload.get("unavailable_reasons") or {}
+    if set(reasons.keys()) != set(unavailable):
+        raise OutcomeValidationError(
+            f"OUTCOME_INCOMPLETE: unavailable_reasons keys must be exactly "
+            f"{unavailable}, got {sorted(reasons.keys())}"
+        )
+
     if payload.get("portfolio_return_complete") is not False:
         raise OutcomeValidationError(
             "OUTCOME_INCOMPLETE: portfolio_return_complete must be False"
@@ -715,8 +778,22 @@ def _validate_incomplete_invariants(payload: dict) -> None:
             raise OutcomeValidationError(f"OUTCOME_INCOMPLETE: {field} must be null")
 
     per_ticker_pct = payload.get("per_ticker_return_pct", {})
+    # per_ticker_return_pct keys must be exactly complete_tickers
+    if set(per_ticker_pct.keys()) != set(complete_tickers):
+        raise OutcomeValidationError(
+            f"OUTCOME_INCOMPLETE: per_ticker_return_pct keys must be exactly "
+            f"{sorted(complete_tickers)}, got {sorted(per_ticker_pct.keys())}"
+        )
     for t in complete_tickers:
         ep, xp = entry_prices[t], exit_prices[t]
+        if not (isinstance(ep, (int, float)) and ep > 0 and math.isfinite(ep)):
+            raise OutcomeValidationError(
+                f"OUTCOME_INCOMPLETE: invalid entry_price for {t!r}: {ep!r}"
+            )
+        if not (isinstance(xp, (int, float)) and xp > 0 and math.isfinite(xp)):
+            raise OutcomeValidationError(
+                f"OUTCOME_INCOMPLETE: invalid exit_price for {t!r}: {xp!r}"
+            )
         _check_close(
             f"per_ticker_return_pct[{t!r}]",
             ((xp - ep) / ep) * 100.0,
@@ -733,7 +810,7 @@ def _validate_incomplete_invariants(payload: dict) -> None:
         payload.get("available_subset_return_pct"),
     )
 
-    for t, reason in (payload.get("unavailable_reasons") or {}).items():
+    for t, reason in reasons.items():
         if reason != "price_missing_after_grace":
             raise OutcomeValidationError(
                 f"OUTCOME_INCOMPLETE: unavailable_reasons[{t!r}] must be "
@@ -746,6 +823,7 @@ def _validate_unavailable_invariants(payload: dict) -> None:
     selected_tickers = payload.get("selected_tickers", [])
     entry_prices = payload.get("entry_prices", {})
     exit_prices = payload.get("exit_prices", {})
+    per_ticker_pct = payload.get("per_ticker_return_pct", {})
 
     complete = [t for t in selected_tickers if t in entry_prices and t in exit_prices]
     if complete:
@@ -753,6 +831,40 @@ def _validate_unavailable_invariants(payload: dict) -> None:
             f"OUTCOME_UNAVAILABLE: has complete tickers {complete} — "
             f"should use INCOMPLETE or RECORDED"
         )
+
+    # Exact field checks — prices and returns must be empty
+    if entry_prices:
+        raise OutcomeValidationError(
+            f"OUTCOME_UNAVAILABLE: entry_prices must be empty {{}}, "
+            f"got keys {sorted(entry_prices.keys())}"
+        )
+    if exit_prices:
+        raise OutcomeValidationError(
+            f"OUTCOME_UNAVAILABLE: exit_prices must be empty {{}}, "
+            f"got keys {sorted(exit_prices.keys())}"
+        )
+    if per_ticker_pct:
+        raise OutcomeValidationError(
+            f"OUTCOME_UNAVAILABLE: per_ticker_return_pct must be empty {{}}, "
+            f"got keys {sorted(per_ticker_pct.keys())}"
+        )
+
+    # unavailable_tickers must equal selected_tickers (for non-empty)
+    unavailable = sorted(payload.get("unavailable_tickers") or [])
+    if selected_tickers and unavailable != sorted(selected_tickers):
+        raise OutcomeValidationError(
+            f"OUTCOME_UNAVAILABLE: unavailable_tickers must equal selected_tickers "
+            f"{sorted(selected_tickers)}, got {unavailable}"
+        )
+
+    # unavailable_reasons keys must exactly match unavailable_tickers
+    reasons = payload.get("unavailable_reasons") or {}
+    if set(reasons.keys()) != set(unavailable):
+        raise OutcomeValidationError(
+            f"OUTCOME_UNAVAILABLE: unavailable_reasons keys must be exactly "
+            f"{unavailable}, got {sorted(reasons.keys())}"
+        )
+
     if payload.get("portfolio_return_complete") is not False:
         raise OutcomeValidationError(
             "OUTCOME_UNAVAILABLE: portfolio_return_complete must be False"
@@ -766,7 +878,7 @@ def _validate_unavailable_invariants(payload: dict) -> None:
         if payload.get(field) is not None:
             raise OutcomeValidationError(f"OUTCOME_UNAVAILABLE: {field} must be null")
 
-    for t, reason in (payload.get("unavailable_reasons") or {}).items():
+    for t, reason in reasons.items():
         if reason != "price_missing_after_grace":
             raise OutcomeValidationError(
                 f"OUTCOME_UNAVAILABLE: unavailable_reasons[{t!r}] must be "
@@ -928,18 +1040,22 @@ def record_fetch_deferred(
     outcome_key: str,
     attempted_at: str,
     attempt_date: str,
-    missing_price_points: list[dict],
-    source: str,
-    detail: str,
+    missing_tickers: list[str],
+    missing_benchmarks: list[str],
+    provider_end_exclusive: str,
 ) -> dict | None:
     """
     Record that a valid yfinance response was received but price rows were missing.
 
-    Deduplicates by (outcome_key, attempt_date, canonical sorted missing_price_points).
-    Returns None if deduplicated.  missing_price_points: [{symbol, field, session}].
+    Schema v3.1: stores missing_tickers (non-SPY selected tickers absent from response),
+    missing_benchmarks (e.g. ["SPY"]), and provider_end_exclusive.
+    source is hardcoded to DATA_SOURCE ("yfinance_daily_ohlcv").
+
+    Deduplicates by (outcome_key, attempt_date, sorted missing_tickers, sorted missing_benchmarks).
+    Returns None if deduplicated.
     """
-    canonical_missing = sorted(missing_price_points, key=lambda x: _canonical_json(x))
-    canonical_mpp_str = _canonical_json(canonical_missing)
+    canonical_mt = sorted(missing_tickers)
+    canonical_mb = sorted(missing_benchmarks)
 
     with _global_lock():
         idx = _load_idx()
@@ -957,12 +1073,16 @@ def record_fetch_deferred(
                 f"terminal ({status!r}) — FETCH_DEFERRED not allowed"
             )
 
+        # Dedup by (attempt_date, missing_tickers, missing_benchmarks)
         for ev in existing_events:
             if ev.get("event_type") != "OUTCOME_FETCH_DEFERRED":
                 continue
             if ev.get("attempt_date") != attempt_date:
                 continue
-            if _canonical_json(ev.get("missing_price_points", [])) == canonical_mpp_str:
+            if (
+                sorted(ev.get("missing_tickers", [])) == canonical_mt
+                and sorted(ev.get("missing_benchmarks", [])) == canonical_mb
+            ):
                 return None
 
         chain_tip = _get_chain_tip(existing_events)
@@ -974,10 +1094,10 @@ def record_fetch_deferred(
             "outcome_definition_version": existing_events[0].get("outcome_definition_version"),
             "attempted_at": attempted_at,
             "attempt_date": attempt_date,
-            "missing_price_points": canonical_missing,
-            "missing_data_class": "price_row_missing",
-            "source": source,
-            "detail": detail,
+            "missing_tickers": canonical_mt,
+            "missing_benchmarks": canonical_mb,
+            "provider_end_exclusive": provider_end_exclusive,
+            "source": DATA_SOURCE,
             "order_creation_blocked": True,
             "previous_event_hash": chain_tip,
         }
@@ -1062,6 +1182,38 @@ def record_terminal(
                 f"record_terminal: first event for {outcome_key[:16]}… is "
                 f"{first_ev.get('event_type')!r}, expected OUTCOME_PENDING"
             )
+
+        # Fail-closed guard: INCOMPLETE/UNAVAILABLE from non-empty tickers requires
+        # a FETCH_DEFERRED from the same measurement_date (proof that a prior attempt
+        # documented the missing prices under the global lock).
+        # Empty selected_tickers is the only exception (immediate UNAVAILABLE, no fetch).
+        if event_type in ("OUTCOME_INCOMPLETE", "OUTCOME_UNAVAILABLE"):
+            _tickers_from_pending = first_ev.get("selected_tickers", [])
+            if _tickers_from_pending:
+                _measurement_date = terminal_payload.get("measurement_date")
+                _deferred = [
+                    e for e in existing_events
+                    if e.get("event_type") == "OUTCOME_FETCH_DEFERRED"
+                    and e.get("attempt_date") == _measurement_date
+                ]
+                if not _deferred:
+                    raise OutcomeValidationError(
+                        f"record_terminal: {event_type} for non-empty tickers requires "
+                        f"OUTCOME_FETCH_DEFERRED with attempt_date={_measurement_date!r} "
+                        f"(none found for {outcome_key[:16]}…)"
+                    )
+                # All claimed unavailable_tickers must be documented in same-day FETCH_DEFERREDs
+                _documented: set[str] = set()
+                for _ev in _deferred:
+                    _documented.update(_ev.get("missing_tickers", []))
+                _unavail_in_payload = set(terminal_payload.get("unavailable_tickers") or [])
+                _undocumented = _unavail_in_payload - _documented
+                if _undocumented:
+                    raise OutcomeValidationError(
+                        f"record_terminal: unavailable_tickers {sorted(_undocumented)} "
+                        f"not documented in any FETCH_DEFERRED for {outcome_key[:16]}… "
+                        f"(documented missing_tickers: {sorted(_documented)})"
+                    )
 
         # Validate payload before any write (raises OutcomeValidationError on failure)
         _validate_terminal_payload(terminal_payload, first_ev)

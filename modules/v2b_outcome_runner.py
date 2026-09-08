@@ -453,7 +453,6 @@ def _process_one_pending(
     # Extract prices
     entry_prices: dict[str, float] = {}
     exit_prices: dict[str, float] = {}
-    missing_price_points: list[dict] = []
 
     for ticker in selected_tickers:
         ep = _extract_price(df, ticker, entry_session, "adjusted_open")
@@ -461,26 +460,9 @@ def _process_one_pending(
         if ep is not None and xp is not None:
             entry_prices[ticker] = ep
             exit_prices[ticker] = xp
-        else:
-            if ep is None:
-                missing_price_points.append(
-                    {"symbol": ticker, "field": "adjusted_open", "session": entry_session}
-                )
-            if xp is None:
-                missing_price_points.append(
-                    {"symbol": ticker, "field": "adjusted_close", "session": exit_session}
-                )
 
     spy_entry_price = _extract_price(df, "SPY", entry_session, "adjusted_open")
     spy_exit_price = _extract_price(df, "SPY", exit_session, "adjusted_close")
-    if spy_entry_price is None:
-        missing_price_points.append(
-            {"symbol": "SPY", "field": "adjusted_open", "session": entry_session}
-        )
-    if spy_exit_price is None:
-        missing_price_points.append(
-            {"symbol": "SPY", "field": "adjusted_close", "session": exit_session}
-        )
 
     complete_tickers = [
         t for t in selected_tickers if t in entry_prices and t in exit_prices
@@ -491,35 +473,34 @@ def _process_one_pending(
         and spy_exit_price is not None
     )
 
-    # All symbols absent → provider-level failure (treat like transport failure)
+    # All symbols absent from a valid response → treat as transport/provider failure.
+    # Do NOT write FETCH_DEFERRED (it would document fictitious data absence rather than
+    # an actual partial response).  Collect as transport error and return exit 1.
     if not entry_prices and not exit_prices and spy_entry_price is None and spy_exit_price is None:
-        log.warning(
+        log.error(
             "All symbols absent from valid yfinance response: %s… N=%d exit=%s "
-            "— writing FETCH_DEFERRED, keeping PENDING",
+            "— treating as transport failure, keeping PENDING",
             outcome_key[:16], holding_sessions, exit_session,
         )
-        record_fetch_deferred(
-            outcome_key=outcome_key,
-            attempted_at=fetched_at,
-            attempt_date=today_str,
-            missing_price_points=missing_price_points,
-            source="yfinance",
-            detail=f"N={holding_sessions} exit={exit_session}: all symbols absent from response",
+        transport_errors.append(
+            f"all-symbols-absent: outcome_key={outcome_key[:16]}… N={holding_sessions} "
+            f"exit={exit_session} (obs={observation_key[:16]}…)"
         )
         return
 
     if not all_complete:
-        # Some prices missing → always write FETCH_DEFERRED first
+        # Some prices missing → document in FETCH_DEFERRED (v3.1 schema) before grace check
+        missing_ticker_names = [t for t in selected_tickers if t not in complete_tickers]
+        missing_benchmark_names = (
+            ["SPY"] if spy_entry_price is None or spy_exit_price is None else []
+        )
         record_fetch_deferred(
             outcome_key=outcome_key,
             attempted_at=fetched_at,
             attempt_date=today_str,
-            missing_price_points=missing_price_points,
-            source="yfinance",
-            detail=(
-                f"N={holding_sessions} exit={exit_session} "
-                f"missing {len(missing_price_points)} price point(s)"
-            ),
+            missing_tickers=missing_ticker_names,
+            missing_benchmarks=missing_benchmark_names,
+            provider_end_exclusive=provider_end_exclusive,
         )
 
         # Then check grace

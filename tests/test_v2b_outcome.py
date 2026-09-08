@@ -453,55 +453,63 @@ def test_create_pending_multiple_holding_sessions_independent():
 def test_record_fetch_deferred_basic():
     _make_pending()
     ok = _ok()
-    missing = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
     ev = record_fetch_deferred(
         outcome_key=ok,
         attempted_at="2026-09-14T16:00:00+00:00",
         attempt_date="2026-09-14",
-        missing_price_points=missing,
-        source="yfinance",
-        detail="missing price",
+        missing_tickers=["AAPL"],
+        missing_benchmarks=[],
+        provider_end_exclusive="2026-09-15",
     )
     assert ev is not None
     assert ev["event_type"] == "OUTCOME_FETCH_DEFERRED"
     assert ev["order_creation_blocked"] is True
     assert ev["previous_event_hash"] is not None  # chains to PENDING
+    assert ev["missing_tickers"] == ["AAPL"]
+    assert ev["missing_benchmarks"] == []
+    assert ev["provider_end_exclusive"] == "2026-09-15"
+    assert ev["source"] == DATA_SOURCE
 
 
 def test_record_fetch_deferred_dedup_same_day_same_missing():
     _make_pending()
     ok = _ok()
-    missing = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
-    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", missing, "yfinance", "x")
-    ev2 = record_fetch_deferred(ok, "t2", "2026-09-14", missing, "yfinance", "x")
+    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", ["AAPL"], [], "2026-09-15")
+    ev2 = record_fetch_deferred(ok, "t2", "2026-09-14", ["AAPL"], [], "2026-09-15")
     assert ev1 is not None
-    assert ev2 is None  # deduplicated
+    assert ev2 is None  # deduplicated (same attempt_date, missing_tickers, missing_benchmarks)
 
 
 def test_record_fetch_deferred_not_dedup_different_date():
     _make_pending()
     ok = _ok()
-    missing = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
-    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", missing, "yfinance", "x")
-    ev2 = record_fetch_deferred(ok, "t2", "2026-09-15", missing, "yfinance", "x")
+    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", ["AAPL"], [], "2026-09-15")
+    ev2 = record_fetch_deferred(ok, "t2", "2026-09-15", ["AAPL"], [], "2026-09-15")
     assert ev1 is not None
-    assert ev2 is not None  # different date → not dedup
+    assert ev2 is not None  # different attempt_date → not dedup
 
 
-def test_record_fetch_deferred_not_dedup_different_missing():
+def test_record_fetch_deferred_not_dedup_different_missing_tickers():
     _make_pending()
     ok = _ok()
-    m1 = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
-    m2 = [{"symbol": "MSFT", "field": "adjusted_open", "session": "2026-09-08"}]
-    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", m1, "yfinance", "x")
-    ev2 = record_fetch_deferred(ok, "t2", "2026-09-14", m2, "yfinance", "x")
+    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", ["AAPL"], [], "2026-09-15")
+    ev2 = record_fetch_deferred(ok, "t2", "2026-09-14", ["MSFT"], [], "2026-09-15")
     assert ev1 is not None
-    assert ev2 is not None
+    assert ev2 is not None  # different missing_tickers → not dedup
+
+
+def test_record_fetch_deferred_not_dedup_different_missing_benchmarks():
+    _make_pending()
+    ok = _ok()
+    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", ["AAPL"], [], "2026-09-15")
+    ev2 = record_fetch_deferred(ok, "t2", "2026-09-14", ["AAPL"], ["SPY"], "2026-09-15")
+    assert ev1 is not None
+    assert ev2 is not None  # different missing_benchmarks → not dedup
 
 
 def test_record_fetch_deferred_not_found_raises():
     with pytest.raises(InvalidTransitionError, match="not found"):
-        record_fetch_deferred("x" * 64, "t", "2026-09-14", [], "yfinance", "x")
+        record_fetch_deferred("x" * 64, "t", "2026-09-14", [], [], "2026-09-15")
 
 
 def test_record_fetch_deferred_on_terminal_raises():
@@ -510,14 +518,13 @@ def test_record_fetch_deferred_on_terminal_raises():
     payload = _minimal_terminal_payload(ok)
     record_terminal(ok, payload)
     with pytest.raises(InvalidTransitionError, match="terminal"):
-        record_fetch_deferred(ok, "t", "2026-09-14", [], "yfinance", "x")
+        record_fetch_deferred(ok, "t", "2026-09-14", [], [], "2026-09-15")
 
 
 def test_record_fetch_deferred_hash_chain():
     _make_pending()
     ok = _ok()
-    missing = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
-    ev = record_fetch_deferred(ok, "t", "2026-09-14", missing, "yfinance", "x")
+    ev = record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL"], [], "2026-09-15")
     assert ev is not None
     # Verify hash chain
     body = {k: v for k, v in ev.items() if k != "event_hash"}
@@ -598,6 +605,8 @@ def test_record_terminal_non_terminal_event_type_raises():
 def test_record_terminal_incomplete():
     _make_pending()
     ok = _ok()
+    # FETCH_DEFERRED required for non-empty tickers INCOMPLETE (MSFT missing)
+    record_fetch_deferred(ok, "t", "2026-09-14", ["MSFT"], [], "2026-09-15")
     p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
     # Remove MSFT prices so it is genuinely incomplete (AAPL only complete)
     del p["entry_prices"]["MSFT"]
@@ -617,6 +626,8 @@ def test_record_terminal_incomplete():
 def test_record_terminal_unavailable():
     _make_pending()
     ok = _ok()
+    # FETCH_DEFERRED required for non-empty tickers UNAVAILABLE (both AAPL + MSFT missing)
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL", "MSFT"], ["SPY"], "2026-09-15")
     p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_UNAVAILABLE")
     p["portfolio_return_pct"] = None
     p["forward_alpha_vs_spy"] = None
@@ -641,8 +652,7 @@ def test_record_terminal_unavailable():
 def test_record_terminal_after_fetch_deferred():
     _make_pending()
     ok = _ok()
-    missing = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
-    record_fetch_deferred(ok, "t", "2026-09-14", missing, "yfinance", "x")
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL"], [], "2026-09-15")
     # After grace, write INCOMPLETE: AAPL absent, MSFT complete
     payload = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
     del payload["entry_prices"]["AAPL"]
@@ -776,8 +786,7 @@ def test_validate_detects_broken_previous_hash(tmp_outcome):
     """Test that a broken hash chain (wrong previous_event_hash) is detected."""
     _make_pending()
     ok = _ok()
-    missing = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
-    record_fetch_deferred(ok, "t", "2026-09-14", missing, "yfinance", "x")
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL"], [], "2026-09-15")
     # Corrupt the second event's previous_event_hash
     idx = json.loads((tmp_outcome / "v2b_outcome_idx.json").read_text())
     part = idx[ok]
@@ -813,8 +822,7 @@ def test_hash_chain_pending_to_terminal():
 def test_hash_chain_pending_to_deferred_to_terminal():
     _make_pending()
     ok = _ok()
-    missing = [{"symbol": "AAPL", "field": "adjusted_open", "session": "2026-09-08"}]
-    record_fetch_deferred(ok, "t", "2026-09-14", missing, "yfinance", "x")
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL"], [], "2026-09-15")
     p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
     del p["entry_prices"]["AAPL"]
     del p["exit_prices"]["AAPL"]
@@ -1116,7 +1124,7 @@ def test_run_outcome_tracker_transport_error_returns_1(tmp_outcome, monkeypatch)
 
 
 def test_run_outcome_tracker_missing_prices_before_grace(tmp_outcome, monkeypatch):
-    """Missing prices before grace period → FETCH_DEFERRED."""
+    """Partial prices (SPY present, AAPL absent) before grace period → FETCH_DEFERRED, PENDING kept."""
     import pandas as pd
     import modules.v2b_outcome_runner as runner
 
@@ -1132,9 +1140,12 @@ def test_run_outcome_tracker_missing_prices_before_grace(tmp_outcome, monkeypatc
     monkeypatch.setattr(runner, "is_trading_session", lambda d: True)
     monkeypatch.setattr(runner, "compute_exit_session", lambda entry, n: exit_session if n <= 1 else "2099-01-01")
 
-    # Return empty DataFrame (valid response, but no price rows)
-    monkeypatch.setattr(runner, "_fetch_ohlcv_with_retry",
-        lambda *a, **kw: pd.DataFrame())
+    # SPY present, AAPL absent → partial failure (not total absence).
+    # Single-row DataFrame for N=1 where entry = exit = "2026-09-08".
+    idx = pd.to_datetime([entry_session])
+    cols = pd.MultiIndex.from_tuples([("Open", "SPY"), ("Close", "SPY")])
+    spy_df = pd.DataFrame([[550.0, 557.75]], index=idx, columns=cols)
+    monkeypatch.setattr(runner, "_fetch_ohlcv_with_retry", lambda *a, **kw: spy_df)
 
     # sessions_between_count returns 2 < 5 (grace not elapsed)
     monkeypatch.setattr(runner, "sessions_between_count", lambda start, end: 2)
@@ -1218,6 +1229,8 @@ def test_aggregates_null_if_any_ticker_missing():
     """If ANY selected ticker is missing, portfolio_return_pct and derivatives must be null."""
     _make_pending()
     ok = _ok()
+    # FETCH_DEFERRED required (AAPL missing)
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL"], [], "2026-09-15")
     p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
     # AAPL prices absent — only MSFT is complete
     _msft_ret = (440.0 - 430.0) / 430.0 * 100.0
@@ -1242,6 +1255,8 @@ def test_aggregates_null_if_spy_missing():
     """If SPY is missing, portfolio_return_pct, alpha, and hit_rate must be null."""
     _make_pending()
     ok = _ok()
+    # FETCH_DEFERRED required (SPY missing, no ticker missing)
+    record_fetch_deferred(ok, "t", "2026-09-14", [], ["SPY"], "2026-09-15")
     p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
     # Both tickers complete but SPY absent → INCOMPLETE
     _aapl_ret = (231.0 - 220.0) / 220.0 * 100.0
@@ -1670,6 +1685,45 @@ def test_wrong_fetch_date_range_rejected():
         record_terminal(ok, p)
 
 
+def test_wrong_provider_end_exclusive_rejected():
+    """provider_end_exclusive that is not calendar-day-after exit_session raises."""
+    _make_pending()
+    ok = _ok()
+    p = _minimal_terminal_payload(ok)
+    p["provider_end_exclusive"] = "2026-09-16"  # one day too late
+    with pytest.raises(OutcomeValidationError, match="provider_end_exclusive"):
+        record_terminal(ok, p)
+
+
+def test_missing_measurement_date_rejected():
+    """Missing or non-date measurement_date raises OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    p = _minimal_terminal_payload(ok)
+    p["measurement_date"] = "not-a-date"
+    with pytest.raises(OutcomeValidationError, match="measurement_date"):
+        record_terminal(ok, p)
+
+
+def test_null_measurement_date_rejected():
+    _make_pending()
+    ok = _ok()
+    p = _minimal_terminal_payload(ok)
+    p["measurement_date"] = None
+    with pytest.raises(OutcomeValidationError, match="measurement_date"):
+        record_terminal(ok, p)
+
+
+def test_null_fetched_at_for_non_empty_tickers_rejected():
+    """fetched_at must not be null when selected_tickers is non-empty."""
+    _make_pending()
+    ok = _ok()
+    p = _minimal_terminal_payload(ok)
+    p["fetched_at"] = None
+    with pytest.raises(OutcomeValidationError, match="fetched_at"):
+        record_terminal(ok, p)
+
+
 # ── R16: invalid JSONL line is fail-closed ────────────────────────────────────
 
 
@@ -1711,8 +1765,8 @@ def test_startup_validation_runs_under_global_lock(tmp_outcome, monkeypatch):
 # ── R18: empty provider response after grace keeps PENDING ───────────────────
 
 
-def test_empty_provider_response_after_grace_keeps_pending(tmp_outcome, monkeypatch):
-    """All symbols absent from valid response → FETCH_DEFERRED + PENDING kept (not terminated)."""
+def test_all_symbols_absent_is_transport_error(tmp_outcome, monkeypatch):
+    """All symbols absent from valid response → exit 1, PENDING kept, no FETCH_DEFERRED written."""
     import pandas as pd
     import modules.v2b_outcome_runner as runner
 
@@ -1725,17 +1779,249 @@ def test_empty_provider_response_after_grace_keeps_pending(tmp_outcome, monkeypa
         lambda key: _build_fake_observation_events(key, entry_session, ["AAPL"]))
     monkeypatch.setattr(runner, "is_trading_session", lambda d: True)
     monkeypatch.setattr(runner, "compute_exit_session", lambda e, n: exit_session if n == 1 else "2099-01-01")
-    # Grace has elapsed
+    # Grace has elapsed (but all-absent overrides: no FETCH_DEFERRED, exit 1)
     monkeypatch.setattr(runner, "sessions_between_count", lambda s, e: 5)
     # Return completely empty DataFrame (all symbols absent from valid response)
     monkeypatch.setattr(runner, "_fetch_ohlcv_with_retry", lambda *a, **kw: pd.DataFrame())
 
     exit_code = runner.run_outcome_tracker(exit_session)
-    assert exit_code == 0  # not a transport failure
+    assert exit_code == 1  # treated as transport failure
 
     ok1 = make_outcome_key(obs_key, STRATEGY_ID, 1, OUTCOME_DEFINITION_VERSION)
-    assert get_outcome_status(ok1) == "OUTCOME_PENDING"  # kept PENDING (provider failure)
+    assert get_outcome_status(ok1) == "OUTCOME_PENDING"  # kept PENDING
     events = get_outcome_events(ok1)
     types = [e["event_type"] for e in events]
-    assert "OUTCOME_FETCH_DEFERRED" in types  # deferred recorded
+    # No FETCH_DEFERRED written — all-absent is not documented as partial failure
+    assert "OUTCOME_FETCH_DEFERRED" not in types
     assert not any(t in {"OUTCOME_RECORDED", "OUTCOME_INCOMPLETE", "OUTCOME_UNAVAILABLE"} for t in types)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# v3.1 Section I.2 — Fail-closed terminal precondition negative tests
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+def test_incomplete_without_fetch_deferred_raises():
+    """OUTCOME_INCOMPLETE directly from PENDING (no FETCH_DEFERRED) → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
+    del p["entry_prices"]["MSFT"]
+    del p["exit_prices"]["MSFT"]
+    p["per_ticker_return_pct"] = {"AAPL": (231.0 - 220.0) / 220.0 * 100.0}
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    p["unavailable_tickers"] = ["MSFT"]
+    p["unavailable_reasons"] = {"MSFT": "price_missing_after_grace"}
+    p["available_subset_return_pct"] = (231.0 - 220.0) / 220.0 * 100.0
+    # No FETCH_DEFERRED written → must raise
+    with pytest.raises(OutcomeValidationError, match="FETCH_DEFERRED"):
+        record_terminal(ok, p)
+
+
+def test_unavailable_non_empty_tickers_without_fetch_deferred_raises():
+    """OUTCOME_UNAVAILABLE (non-empty tickers) directly from PENDING → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_UNAVAILABLE")
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    p["entry_prices"] = {}
+    p["exit_prices"] = {}
+    p["spy_entry_price"] = None
+    p["spy_exit_price"] = None
+    p["spy_return_pct"] = None
+    p["per_ticker_return_pct"] = {}
+    p["available_subset_return_pct"] = None
+    p["unavailable_tickers"] = ["AAPL", "MSFT"]
+    p["unavailable_reasons"] = {
+        "AAPL": "price_missing_after_grace",
+        "MSFT": "price_missing_after_grace",
+    }
+    # No FETCH_DEFERRED written → must raise
+    with pytest.raises(OutcomeValidationError, match="FETCH_DEFERRED"):
+        record_terminal(ok, p)
+
+
+def test_undocumented_unavailable_ticker_raises():
+    """INCOMPLETE claiming ticker unavailable not in FETCH_DEFERRED → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    # FETCH_DEFERRED documents AAPL missing only
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL"], [], "2026-09-15")
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
+    # Terminal claims MSFT is unavailable — but FETCH_DEFERRED only has AAPL
+    del p["entry_prices"]["AAPL"]
+    del p["exit_prices"]["AAPL"]
+    p["per_ticker_return_pct"] = {"MSFT": (440.0 - 430.0) / 430.0 * 100.0}
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    p["unavailable_tickers"] = ["AAPL", "MSFT"]  # MSFT not in FETCH_DEFERRED → error
+    p["unavailable_reasons"] = {
+        "AAPL": "price_missing_after_grace",
+        "MSFT": "price_missing_after_grace",
+    }
+    p["available_subset_return_pct"] = (440.0 - 430.0) / 430.0 * 100.0
+    with pytest.raises(OutcomeValidationError, match="not documented"):
+        record_terminal(ok, p)
+
+
+def test_unavailable_tickers_mismatch_incomplete_raises():
+    """INCOMPLETE with unavailable_tickers not matching missing tickers → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL", "MSFT"], [], "2026-09-15")
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
+    del p["entry_prices"]["MSFT"]
+    del p["exit_prices"]["MSFT"]
+    p["per_ticker_return_pct"] = {"AAPL": (231.0 - 220.0) / 220.0 * 100.0}
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    # unavailable_tickers should be ["MSFT"] but we provide ["AAPL"] — wrong
+    p["unavailable_tickers"] = ["AAPL"]
+    p["unavailable_reasons"] = {"AAPL": "price_missing_after_grace"}
+    p["available_subset_return_pct"] = (231.0 - 220.0) / 220.0 * 100.0
+    with pytest.raises(OutcomeValidationError, match="unavailable_tickers"):
+        record_terminal(ok, p)
+
+
+def test_unavailable_tickers_mismatch_unavailable_raises():
+    """OUTCOME_UNAVAILABLE with unavailable_tickers != selected_tickers → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL", "MSFT"], ["SPY"], "2026-09-15")
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_UNAVAILABLE")
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    p["entry_prices"] = {}
+    p["exit_prices"] = {}
+    p["spy_entry_price"] = None
+    p["spy_exit_price"] = None
+    p["spy_return_pct"] = None
+    p["per_ticker_return_pct"] = {}
+    p["available_subset_return_pct"] = None
+    # Only AAPL listed, but selected_tickers is ["AAPL", "MSFT"]
+    p["unavailable_tickers"] = ["AAPL"]
+    p["unavailable_reasons"] = {"AAPL": "price_missing_after_grace"}
+    with pytest.raises(OutcomeValidationError, match="unavailable_tickers"):
+        record_terminal(ok, p)
+
+
+def test_unavailable_reasons_extra_key_raises():
+    """unavailable_reasons with extra key not in unavailable_tickers → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    record_fetch_deferred(ok, "t", "2026-09-14", ["MSFT"], [], "2026-09-15")
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
+    del p["entry_prices"]["MSFT"]
+    del p["exit_prices"]["MSFT"]
+    p["per_ticker_return_pct"] = {"AAPL": (231.0 - 220.0) / 220.0 * 100.0}
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    p["unavailable_tickers"] = ["MSFT"]
+    # Extra spurious key "AAPL" in reasons
+    p["unavailable_reasons"] = {
+        "MSFT": "price_missing_after_grace",
+        "AAPL": "price_missing_after_grace",
+    }
+    p["available_subset_return_pct"] = (231.0 - 220.0) / 220.0 * 100.0
+    with pytest.raises(OutcomeValidationError, match="unavailable_reasons"):
+        record_terminal(ok, p)
+
+
+def test_incomplete_entry_prices_extra_key_raises():
+    """INCOMPLETE with extra key in entry_prices (beyond complete_tickers) → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    record_fetch_deferred(ok, "t", "2026-09-14", ["MSFT"], [], "2026-09-15")
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
+    # Only remove MSFT from exit_prices (so MSFT is not "complete"),
+    # but leave MSFT in entry_prices → entry_prices has extra key
+    del p["exit_prices"]["MSFT"]
+    p["per_ticker_return_pct"] = {"AAPL": (231.0 - 220.0) / 220.0 * 100.0}
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    p["unavailable_tickers"] = ["MSFT"]
+    p["unavailable_reasons"] = {"MSFT": "price_missing_after_grace"}
+    p["available_subset_return_pct"] = (231.0 - 220.0) / 220.0 * 100.0
+    with pytest.raises(OutcomeValidationError, match="entry_prices"):
+        record_terminal(ok, p)
+
+
+def test_incomplete_per_ticker_extra_key_raises():
+    """INCOMPLETE with extra key in per_ticker_return_pct → OutcomeValidationError."""
+    _make_pending()
+    ok = _ok()
+    record_fetch_deferred(ok, "t", "2026-09-14", ["MSFT"], [], "2026-09-15")
+    p = _minimal_terminal_payload(ok, terminal_type="OUTCOME_INCOMPLETE")
+    del p["entry_prices"]["MSFT"]
+    del p["exit_prices"]["MSFT"]
+    # per_ticker_return_pct has extra MSFT key (beyond complete_tickers ["AAPL"])
+    p["per_ticker_return_pct"] = {
+        "AAPL": (231.0 - 220.0) / 220.0 * 100.0,
+        "MSFT": (440.0 - 430.0) / 430.0 * 100.0,
+    }
+    p["portfolio_return_pct"] = None
+    p["forward_alpha_vs_spy"] = None
+    p["hit_rate_vs_spy"] = None
+    p["portfolio_return_complete"] = False
+    p["unavailable_tickers"] = ["MSFT"]
+    p["unavailable_reasons"] = {"MSFT": "price_missing_after_grace"}
+    p["available_subset_return_pct"] = (231.0 - 220.0) / 220.0 * 100.0
+    with pytest.raises(OutcomeValidationError, match="per_ticker_return_pct"):
+        record_terminal(ok, p)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# v3.1 Section I.5 — FETCH_DEFERRED v3.1 dedup negative tests
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+def test_fetch_deferred_dedup_by_missing_tickers_and_benchmarks():
+    """Same attempt_date + missing_tickers + missing_benchmarks → deduplicated (returns None)."""
+    _make_pending()
+    ok = _ok()
+    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", ["AAPL"], ["SPY"], "2026-09-15")
+    ev2 = record_fetch_deferred(ok, "t2", "2026-09-14", ["AAPL"], ["SPY"], "2026-09-15")
+    assert ev1 is not None
+    assert ev2 is None  # exact same (attempt_date, missing_tickers, missing_benchmarks)
+
+
+def test_fetch_deferred_not_dedup_different_benchmarks():
+    """Same attempt_date + same missing_tickers but different missing_benchmarks → not dedup."""
+    _make_pending()
+    ok = _ok()
+    ev1 = record_fetch_deferred(ok, "t1", "2026-09-14", ["AAPL"], [], "2026-09-15")
+    ev2 = record_fetch_deferred(ok, "t2", "2026-09-14", ["AAPL"], ["SPY"], "2026-09-15")
+    assert ev1 is not None
+    assert ev2 is not None  # different missing_benchmarks → separate event
+
+
+def test_fetch_deferred_stores_v3_1_schema():
+    """FETCH_DEFERRED event must contain missing_tickers, missing_benchmarks, provider_end_exclusive, source."""
+    _make_pending()
+    ok = _ok()
+    ev = record_fetch_deferred(ok, "t", "2026-09-14", ["AAPL", "MSFT"], ["SPY"], "2026-09-15")
+    assert ev is not None
+    assert ev["missing_tickers"] == ["AAPL", "MSFT"]
+    assert ev["missing_benchmarks"] == ["SPY"]
+    assert ev["provider_end_exclusive"] == "2026-09-15"
+    assert ev["source"] == DATA_SOURCE
+    # Old fields must not be present
+    assert "missing_price_points" not in ev
+    assert "missing_data_class" not in ev
+    assert "detail" not in ev
