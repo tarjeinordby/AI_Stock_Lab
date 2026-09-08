@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-07T23:15:49.832978+00:00",
+    "fetched_at": "2026-09-08T23:09:39.615795+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -21,7 +21,7 @@
   },
   "ARM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-07T23:16:06.667969+00:00",
+    "fetched_at": "2026-09-08T23:10:07.825928+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -30,7 +30,7 @@
   },
   "ASML": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:41.265993+00:00",
+    "fetched_at": "2026-09-08T23:10:02.078592+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -58,24 +58,26 @@
     "summary": "Ingen data"
   },
   "CRWD": {
-    "fetched_at": "2026-09-07T23:16:03.715858+00:00",
+    "fetched_at": "2026-09-08T23:10:10.571598+00:00",
     "key_factors": [
-      "Exceptional earnings consistency (4/4 beats)",
-      "Overwhelming analyst support (121 buy/strongBuy vs 3 sell)"
+      "Perfect 4Q earnings beat streak demonstrates operational excellence",
+      "121 buy/strongBuy vs 3 sell ratings shows overwhelming analyst conviction"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with excellent analyst consensus, but near-term pullback sug"
+    "summary": "Strong fundamentals with consistent execution, offset by recent pullback"
   },
   "DDOG": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-07T23:16:01.112075+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-08T23:09:59.464174+00:00",
+    "key_factors": [
+      "Perfect earnings record (4/4 beats) demonstrates execution excellence",
+      "Overwhelming analyst support (126 buy/strongBuy vs 6 sell)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with valuation reset opportunity; momentum building."
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -148,19 +150,17 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-09-07T23:15:52.624817+00:00",
-    "key_factors": [
-      "Exceptional earnings track record: 4 consecutive beats",
-      "Bullish analyst consensus: 99 buy/strong buy vs 2 sell ratings"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong fundamentals with AI tailwinds offset by valuation concerns and insider s"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-08T23:09:42.597579+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PANW": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:27.961591+00:00",
+    "fetched_at": "2026-09-08T23:10:04.924762+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -168,13 +168,15 @@
     "summary": "Ingen data"
   },
   "PLTR": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-07T23:16:11.640491+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-08T23:10:13.733701+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4/4 beats) demonstrates execution excellence",
+      "Overwhelming analyst support (61 buy/strongBuy vs 6 sell)"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong fundamentals offset near-term weakness. Consensus bullish with consistent"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -186,13 +188,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-07T23:15:55.474924+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-08T23:09:53.635240+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4 consecutive beats)",
+      "Majority analyst bullish sentiment (27 buy/strongBuy vs 52 hold/sell)"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong fundamentals with hardware diversification offset by valuation concerns"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -262,7 +266,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-07T23:15:58.136017+00:00",
+    "fetched_at": "2026-09-08T23:09:56.528286+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
