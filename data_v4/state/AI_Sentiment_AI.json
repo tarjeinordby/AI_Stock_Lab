@@ -5,7 +5,7 @@
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10167.837084911302,
-  "last_execution_date": "2026-09-11",
+  "last_execution_date": "2026-09-14",
   "portfolio_id": "35d41e09-8201-4d6e-a1a6-d6c099770057",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
@@ -15,8 +15,8 @@
       "buy_score": 65.7,
       "highest_price": 190.3000030517578,
       "is_partial": false,
-      "last_price": 170.02999877929688,
-      "market_value": 2976.264591121575,
+      "last_price": 170.47000122070312,
+      "market_value": 2983.966547810196,
       "pyramid_min_price": 188.7,
       "pyramid_remaining_value": 0.0,
       "shares": 17.50434989407275
@@ -27,8 +27,8 @@
       "buy_score": 72.4,
       "highest_price": 172.9199981689453,
       "is_partial": false,
-      "last_price": 170.35000610351562,
-      "market_value": 766.6858275673624,
+      "last_price": 172.8000030517578,
+      "market_value": 777.7124073765767,
       "pyramid_min_price": 147.2319,
       "pyramid_remaining_value": 0.0,
       "shares": 4.500650426167139
@@ -39,8 +39,8 @@
       "buy_score": 70.8,
       "highest_price": 159.72000122070312,
       "is_partial": false,
-      "last_price": 154.99000549316406,
-      "market_value": 3343.6469891994,
+      "last_price": 155.30999755859375,
+      "market_value": 3350.550276303218,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 21.57330712106384
@@ -51,8 +51,8 @@
       "buy_score": 88.6,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 431.54998779296875,
-      "market_value": 733.665940545896,
+      "last_price": 416.010009765625,
+      "market_value": 707.2468629929074,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 523.87,
       "shares": 1.7000717444067313
@@ -61,6 +61,6 @@
   "strategy": "AI_Sentiment_AI",
   "weekly_meta": {
     "buys_this_week": 0,
-    "iso_week": "2026-W37"
+    "iso_week": "2026-W38"
   }
 }
