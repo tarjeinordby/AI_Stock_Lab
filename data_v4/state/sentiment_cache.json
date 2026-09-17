@@ -1,12 +1,14 @@
 {
   "ABNB": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-16T23:31:12.974841+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-17T23:21:25.049893+00:00",
+    "key_factors": [
+      "Bullish analyst consensus: 72 buy/strongBuy vs 7 sell ratings",
+      "Recent Q2 earnings beat signals operational improvement"
+    ],
+    "raw_score": 0.42,
+    "score": 0.71,
+    "source": "claude",
+    "summary": "Moderately positive. Strong analyst support and recent earnings beat offset valu"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -20,26 +22,24 @@
     "summary": "Strong analyst support & earnings execution offset recent weakness"
   },
   "ARM": {
-    "fetched_at": "2026-09-16T23:31:34.700741+00:00",
+    "fetched_at": "2026-09-17T23:21:44.361241+00:00",
     "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "81 buy/strong buy ratings vs 6 sell ratings shows conviction"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong fundamentals amid AI sector volatility; compelling valuation"
-  },
-  "ASML": {
-    "fetched_at": "2026-09-11T22:57:13.843688+00:00",
-    "key_factors": [
-      "Overwhelming buy ratings (117/131 = 89% bullish)",
-      "AI boom tailwinds supporting chip equipment demand"
+      "Perfect earnings track record (4 consecutive beats)",
+      "81 bullish analyst ratings vs 6 bearish"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong bullish momentum with robust analyst consensus offsetting near-term pullb"
+    "summary": "Strong fundamentals and analyst support offset valuation weakness from drawdown."
+  },
+  "ASML": {
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-17T23:21:42.003043+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "BILL": {
     "error": "Ugyldig JSON-respons",
@@ -60,24 +60,24 @@
     "summary": "Ingen data"
   },
   "CRWD": {
+    "fetched_at": "2026-09-17T23:21:39.651948+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4) demonstrates operational excellence",
+      "Overwhelming analyst support (122 buy/strongBuy vs 3 sell)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong bullish setup with consistent execution, though valuation near highs"
+  },
+  "DDOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-16T23:31:28.351316+00:00",
+    "fetched_at": "2026-09-17T23:21:35.076981+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
-  },
-  "DDOG": {
-    "fetched_at": "2026-09-16T23:31:23.148257+00:00",
-    "key_factors": [
-      "Exceptional earnings consistency (4/4 beats)",
-      "Overwhelming analyst support (126 buy vs 6 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with valuation concerns; positive for patient investors"
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -151,7 +151,7 @@
   },
   "OKTA": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-16T23:31:15.632014+00:00",
+    "fetched_at": "2026-09-17T23:21:27.480549+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -159,24 +159,24 @@
     "summary": "Ingen data"
   },
   "PANW": {
-    "fetched_at": "2026-09-16T23:31:25.595057+00:00",
-    "key_factors": [
-      "Overwhelming analyst consensus: 133 buy ratings vs 4 sell",
-      "Perfect earnings track record: 4 consecutive beats"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong buy with excellent fundamentals; AI tailwinds and consistent execution"
-  },
-  "PLTR": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-16T23:31:37.546793+00:00",
+    "fetched_at": "2026-09-17T23:21:37.485473+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "PLTR": {
+    "fetched_at": "2026-09-17T23:21:47.285692+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4 consecutive beats)",
+      "Overwhelmingly bullish analyst consensus (61 buy/strongBuy vs 6 sell)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with positive momentum, offset by valuation"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -188,15 +188,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-09-16T23:31:18.064813+00:00",
+    "fetched_at": "2026-09-17T23:21:29.892388+00:00",
     "key_factors": [
-      "Consistent earnings beats (4 consecutive quarters)",
-      "Majority buy/strong buy ratings (27 vs 52 hold)"
+      "Consistent earnings beats (4/4 quarters)",
+      "DOJ scrutiny of Fox-Roku deal creates near-term uncertainty"
     ],
-    "raw_score": 0.42,
-    "score": 0.71,
+    "raw_score": 0.62,
+    "score": 0.81,
     "source": "claude",
-    "summary": "Moderate positive: Strong earnings, good ratings offset by regulatory risk"
+    "summary": "Positive momentum with regulatory headwinds; strong fundamentals support upside"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -265,15 +265,15 @@
     "summary": "TOST missed Q1 EPS estimates and faces multiple analyst downgrades amid competitive pressure and hardware cost concerns, despite raising full-year guidance and strong recurring revenue growth."
   },
   "TSM": {
-    "fetched_at": "2026-09-16T23:31:20.777085+00:00",
+    "fetched_at": "2026-09-17T23:21:32.566874+00:00",
     "key_factors": [
-      "53/57 analysts bullish (93% buy/strong buy ratio)",
-      "Perfect 4-quarter earnings beat streak demonstrates execution"
+      "Perfect earnings beat streak (4/4) demonstrates execution",
+      "Overwhelming analyst consensus (53 buy/strongBuy vs 4 hold)"
     ],
-    "raw_score": 0.78,
-    "score": 0.89,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong bullish setup with consistent execution and positive tech tailwinds"
+    "summary": "Strong fundamentals and consensus support offset near-term valuation"
   },
   "U": {
     "fetched_at": "2026-09-14T23:41:01.725444+00:00",
