@@ -1,14 +1,12 @@
 {
   "ABNB": {
-    "fetched_at": "2026-09-18T22:59:34.608860+00:00",
-    "key_factors": [
-      "72 buy/strongBuy vs 7 sell ratings shows strong consensus support",
-      "Recent Q2 earnings beat breaks miss streak, signals momentum"
-    ],
-    "raw_score": 0.42,
-    "score": 0.71,
-    "source": "claude",
-    "summary": "Moderately positive. Strong analyst support offset by valuation concerns and ear"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-21T23:48:12.041566+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -22,22 +20,26 @@
     "summary": "Strong analyst support & earnings execution offset recent weakness"
   },
   "ARM": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-18T22:59:50.546721+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-21T23:48:29.327679+00:00",
+    "key_factors": [
+      "Exceptional earnings consistency (4 consecutive beats)",
+      "Overwhelming analyst support (81 buy/strongBuy vs 6 sell)"
+    ],
+    "raw_score": 0.68,
+    "score": 0.84,
+    "source": "claude",
+    "summary": "Strong fundamentals offset valuation concerns. Sector tailwinds support 6-12mo o"
   },
   "ASML": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-18T22:59:53.170399+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-21T23:48:27.161813+00:00",
+    "key_factors": [
+      "Overwhelming bullish consensus: 117 buy/strongBuy vs 4 sell ratings",
+      "3 of 4 recent quarters beat expectations; proven execution"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong analyst support and solid earnings outweigh near-term pullback"
   },
   "BILL": {
     "error": "Ugyldig JSON-respons",
@@ -59,7 +61,7 @@
   },
   "CRWD": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-18T22:59:55.728072+00:00",
+    "fetched_at": "2026-09-21T23:48:31.793440+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -67,15 +69,13 @@
     "summary": "Ingen data"
   },
   "DDOG": {
-    "fetched_at": "2026-09-18T22:59:45.385604+00:00",
-    "key_factors": [
-      "Perfect earnings record (4/4 beats) demonstrates execution excellence",
-      "Overwhelming analyst consensus: 126 buy/strongBuy vs 6 sell ratings"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with execution risk. Valuation pullback creates opportunity."
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-21T23:48:22.079213+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "DELL": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -148,37 +148,31 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-09-18T22:59:37.079912+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters)",
-      "99 buy/strongBuy vs 2 sell ratings (98% bullish)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamental setup with consistent execution, positive AI narrative"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-21T23:48:14.650500+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PANW": {
-    "fetched_at": "2026-09-18T22:59:47.681140+00:00",
-    "key_factors": [
-      "Exceptional earnings consistency (4/4 beats)",
-      "Overwhelming analyst consensus (133 buy vs 4 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals offset near-term valuation concerns; bullish for 6-12mo"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-21T23:48:24.735683+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "PLTR": {
-    "fetched_at": "2026-09-18T22:59:58.212831+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4) demonstrates execution",
-      "110% commercial revenue growth shows business inflection"
-    ],
-    "raw_score": 0.68,
-    "score": 0.84,
-    "source": "claude",
-    "summary": "Strong operational momentum with valuation concerns limiting upside"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-21T23:48:34.216222+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -190,13 +184,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-18T22:59:39.694184+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-09-21T23:48:17.099248+00:00",
+    "key_factors": [
+      "Perfect 4Q earnings beat streak demonstrates operational strength",
+      "DOJ review of Fox deal creates material near-term uncertainty"
+    ],
+    "raw_score": 0.42,
+    "score": 0.71,
+    "source": "claude",
+    "summary": "Moderate positive bias. Strong earnings, solid ratings offset by regulatory unce"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -266,7 +262,7 @@
   },
   "TSM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-18T22:59:42.832312+00:00",
+    "fetched_at": "2026-09-21T23:48:19.654212+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
