@@ -1,7 +1,7 @@
 {
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-23T23:25:02.917019+00:00",
+    "fetched_at": "2026-09-24T23:45:04.102598+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -20,19 +20,17 @@
     "summary": "Strong analyst support & earnings execution offset recent weakness"
   },
   "ARM": {
-    "fetched_at": "2026-09-21T23:48:29.327679+00:00",
-    "key_factors": [
-      "Exceptional earnings consistency (4 consecutive beats)",
-      "Overwhelming analyst support (81 buy/strongBuy vs 6 sell)"
-    ],
-    "raw_score": 0.68,
-    "score": 0.84,
-    "source": "claude",
-    "summary": "Strong fundamentals offset valuation concerns. Sector tailwinds support 6-12mo o"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-24T23:45:22.762076+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "ASML": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-23T23:25:16.889464+00:00",
+    "fetched_at": "2026-09-24T23:45:20.271001+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -68,7 +66,7 @@
   },
   "DDOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-23T23:25:12.338086+00:00",
+    "fetched_at": "2026-09-24T23:45:14.941984+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -112,15 +110,15 @@
     "summary": "Ingen data"
   },
   "MDB": {
-    "fetched_at": "2026-09-23T23:25:24.324150+00:00",
+    "fetched_at": "2026-09-24T23:45:27.313257+00:00",
     "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
-      "94 buy/strong buy vs 1 sell = overwhelming analyst consensus"
+      "Consistent earnings beats (4/4 quarters)",
+      "94 buy/strongBuy vs 26 hold ratings"
     ],
-    "raw_score": 0.72,
-    "score": 0.86,
+    "raw_score": 0.62,
+    "score": 0.81,
     "source": "claude",
-    "summary": "Strong fundamentals with positive momentum; valuation pullback creates opportuni"
+    "summary": "Bullish with valuation caution. Strong fundamentals offset by stretched metrics."
   },
   "NET": {
     "fetched_at": "2026-06-11T12:37:03.898475+00:00",
@@ -146,35 +144,35 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-09-23T23:25:05.343732+00:00",
-    "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "99 buy-equivalent vs 2 sell ratings = 98% bullish consensus"
-    ],
-    "raw_score": 0.78,
-    "score": 0.89,
-    "source": "claude",
-    "summary": "Strong positive momentum with AI tailwinds, consistent execution, and broad anal"
-  },
-  "PANW": {
-    "fetched_at": "2026-09-23T23:25:14.385561+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters)",
-      "Overwhelming analyst consensus (133 buy vs 4 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong bullish setup with consistent execution and analyst support."
-  },
-  "PLTR": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-23T23:25:21.912190+00:00",
+    "fetched_at": "2026-09-24T23:45:06.870355+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "PANW": {
+    "fetched_at": "2026-09-24T23:45:17.819378+00:00",
+    "key_factors": [
+      "Perfect 4Q earnings beat streak demonstrates execution",
+      "133 buy/strong buy vs 4 sell ratings (97% bullish consensus)"
+    ],
+    "raw_score": 0.82,
+    "score": 0.91,
+    "source": "claude",
+    "summary": "Strong bullish sentiment. Consistent beats, AI tailwinds, analyst consensus supp"
+  },
+  "PLTR": {
+    "fetched_at": "2026-09-24T23:45:25.198575+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4) demonstrates execution",
+      "Overwhelmingly bullish analyst consensus (61/96 buy-or-better)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamental momentum offset by valuation proximity to highs"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -186,15 +184,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-09-23T23:25:07.438053+00:00",
+    "fetched_at": "2026-09-24T23:45:09.525893+00:00",
     "key_factors": [
-      "Consistent earnings beats (4/4 quarters)",
-      "Deep analyst support (27 buy/strongBuy vs 52 hold)"
+      "Fox deal regulatory approval increasingly likely, major upside catalyst",
+      "Perfect earnings track record shows operational excellence"
     ],
-    "raw_score": 0.35,
-    "score": 0.675,
+    "raw_score": 0.62,
+    "score": 0.81,
     "source": "claude",
-    "summary": "Mixed signals: Strong earnings and analyst support offset by regulatory headwind"
+    "summary": "Positive momentum with regulatory clarity; strong fundamentals offset near-term "
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -263,15 +261,13 @@
     "summary": "TOST missed Q1 EPS estimates and faces multiple analyst downgrades amid competitive pressure and hardware cost concerns, despite raising full-year guidance and strong recurring revenue growth."
   },
   "TSM": {
-    "fetched_at": "2026-09-23T23:25:09.781044+00:00",
-    "key_factors": [
-      "Exceptional earnings consistency (4 consecutive beats)",
-      "Overwhelming bullish analyst sentiment (93% buy/strong buy)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamentals with positive analyst consensus offset by near-term valuatio"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-09-24T23:45:12.259605+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "U": {
     "fetched_at": "2026-09-14T23:41:01.725444+00:00",
