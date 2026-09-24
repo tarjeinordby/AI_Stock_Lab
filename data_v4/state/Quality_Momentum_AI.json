@@ -1,34 +1,23 @@
 {
-  "cash": 1176.2381959993802,
+  "cash": 3824.6753731790313,
   "cooldowns": {
+    "ABNB": "2026-09-24",
     "ARM": "2026-08-06"
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10271.342271803529,
-  "last_execution_date": "2026-09-23",
+  "last_execution_date": "2026-09-24",
   "portfolio_id": "1590fe1a-3af8-458b-ac0d-875e10218243",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
-    "ABNB": {
-      "avg_price": 186.57951003248212,
-      "buy_date": "2026-08-14",
-      "buy_score": 65.2,
-      "highest_price": 190.3000030517578,
-      "is_partial": false,
-      "last_price": 159.52000427246094,
-      "market_value": 2806.332582111456,
-      "pyramid_min_price": 188.7,
-      "pyramid_remaining_value": 0.0,
-      "shares": 17.59235523413243
-    },
     "OKTA": {
       "avg_price": 145.91302801087681,
       "buy_date": "2026-08-06",
       "buy_score": 72.1,
-      "highest_price": 198.1999969482422,
+      "highest_price": 202.75,
       "is_partial": false,
-      "last_price": 198.1999969482422,
-      "market_value": 1968.9525789724032,
+      "last_price": 202.75,
+      "market_value": 2014.1530854357325,
       "pyramid_min_price": 147.2319,
       "pyramid_remaining_value": 0.0,
       "shares": 9.934170581680554
@@ -39,8 +28,8 @@
       "buy_score": 70.9,
       "highest_price": 159.72000122070312,
       "is_partial": false,
-      "last_price": 153.7899932861328,
-      "market_value": 3317.7587573080896,
+      "last_price": 153.5,
+      "market_value": 3311.5026430832995,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 21.57330712106384
@@ -51,8 +40,8 @@
       "buy_score": 88.9,
       "highest_price": 467.625,
       "is_partial": true,
-      "last_price": 449.7900085449219,
-      "market_value": 770.5560103542207,
+      "last_price": 441.79998779296875,
+      "market_value": 756.8679372616465,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 527.9,
       "shares": 1.713146125337426

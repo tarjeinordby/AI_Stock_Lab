@@ -1,32 +1,22 @@
 {
-  "cash": 4940.722419753917,
-  "cooldowns": {},
+  "cash": 6816.506088237751,
+  "cooldowns": {
+    "ABNB": "2026-09-24"
+  },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10182.102146501416,
-  "last_execution_date": "2026-09-23",
+  "last_execution_date": "2026-09-24",
   "portfolio_id": "a9e8ea54-ee02-4745-8d8e-ef4bda63d621",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
-    "ABNB": {
-      "avg_price": 186.57950878051028,
-      "buy_date": "2026-08-14",
-      "buy_score": 65.7,
-      "highest_price": 190.3000030517578,
-      "is_partial": false,
-      "last_price": 159.52000427246094,
-      "market_value": 1987.6147605904337,
-      "pyramid_min_price": 188.7,
-      "pyramid_remaining_value": 0.0,
-      "shares": 12.459971836482515
-    },
     "DDOG": {
       "avg_price": 222.77000427246094,
       "buy_date": "2026-06-19",
       "buy_score": 71.1,
       "highest_price": 257.3500061035156,
       "is_partial": false,
-      "last_price": 251.61000061035156,
-      "market_value": 568.8136496033377,
+      "last_price": 249.89999389648438,
+      "market_value": 564.9478447569425,
       "pyramid_min_price": 227.2254,
       "pyramid_remaining_value": 0.0,
       "shares": 2.2606957125055382
@@ -37,8 +27,8 @@
       "buy_score": 70.7,
       "highest_price": 159.72000122070312,
       "is_partial": false,
-      "last_price": 153.7899932861328,
-      "market_value": 1795.940618629706,
+      "last_price": 153.5,
+      "market_value": 1792.5541127162373,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 11.677876955806106
@@ -49,8 +39,8 @@
       "buy_score": 89.4,
       "highest_price": 467.625,
       "is_partial": false,
-      "last_price": 449.7900085449219,
-      "market_value": 544.1257677020205,
+      "last_price": 441.79998779296875,
+      "market_value": 534.4599767928893,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 0.0,
       "shares": 1.2097328917160175
