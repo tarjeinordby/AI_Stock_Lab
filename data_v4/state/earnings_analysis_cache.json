@@ -12,6 +12,19 @@
     "reasoning": "3 consecutive misses with worsening surprises (-4.8%, -15.6%, -14.1%). Consensus $5.99 EPS looks aggressive vs recent trend. Negative momentum warrants caution.",
     "risk_level": "high"
   },
+  "ASML": {
+    "beat_probability": 0.65,
+    "expected_reaction": "positive if bookings strong, but high bar after two big beats raises volatility",
+    "fetched_at": "2026-09-30T00:03:15.335849+00:00",
+    "key_metrics_to_watch": [
+      "net bookings (EUV/High-NA)",
+      "gross margin guidance",
+      "China revenue mix & 2026 outlook"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Recent beats (+8%, +9%) show momentum but quarterly EPS consensus (~$58.8) looks inconsistent with data; revenue volatility and elevated expectations warrant caution.",
+    "risk_level": "high"
+  },
   "BILL": {
     "beat_probability": 0.82,
     "expected_reaction": "positive if beats, but revenue deceleration caps upside; volatile",
