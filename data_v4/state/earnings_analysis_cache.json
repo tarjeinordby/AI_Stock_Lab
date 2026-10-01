@@ -13,16 +13,16 @@
     "risk_level": "high"
   },
   "ASML": {
-    "beat_probability": 0.65,
-    "expected_reaction": "positive if bookings strong, but high bar after two big beats raises volatility",
-    "fetched_at": "2026-09-30T00:03:15.335849+00:00",
+    "beat_probability": 0.62,
+    "expected_reaction": "Positive if bookings strong; volatile given recent beats already priced in. Guidance/China exposure likely drives move m",
+    "fetched_at": "2026-10-01T00:20:20.509743+00:00",
     "key_metrics_to_watch": [
-      "net bookings (EUV/High-NA)",
-      "gross margin guidance",
-      "China revenue mix & 2026 outlook"
+      "Net bookings (order intake)",
+      "2026/2027 revenue guidance & gross margin",
+      "China revenue mix & EUV/High-NA demand"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Recent beats (+8%, +9%) show momentum but quarterly EPS consensus (~$58.8) looks inconsistent with data; revenue volatility and elevated expectations warrant caution.",
+    "reasoning": "Last 2 quarters beat +8-9%, momentum positive, but recent beats raise bar. Revenue choppy and EPS consensus notably higher. Hold into print.",
     "risk_level": "high"
   },
   "BILL": {
@@ -154,6 +154,19 @@
     "position_recommendation": "hold",
     "reasoning": "Strong 4-quarter beat streak (avg +21%) supports upside, but high valuation and rich expectations create risk. Note revenue trend data looks inconsistent/unreliable.",
     "risk_level": "high"
+  },
+  "TSM": {
+    "beat_probability": 0.82,
+    "expected_reaction": "positive, likely +4-7% on beat given consistent surprise history and AI demand",
+    "fetched_at": "2026-10-01T00:20:14.935410+00:00",
+    "key_metrics_to_watch": [
+      "HPC/AI revenue mix & guidance",
+      "gross margin and N3/N2 ramp",
+      "capex and FY guidance"
+    ],
+    "position_recommendation": "add_before",
+    "reasoning": "4 straight beats (avg ~8%), strong AI-driven demand. EPS consensus $21.93 likely conservative. Revenue figures inconsistent but momentum favors upside.",
+    "risk_level": "medium"
   },
   "U": {
     "beat_probability": 0.55,
