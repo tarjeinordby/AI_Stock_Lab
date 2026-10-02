@@ -14,15 +14,15 @@
   },
   "ASML": {
     "beat_probability": 0.62,
-    "expected_reaction": "Positive if bookings strong; volatile given recent beats already priced in. Guidance/China exposure likely drives move m",
-    "fetched_at": "2026-10-01T00:20:20.509743+00:00",
+    "expected_reaction": "Moderately positive if bookings hold; high volatility given rich valuation and recent beat streak raising the bar",
+    "fetched_at": "2026-10-02T00:30:46.205933+00:00",
     "key_metrics_to_watch": [
-      "Net bookings (order intake)",
-      "2026/2027 revenue guidance & gross margin",
-      "China revenue mix & EUV/High-NA demand"
+      "Net bookings (EUV/High-NA orders)",
+      "2026 revenue guidance & China exposure",
+      "Gross margin trajectory"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Last 2 quarters beat +8-9%, momentum positive, but recent beats raise bar. Revenue choppy and EPS consensus notably higher. Hold into print.",
+    "reasoning": "Strong 2-qtr beat trend favors upside, but EPS consensus ($58.8) looks inconsistent with ~$7 quarterly actuals\u2014data gaps warrant caution. Bookings drive reaction.",
     "risk_level": "high"
   },
   "BILL": {
@@ -157,15 +157,15 @@
   },
   "TSM": {
     "beat_probability": 0.82,
-    "expected_reaction": "positive, likely +4-7% on beat given consistent surprise history and AI demand",
-    "fetched_at": "2026-10-01T00:20:14.935410+00:00",
+    "expected_reaction": "Moderately positive; consistent beats likely priced in, so upside hinges on margin and AI/HPC demand guidance exceeding ",
+    "fetched_at": "2026-10-02T00:30:41.520951+00:00",
     "key_metrics_to_watch": [
-      "HPC/AI revenue mix & guidance",
-      "gross margin and N3/N2 ramp",
-      "capex and FY guidance"
+      "Gross margin & pricing power",
+      "AI/HPC/advanced node (3nm/2nm) revenue mix",
+      "Forward Q4 revenue guidance & capex"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "4 straight beats (avg ~8%), strong AI-driven demand. EPS consensus $21.93 likely conservative. Revenue figures inconsistent but momentum favors upside.",
+    "reasoning": "4-for-4 beats averaging +8% surprise, strong AI-driven demand. Consensus EPS looks conservative vs historical pattern. Revenue data ambiguous but momentum favorable.",
     "risk_level": "medium"
   },
   "U": {
