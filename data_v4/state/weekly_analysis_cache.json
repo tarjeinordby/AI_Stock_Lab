@@ -2,15 +2,15 @@
   "ABNB": {
     "action": "hold",
     "catalysts": [
-      "AI operational overhaul driving margin expansion",
-      "Summer booking season Q2/Q3 revenue surge"
+      "Summer booking season driving Q3 revenue rebound",
+      "Margin expansion trend accelerating profitability"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-09-28T20:44:03.801589+00:00",
-    "reasoning": "Seasonally strong Q4 margins (86.6%) and AI efficiency gains support thesis; pullback appears valuation-driven not fundamental.",
+    "fetched_at": "2026-10-05T21:36:25.009615+00:00",
+    "reasoning": "Seasonal revenue pattern intact, Q4 margin expansion to 86.6% is strong. Current price near analyst avg target floor.",
     "risks": [
-      "Valuation still near analyst avg target limiting upside",
-      "Macro slowdown reducing discretionary travel spend"
+      "Travel demand softening in macro downturn",
+      "Regulatory pressure on STR markets globally"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -50,15 +50,15 @@
   "DDOG": {
     "action": "hold",
     "catalysts": [
-      "Global expansion accelerating per recent reports",
-      "Expanding product suite driving margin improvement and EPS beats"
+      "AI observability adoption driving new workloads and platform expansion",
+      "Gross margin improvement signals pricing power and operating leverage potential"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-09-28T20:44:21.667104+00:00",
-    "reasoning": "Strong margins/EPS growth offset declining revenue trajectory; near analyst avg target limits upside",
+    "fetched_at": "2026-10-05T21:36:42.250527+00:00",
+    "reasoning": "Revenue decelerating but margins expanding; EPS growth solid. Near analyst avg target limits upside. Monitor growth reacceleration.",
     "risks": [
-      "Revenue growth deceleration from $1.12B to $0.89B signals slowing demand",
-      "CSCO/competitive pressure in observability/security space"
+      "Revenue growth deceleration may signal market saturation or competitive pressure",
+      "Trading near analyst consensus target reduces margin of safety at current levels"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -66,15 +66,15 @@
   "OKTA": {
     "action": "hold",
     "catalysts": [
-      "AI agent identity management driving new revenue vectors",
-      "Analyst target upgrades suggesting $225-$250 bull case if growth re-accelerates"
+      "Continued EPS improvement from operational efficiency",
+      "New product adoption or enterprise expansion driving revenue reacceleration"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-09-28T20:44:08.536587+00:00",
-    "reasoning": "Strong EPS momentum offsets decelerating revenue. AI identity security narrative intact; near analyst avg target limits upside.",
+    "fetched_at": "2026-10-05T21:36:29.234732+00:00",
+    "reasoning": "EPS expanding strongly but revenue declining sequentially signals growth slowdown; near analyst avg target limits upside.",
     "risks": [
-      "Revenue deceleration continuing; top-line growth re-acceleration unproven",
-      "Valuation near consensus target compresses margin of safety at +31.6% gain"
+      "Revenue deceleration may indicate market saturation or competitive pressure",
+      "Trading near analyst consensus target with limited margin of safety"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -82,15 +82,15 @@
   "ROKU": {
     "action": "hold",
     "catalysts": [
-      "Deal closure at $160 (~5% upside from current)",
-      "Wedbush regulatory clearance signal accelerates timeline"
+      "Continued EPS expansion could re-rate valuation higher",
+      "Streaming ad market recovery could reverse margin compression"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-09-28T20:44:12.859813+00:00",
-    "reasoning": "Fox acquisition at $160 provides near-term floor; EPS trend strong but revenue volatile and margins compressing.",
+    "fetched_at": "2026-10-05T21:36:33.874146+00:00",
+    "reasoning": "EPS trajectory strong (+650% over 4Q), but revenue volatility and margin compression warrant caution near analyst avg target.",
     "risks": [
-      "DOJ blocks Fox deal, stock reverts to standalone valuation well below $142",
-      "Margin compression continues as platform costs rise"
+      "Revenue inconsistency signals demand uncertainty",
+      "Gross margin declining 6pts over 4 quarters pressures profitability"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -98,15 +98,15 @@
   "TSM": {
     "action": "add",
     "catalysts": [
-      "2nm capacity exceeding estimates driving AI premium pricing",
-      "Apple/Nvidia partnership deepening TSMC revenue visibility"
+      "AI chip demand driving advanced node utilization",
+      "Gross margin expansion accelerating toward 70%+"
     ],
     "conviction": "high",
-    "fetched_at": "2026-09-28T20:44:17.459307+00:00",
-    "reasoning": "Fundamentals strengthening: EPS accelerating, margins expanding, AI demand robust. -3% dip vs $552 avg target is opportunity.",
+    "fetched_at": "2026-10-05T21:36:37.712137+00:00",
+    "reasoning": "Revenue declining but EPS surging signals strong margin expansion; gross margins improving QoQ confirm operational leverage thesis intact.",
     "risks": [
-      "Taiwan geopolitical risk",
-      "Macro rate-driven tech selloff pressuring near-term price"
+      "Revenue contraction trend may signal demand softening",
+      "Low institutional ownership limits price support"
     ],
     "source": "claude",
     "thesis_intact": true
