@@ -14,15 +14,15 @@
   },
   "ASML": {
     "beat_probability": 0.62,
-    "expected_reaction": "Moderately positive if bookings hold; high volatility given rich valuation and recent beat streak raising the bar",
-    "fetched_at": "2026-10-02T00:30:46.205933+00:00",
+    "expected_reaction": "Positive if bookings strong; volatile given stretched expectations after 2 consecutive big beats",
+    "fetched_at": "2026-10-06T01:39:35.520000+00:00",
     "key_metrics_to_watch": [
-      "Net bookings (EUV/High-NA orders)",
-      "2026 revenue guidance & China exposure",
+      "Net bookings (especially EUV/High-NA)",
+      "2027 guidance & China exposure",
       "Gross margin trajectory"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 2-qtr beat trend favors upside, but EPS consensus ($58.8) looks inconsistent with ~$7 quarterly actuals\u2014data gaps warrant caution. Bookings drive reaction.",
+    "reasoning": "Recent beats (+8-9%) show momentum but revenue dipped to $7.52B and consensus EPS $58.23 looks inconsistent with quarterly history; data gaps add uncertainty.",
     "risk_level": "high"
   },
   "BILL": {
@@ -157,15 +157,15 @@
   },
   "TSM": {
     "beat_probability": 0.82,
-    "expected_reaction": "Moderately positive; consistent beats likely priced in, so upside hinges on margin and AI/HPC demand guidance exceeding ",
-    "fetched_at": "2026-10-02T00:30:41.520951+00:00",
+    "expected_reaction": "positive move of 4-8% if beat holds, but muted if guidance disappoints on AI capex pace",
+    "fetched_at": "2026-10-06T01:39:31.905264+00:00",
     "key_metrics_to_watch": [
-      "Gross margin & pricing power",
-      "AI/HPC/advanced node (3nm/2nm) revenue mix",
-      "Forward Q4 revenue guidance & capex"
+      "AI/HPC revenue mix and 3nm/2nm ramp",
+      "gross margin guidance",
+      "capex and Q4 revenue outlook"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "4-for-4 beats averaging +8% surprise, strong AI-driven demand. Consensus EPS looks conservative vs historical pattern. Revenue data ambiguous but momentum favorable.",
+    "reasoning": "4 straight beats avg +8%, strong AI demand. But EPS consensus $21.93 vs recent ~$4/qtr seems inconsistent; verify figure. High-conviction long bias.",
     "risk_level": "medium"
   },
   "U": {
