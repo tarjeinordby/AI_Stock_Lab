@@ -33,33 +33,37 @@
     "summary": "Strong fundamentals offset valuation concerns. Consistent earnings beats with bu"
   },
   "ASML": {
-    "fetched_at": "2026-10-03T00:07:25.286388+00:00",
+    "fetched_at": "2026-10-07T00:20:41.623819+00:00",
     "key_factors": [
-      "Overwhelming buy rating: 116 of 129 (90%) bullish",
+      "Overwhelming buy consensus (116/129 = 90% bullish)",
       "3 of 4 recent quarters beat expectations"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong analyst consensus with solid earnings execution supports positive outlook"
+    "summary": "Strong analyst support with solid earnings momentum offset by recent pullback."
   },
   "BILL": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-16T23:31:31.058897+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-10-07T00:20:59.583585+00:00",
+    "key_factors": [
+      "Perfect 4-quarter earnings beat streak demonstrates operational excellence",
+      "Bullish analyst consensus: 9 strong buys + 31 buys vs 27 holds, no sells"
+    ],
+    "raw_score": 0.65,
+    "score": 0.825,
+    "source": "claude",
+    "summary": "Strong fundamentals offset valuation concerns; consistent execution supports ups"
   },
   "CELH": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-12T11:30:34.242140+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-10-07T00:21:05.241832+00:00",
+    "key_factors": [
+      "Strong analyst support (55 buy/strongBuy vs 16 hold, 0 sell)",
+      "Significant drawdown (-59% from 52w high) suggests oversold opportunity"
+    ],
+    "raw_score": 0.42,
+    "score": 0.71,
+    "source": "claude",
+    "summary": "Bullish analyst consensus but valuation reset warranted after sharp decline"
   },
   "CRWD": {
     "fetched_at": "2026-10-06T01:39:15.862397+00:00",
@@ -104,13 +108,15 @@
     "summary": "Strong fundamentals offset valuation concerns; consistent earnings beat"
   },
   "HOOD": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-04T22:45:59.191882+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-10-07T00:20:51.867053+00:00",
+    "key_factors": [
+      "68 buy/strongBuy vs 6 sell ratings (91% bullish)",
+      "3/4 recent earnings beats show operational strength"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong analyst support with solid earnings consistency outweighs valuation conce"
   },
   "IONQ": {
     "error": "Ugyldig JSON-respons",
@@ -122,15 +128,15 @@
     "summary": "Ingen data"
   },
   "MDB": {
-    "fetched_at": "2026-09-24T23:45:27.313257+00:00",
+    "fetched_at": "2026-10-07T00:20:46.945916+00:00",
     "key_factors": [
-      "Consistent earnings beats (4/4 quarters)",
-      "94 buy/strongBuy vs 26 hold ratings"
+      "Perfect earnings beat streak (4/4 quarters) demonstrates execution excellence",
+      "Overwhelmingly bullish analyst consensus (95 buy/strongBuy vs 1 strongSell)"
     ],
-    "raw_score": 0.62,
-    "score": 0.81,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Bullish with valuation caution. Strong fundamentals offset by stretched metrics."
+    "summary": "Strong fundamentals with valuation reset. Consistent execution supports upside."
   },
   "NET": {
     "fetched_at": "2026-06-11T12:37:03.898475+00:00",
@@ -220,13 +226,15 @@
     "summary": "Strong analyst support offsets execution concerns; recovery potential attractive"
   },
   "SHOP": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-03T22:57:31.842432+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-10-07T00:20:49.451213+00:00",
+    "key_factors": [
+      "123 buy/strongBuy vs 3 sell ratings (97.6% positive)",
+      "3 of 4 recent quarters beat expectations"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong analyst support with solid earnings execution supports positive outlook"
   },
   "SMCI": {
     "fetched_at": "2026-06-11T12:29:40.190016+00:00",
@@ -243,13 +251,15 @@
     "summary": "SMCI stock plummeted 20-27% in the last week following a dilutive $7B equity raise announcement to fund $39B in AI server orders, though strong Q3 earnings (123% revenue growth) and an analyst upgrade provide some offset."
   },
   "SNOW": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-09-01T22:58:38.583874+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-10-07T00:20:54.048638+00:00",
+    "key_factors": [
+      "Overwhelming analyst consensus (133 buy/strongBuy vs 4 sell)",
+      "Perfect earnings track record: 4 consecutive beats"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with consistent execution offset by valuation concerns"
   },
   "SOFI": {
     "fetched_at": "2026-06-20T08:34:29.526596+00:00",
@@ -286,23 +296,36 @@
     "summary": "Strong bullish setup with consistent execution; valuation near highs"
   },
   "U": {
-    "fetched_at": "2026-10-02T00:30:36.551942+00:00",
+    "fetched_at": "2026-10-07T00:20:44.140392+00:00",
     "key_factors": [
-      "Overwhelming buy consensus (61/78 = 78% bullish)",
-      "Stock down 16.4% from 52w high provides entry opportunity"
+      "Overwhelming bullish consensus (61 buy/strongBuy vs 17 hold)",
+      "13.8% pullback from 52w high offers entry opportunity"
     ],
-    "raw_score": 0.68,
-    "score": 0.84,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong analyst support outweighs recent underperformance; solid upside potential"
+    "summary": "Strong analyst support and recent pullback create favorable setup for medium-ter"
   },
   "UBER": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-06-20T08:34:41.074067+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-10-07T00:21:02.157706+00:00",
+    "key_factors": [
+      "129 buy/strongBuy vs 24 hold/sell ratings shows strong consensus",
+      "Stock down 31.4% from 52w high provides attractive entry valuation"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Moderately bullish. Strong analyst support offset by valuation concerns and mixe"
+  },
+  "ZS": {
+    "fetched_at": "2026-10-07T00:20:56.987179+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4) demonstrates execution excellence",
+      "Overwhelming analyst consensus (111 buy/strongBuy vs 27 hold) signals confidence"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals offset valuation concerns; consistent execution supports out"
   }
 }
