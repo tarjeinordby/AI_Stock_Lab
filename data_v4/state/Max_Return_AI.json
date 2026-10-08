@@ -5,7 +5,7 @@
   },
   "created_at": "2026-06-11T08:42:29.093561+00:00",
   "highest_portfolio_value": 10811.70737368795,
-  "last_execution_date": "2026-10-07",
+  "last_execution_date": "2026-10-08",
   "portfolio_id": "c11f0a84-11f6-417b-bc1e-5b4b78bf863e",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
@@ -15,8 +15,8 @@
       "buy_score": 71.5,
       "highest_price": 190.3000030517578,
       "is_partial": false,
-      "last_price": 159.2100067138672,
-      "market_value": 2556.9012367519995,
+      "last_price": 160.22000122070312,
+      "market_value": 2573.1216757617326,
       "pyramid_min_price": 184.0998,
       "pyramid_remaining_value": 0.0,
       "shares": 16.059927950051982
@@ -27,8 +27,8 @@
       "buy_score": 71.5,
       "highest_price": 222.3800048828125,
       "is_partial": false,
-      "last_price": 218.5,
-      "market_value": 3009.082970376517,
+      "last_price": 216.58999633789062,
+      "market_value": 2982.7792656030156,
       "pyramid_min_price": 147.2319,
       "pyramid_remaining_value": 0.0,
       "shares": 13.771546775178567
@@ -39,8 +39,8 @@
       "buy_score": 70.9,
       "highest_price": 159.72000122070312,
       "is_partial": false,
-      "last_price": 150.02999877929688,
-      "market_value": 3942.064205194892,
+      "last_price": 152.25,
+      "market_value": 4000.3951218037537,
       "pyramid_min_price": 140.9028,
       "pyramid_remaining_value": 0.0,
       "shares": 26.27517321381776
@@ -51,8 +51,8 @@
       "buy_score": 88.0,
       "highest_price": 484.2300109863281,
       "is_partial": true,
-      "last_price": 472.6000061035156,
-      "market_value": 1048.4049100138361,
+      "last_price": 466.32000732421875,
+      "market_value": 1034.4735061415017,
       "pyramid_min_price": 471.4644,
       "pyramid_remaining_value": 683.59,
       "shares": 2.2183768439990232
