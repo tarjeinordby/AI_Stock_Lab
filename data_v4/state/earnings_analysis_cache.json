@@ -14,15 +14,15 @@
   },
   "ASML": {
     "beat_probability": 0.62,
-    "expected_reaction": "Positive if bookings strong; volatile given stretched expectations after 2 consecutive big beats",
-    "fetched_at": "2026-10-06T01:39:35.520000+00:00",
+    "expected_reaction": "Moderately positive if bookings hold; high volatility given China/export exposure and lofty expectations",
+    "fetched_at": "2026-10-08T00:42:04.211058+00:00",
     "key_metrics_to_watch": [
-      "Net bookings (especially EUV/High-NA)",
-      "2027 guidance & China exposure",
-      "Gross margin trajectory"
+      "Net bookings (EUV/High-NA)",
+      "China revenue mix & export restrictions impact",
+      "2027 guidance and gross margin"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Recent beats (+8-9%) show momentum but revenue dipped to $7.52B and consensus EPS $58.23 looks inconsistent with quarterly history; data gaps add uncertainty.",
+    "reasoning": "Strong recent beats (3 of 4, +8-9%) favor upside, but lumpy revenue, EPS consensus mismatch, and stretched expectations warrant caution.",
     "risk_level": "high"
   },
   "BILL": {
@@ -157,15 +157,15 @@
   },
   "TSM": {
     "beat_probability": 0.82,
-    "expected_reaction": "positive move of 4-8% if beat holds, but muted if guidance disappoints on AI capex pace",
-    "fetched_at": "2026-10-06T01:39:31.905264+00:00",
+    "expected_reaction": "Positive if beat holds; +3-6% on strong AI/HPC guidance, but muted if revenue deceleration persists",
+    "fetched_at": "2026-10-08T00:42:00.087828+00:00",
     "key_metrics_to_watch": [
-      "AI/HPC revenue mix and 3nm/2nm ramp",
-      "gross margin guidance",
-      "capex and Q4 revenue outlook"
+      "Gross margin & pricing power",
+      "AI/HPC revenue mix and guidance",
+      "Advanced node (3nm/2nm) utilization"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "4 straight beats avg +8%, strong AI demand. But EPS consensus $21.93 vs recent ~$4/qtr seems inconsistent; verify figure. High-conviction long bias.",
+    "reasoning": "Consistent 4-11% beats over 4 quarters signal conservative guidance; strong beat history supports modest pre-earnings add despite revenue decline concerns.",
     "risk_level": "medium"
   },
   "U": {
