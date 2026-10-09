@@ -14,15 +14,15 @@
   },
   "ASML": {
     "beat_probability": 0.62,
-    "expected_reaction": "Moderately positive if bookings hold; high volatility given China/export exposure and lofty expectations",
-    "fetched_at": "2026-10-08T00:42:04.211058+00:00",
+    "expected_reaction": "Moderately positive if bookings hold; volatility high given recent beats already priced in. Guidance on 2026 and China e",
+    "fetched_at": "2026-10-09T00:57:45.522913+00:00",
     "key_metrics_to_watch": [
-      "Net bookings (EUV/High-NA)",
-      "China revenue mix & export restrictions impact",
-      "2027 guidance and gross margin"
+      "Net bookings (EUV/High-NA orders)",
+      "2026 revenue guidance & China mix",
+      "Gross margin trajectory"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong recent beats (3 of 4, +8-9%) favor upside, but lumpy revenue, EPS consensus mismatch, and stretched expectations warrant caution.",
+    "reasoning": "Recent 2 quarters beat +8-9%, but revenue is choppy ($7.52B dip) and consensus EPS of $58.43 looks suspect/annualized. Bookings-driven stock; guidance risk high.",
     "risk_level": "high"
   },
   "BILL": {
@@ -157,15 +157,15 @@
   },
   "TSM": {
     "beat_probability": 0.82,
-    "expected_reaction": "Positive if beat holds; +3-6% on strong AI/HPC guidance, but muted if revenue deceleration persists",
-    "fetched_at": "2026-10-08T00:42:00.087828+00:00",
+    "expected_reaction": "Positive if beat continues, but revenue deceleration risk may cap upside; +3-6% on strong AI/HPC guidance",
+    "fetched_at": "2026-10-09T00:57:39.468539+00:00",
     "key_metrics_to_watch": [
-      "Gross margin & pricing power",
-      "AI/HPC revenue mix and guidance",
-      "Advanced node (3nm/2nm) utilization"
+      "HPC/AI revenue mix & N3/N2 ramp",
+      "gross margin guidance",
+      "capex and 2026 revenue outlook"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "Consistent 4-11% beats over 4 quarters signal conservative guidance; strong beat history supports modest pre-earnings add despite revenue decline concerns.",
+    "reasoning": "Consistent 4.7-11.2% beats over 4 quarters signal strong execution; AI demand robust, but watch sequential revenue decline shown in data.",
     "risk_level": "medium"
   },
   "U": {
