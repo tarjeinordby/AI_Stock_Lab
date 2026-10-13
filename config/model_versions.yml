@@ -34,7 +34,7 @@ quant_baseline_v1:
     FROZEN as of 2026-08-05. Do not modify. Create quant_baseline_v2 instead.
   created_at: "2026-08-05"
   frozen: true
-  model_config_hash: "d303b9a12ce0f0552eeaddee6f9625dbd713d1e08d3f527f25ddec1412ac41d2"
+  model_config_hash: "003cc471b1c8857a43bd2a78373f0110bdb533c5d16133f763e2d57c5270c67a"
 
   config:
 
@@ -315,7 +315,7 @@ quant_baseline_v1:
 
       Balanced_AI:
         score_column: "score_balanced"
-        base_weights: {momentum: 0.35, quality: 0.40, value: 0.20, sentiment: 0.05}
+        base_weights: {momentum: 0.25, quality: 0.35, value: 0.35, sentiment: 0.05}
 
       Low_Risk_AI:
         score_column: "score_low_risk"

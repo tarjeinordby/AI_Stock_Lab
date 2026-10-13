@@ -52,9 +52,9 @@ STRATEGIES = {
         },
     },
     "Balanced_AI": {
-        "description": "Balanserer momentum, trend, risiko og stabilitet.",
+        "description": "Balanserer momentum, verdi og kvalitet likt — selekterer bredere enn Quality_Momentum.",
         "score_column": "score_balanced",
-        "weights": {"momentum": 0.35, "quality": 0.40, "value": 0.20, "sentiment": 0.05},
+        "weights": {"momentum": 0.25, "quality": 0.35, "value": 0.35, "sentiment": 0.05},
         "max_positions": 10,
         "max_position_weight": 0.12,
         "max_new_buys_per_week": 4,
