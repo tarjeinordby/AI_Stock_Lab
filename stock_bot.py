@@ -265,6 +265,12 @@ def run_signal():
     print("SIGNAL MODE")
     print("=" * 60)
 
+    # Capture date at workflow start — before the multi-hour AI analysis.
+    # If captured late (after midnight Oslo), today_str() returns tomorrow's
+    # date and intended_execution_session ends up one session ahead, causing
+    # Layer 2 "stale_signal" failures in execute every Tue–Fri.
+    _signal_date = today_str()
+
     universe = build_universe()
     market_data = download_daily_data(universe)
     market_data, quality_report = run_data_quality_checks(market_data)
@@ -392,7 +398,7 @@ def run_signal():
             "candidates": candidates,
         }
 
-    date = today_str()
+    date = _signal_date
     year_month = date[:7]
 
     # ----------------------------------------------------------------
