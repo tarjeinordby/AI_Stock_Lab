@@ -3,13 +3,13 @@
   "cooldowns": {},
   "created_at": "2026-10-13T11:32:36.497470+00:00",
   "highest_portfolio_value": 10000.0,
-  "last_execution_date": null,
+  "last_execution_date": "2026-10-13",
   "portfolio_id": "c7d85efc-4862-4d37-bc6f-d9d8310009ea",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {},
   "strategy": "Balanced_AI",
   "weekly_meta": {
     "buys_this_week": 0,
-    "iso_week": ""
+    "iso_week": "2026-W42"
   }
 }
