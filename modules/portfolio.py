@@ -71,10 +71,16 @@ def build_target_weights(candidates, config, regime_name, portfolio_drawdown=0.0
                 scale = SECTOR_CAP / total
                 df.loc[df["sector"] == sector, "target_weight"] *= scale
 
-    # Re-normalize to 1.0
-    total_w = df["target_weight"].sum()
-    if total_w > 0:
-        df["target_weight"] = df["target_weight"] / total_w
+    # NOTE: deliberately no re-normalize-to-1.0 here. Both caps above only ever
+    # reduce weights below the initial risk-parity allocation (line 63) — they
+    # never increase them. Re-normalizing the post-cap weights back up to sum
+    # to 1.0 would proportionally undo both caps: three equal candidates in one
+    # sector, capped to 15% position / 25% sector, would be scaled back up to
+    # 33.3% each (100% of the sector) — exactly defeating the limits they were
+    # just capped to. Any weight left uncapped below 1.0 is intentional — it is
+    # exposure the strategy chose not to take given the concentration, and it
+    # becomes idle cash (target_value_full = total_now * target_weights[ticker]
+    # in stock_bot.py simply never allocates the remainder to any ticker).
 
     # Apply regime exposure (overridden by portfolio drawdown protection + macro mult)
     base_exposure = config["exposure"].get(regime_name, config["exposure"].get("unknown", 0.50))

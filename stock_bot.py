@@ -8,7 +8,11 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 from modules.earnings import fetch_deep_earnings_analysis, fetch_earnings_bulk
 from modules.fundamentals import fetch_fundamentals_bulk, fetch_insider_bulk
-from modules.exchange_calendar import CalendarUnavailableError, intended_execution_session
+from modules.exchange_calendar import (
+    CalendarUnavailableError,
+    intended_execution_session,
+    last_completed_session,
+)
 from modules.orders import (
     EXECUTED, EXPIRED, FAILED_PRICE, FAILED_RECONCILIATION, PENDING_PRICE, SETTLING, TERMINAL,  # noqa: F401
     build_execution_stats,
@@ -75,7 +79,6 @@ from modules.state import (
     load_performance,
     load_strategy_state,
     load_trades,
-    is_market_open,
     now_ny,
     now_oslo,
     now_utc,
@@ -265,11 +268,17 @@ def run_signal():
     print("SIGNAL MODE")
     print("=" * 60)
 
-    # Capture date at workflow start — before the multi-hour AI analysis.
-    # If captured late (after midnight Oslo), today_str() returns tomorrow's
-    # date and intended_execution_session ends up one session ahead, causing
-    # Layer 2 "stale_signal" failures in execute every Tue–Fri.
-    _signal_date = today_str()
+    # Anchor the signal date to the last NYSE session that has actually
+    # closed, not to wall-clock "today" in any timezone. GitHub Actions
+    # scheduled triggers are best-effort and routinely fire hours late
+    # (observed: a 21:00 UTC cron starting as late as 02:23 UTC the next
+    # calendar day) — a wall-clock date silently rolls over to the next
+    # day purely from scheduler delay, pushing intended_execution_session
+    # one session ahead and causing Layer 2 "stale_signal" failures in
+    # execute. last_completed_session() is immune to both scheduler delay
+    # and the AI analysis time that follows it, because it only depends on
+    # the absolute UTC instant versus NYSE close times.
+    _signal_date = last_completed_session()
 
     universe = build_universe()
     market_data = download_daily_data(universe)
@@ -839,10 +848,31 @@ def run_strategy_execution(
     # both cases are fail-closed. check_pending_price_guard raises RuntimeError on any block.
     check_pending_price_guard(orders, strategy_name, session_date, send_telegram_fn=send_telegram)
 
+    # Reason prefixes that mark a sell as risk-management (stop-loss / trailing
+    # stop) rather than signal-driven. Protective sells bypass allow_signal_sells
+    # and market_open; everything else must respect them. Defined here (rather
+    # than just before the main sell loop below) so the same-day retry loop can
+    # apply the identical rule.
+    _PROTECTIVE = ("Stop-loss", "Trailing stop")
+
     # --- Retry pending orders from today's session (same-day retry) ---
+    # These re-attempt orders that got stuck as PENDING_PRICE (execution price
+    # was missing) earlier in the same session. A retry performs the exact same
+    # economic action as a first attempt (a real fill), so it must be subject to
+    # the exact same authorization gates — allow_signal_sells/market_open for
+    # sells, allow_new_buys/market_open for buys — not just re-attempted
+    # unconditionally. Without this, an invalid signal or a closed market could
+    # not stop a buy/sell that happened to already have a pending order.
     for order in get_pending_for_session(orders, session_date, strategy_name):
         ticker = order["ticker"]
         if order["action"] == "SELL" and ticker in state["positions"]:
+            is_protective = any(order["reason"].startswith(p) for p in _PROTECTIVE)
+            if not market_open and not is_protective:
+                print(f"  [{strategy_name}] SKIP RETRY-SELG {ticker}: markedet stengt ({order['reason']})")
+                continue
+            if not allow_signal_sells and not is_protective:
+                print(f"  [{strategy_name}] SKIP RETRY-SELG {ticker}: signal ugyldig, kun stop-loss tillatt ({order['reason']})")
+                continue
             cash_before = state["cash"]
             state, trades_df, trade = execute_sell(
                 state, trades_df, strategy_name, ticker, order["reason"],
@@ -863,6 +893,9 @@ def run_strategy_execution(
                 )
                 orders[order["order_id"]] = updated
         elif order["action"] == "BUY" and ticker not in state["positions"]:
+            if not (allow_new_buys and market_open):
+                print(f"  [{strategy_name}] SKIP RETRY-KJØP {ticker}: nye kjøp ikke tillatt (signal ugyldig eller marked stengt)")
+                continue
             candidate = candidates_by_ticker.get(ticker)
             if candidate:
                 cash_before = state["cash"]
@@ -952,7 +985,6 @@ def run_strategy_execution(
                 print(f"  [{strategy_name}] KORR-SELG {ticker}: {cs['reason']}")
 
     # Evaluate normal sells — protective stops always run; signal-based exits require valid signal
-    _PROTECTIVE = ("Stop-loss", "Trailing stop")
     for ticker, pos in list(state["positions"].items()):
         candidate = candidates_by_ticker.get(ticker)
         # Inject current session price so stop-loss uses today's open, not stale signal price.
@@ -1454,9 +1486,23 @@ def run_execute():
     all_pm_moves = compute_premarket_moves(list(pm_tickers), fallback_prices)
     premarket_flags = {t: m for t, m in all_pm_moves.items() if abs(m) > 0.04}
 
-    market_open = is_market_open()
+    # Whether we can safely execute for session_date is a question of DATA
+    # availability, not wall-clock time. prefetch_execution_prices() already
+    # strictly requires session_date's actual daily Open to exist before a
+    # ticker appears in execution_price_cache — that is the real gate.
+    #
+    # Gating on is_market_open() (wall-clock 09:35-15:55 ET) instead was wrong:
+    # GitHub Actions scheduled triggers are best-effort and this execute cron
+    # (14:40 UTC) has been observed starting as late as 18:12 ET — ~30% of
+    # recent runs landed outside that window — which silently blocked every
+    # new buy for the day even though session_date's open price was already
+    # final and available. Using price-data availability instead is immune
+    # to scheduler delay in both directions: too early and the cache is
+    # empty (correctly blocks), after close and the cache is populated
+    # (correctly allows).
+    market_open = bool(execution_price_cache)
     if not market_open:
-        print("Markedet er stengt — stop-loss kan fortsatt utføres, kjøp hoppes over")
+        print("Ingen execution-priser for session_date ennå — stop-loss kan fortsatt utføres, kjøp hoppes over")
 
     # --- Order state: load, crash-recovery, expire stale, share across all strategies ---
     signal_run_id = signal.get("signal_run_id", "unknown")
@@ -1599,6 +1645,9 @@ def main():
     elif mode == "backtest":
         from modules.backtest import run_backtest
         run_backtest()
+    elif mode == "refresh_universe":
+        from modules.universe import refresh_universe_file
+        refresh_universe_file()
     else:
         raise ValueError(f"Ukjent BOT_MODE: {mode}")
 

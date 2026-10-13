@@ -78,6 +78,42 @@ def is_trading_session(date_str: str) -> bool:
         ) from exc
 
 
+def last_completed_session(as_of_utc: "pd.Timestamp | None" = None) -> str:
+    """
+    Return the most recently CLOSED NYSE trading session as 'YYYY-MM-DD',
+    anchored to an absolute UTC instant rather than any wall-clock timezone.
+
+    This must be used instead of a wall-clock "today" (Oslo or NY) to decide
+    which session a signal's market data represents. GitHub Actions scheduled
+    triggers are best-effort and routinely fire hours late — a cron set for
+    21:00 UTC has been observed starting anywhere from on-time to 02:23 UTC
+    the next calendar day. Deriving the signal date from wall-clock time means
+    the apparent "today" can silently roll over to the next day (or skip a
+    session) purely because of scheduler delay, with no error — which is
+    exactly how intended_execution_session() ended up one session ahead in
+    production. Anchoring to "the session that already closed" is immune to
+    both scheduler delay and the multi-hour AI analysis that follows it.
+
+    Examples (all correctly resolve to the same trading day regardless of
+    when the calling code actually happens to run):
+        Monday 21:00 UTC (on-time cron fire, right after close) → Monday
+        Tuesday 02:23 UTC (same cron, 5h23m late)                → Monday
+        Tuesday 15:00 UTC (intraday, Tuesday still open)         → Monday
+        Saturday 03:00 UTC (Friday cron delayed past midnight)   → Friday
+    """
+    cal = get_nyse_calendar()
+    try:
+        now = as_of_utc if as_of_utc is not None else pd.Timestamp.now(tz="UTC")
+        session = cal.minute_to_past_session(now, count=1)
+        return session.strftime("%Y-%m-%d")
+    except CalendarUnavailableError:
+        raise
+    except Exception as exc:
+        raise CalendarUnavailableError(
+            f"Cannot determine last completed session as of {as_of_utc}: {exc}"
+        ) from exc
+
+
 def intended_execution_session(signal_date_str: str) -> str:
     """
     Return the next valid NYSE trading session after signal_date_str as 'YYYY-MM-DD'.
