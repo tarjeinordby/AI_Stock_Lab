@@ -14,15 +14,15 @@
   },
   "ASML": {
     "beat_probability": 0.62,
-    "expected_reaction": "Moderately positive if bookings hold; volatility high given recent beats already priced in. Guidance on 2026 and China e",
-    "fetched_at": "2026-10-09T00:57:45.522913+00:00",
+    "expected_reaction": "Positive if bookings strong; volatile given EUV/China exposure and lofty EPS consensus",
+    "fetched_at": "2026-10-13T02:24:54.840737+00:00",
     "key_metrics_to_watch": [
-      "Net bookings (EUV/High-NA orders)",
-      "2026 revenue guidance & China mix",
-      "Gross margin trajectory"
+      "Net bookings (order intake)",
+      "2027 revenue guidance",
+      "China revenue mix & gross margin"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Recent 2 quarters beat +8-9%, but revenue is choppy ($7.52B dip) and consensus EPS of $58.43 looks suspect/annualized. Bookings-driven stock; guidance risk high.",
+    "reasoning": "Recent 2 beats (+8%, +9%) show momentum, but EPS consensus $58 looks anomalous vs quarterly ~$7 EPS; data inconsistency raises uncertainty. Bookings drive reaction.",
     "risk_level": "high"
   },
   "BILL": {
@@ -75,6 +75,19 @@
     ],
     "position_recommendation": "hold",
     "reasoning": "Strong 4-quarter beat streak (avg +14%) supports EPS beat, but declining sequential revenue signals growth deceleration\u2014guidance is the key risk, warranting caution.",
+    "risk_level": "high"
+  },
+  "HOOD": {
+    "beat_probability": 0.62,
+    "expected_reaction": "Volatile; strong beat history could drive upside, but EPS consensus of $3.44 looks anomalous vs ~$0.40-0.66 recent quart",
+    "fetched_at": "2026-10-13T02:25:00.790622+00:00",
+    "key_metrics_to_watch": [
+      "Net interest revenue & crypto trading volume",
+      "Monthly Active Users / net deposits growth",
+      "Transaction-based revenue mix"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Beat 3 of 4 quarters incl +43.7% last Q, but consensus EPS figure is unreliable and rate-cut risk to NII clouds setup; size caution.",
     "risk_level": "high"
   },
   "MDB": {
@@ -157,15 +170,15 @@
   },
   "TSM": {
     "beat_probability": 0.82,
-    "expected_reaction": "Positive if beat continues, but revenue deceleration risk may cap upside; +3-6% on strong AI/HPC guidance",
-    "fetched_at": "2026-10-09T00:57:39.468539+00:00",
+    "expected_reaction": "positive move on beat; +4-8% if surprise exceeds 5%, but priced-in run-up risks sell-the-news",
+    "fetched_at": "2026-10-13T02:24:50.734757+00:00",
     "key_metrics_to_watch": [
-      "HPC/AI revenue mix & N3/N2 ramp",
-      "gross margin guidance",
-      "capex and 2026 revenue outlook"
+      "AI/HPC revenue mix & data center demand",
+      "gross margin & N3/N2 ramp pricing",
+      "Q4 guidance and capex outlook"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "Consistent 4.7-11.2% beats over 4 quarters signal strong execution; AI demand robust, but watch sequential revenue decline shown in data.",
+    "reasoning": "4 straight beats avg +8% surprise; strong AI demand tailwind. Consistent outperformance favors beat, but watch stretched expectations.",
     "risk_level": "medium"
   },
   "U": {
