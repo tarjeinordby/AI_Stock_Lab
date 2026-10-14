@@ -23,8 +23,9 @@ def run_data_quality_checks(market_data):
     """
     Scan market_data for suspicious prices, zero-volume streaks, and possible splits.
 
-    Fixes applied in-place:
-      - Suspicious price (>15%, not split): last Close replaced with previous day's Close
+    Large moves are only flagged, never overwritten: a real earnings gap is
+    information the technicals and the stop-loss need to see.
+      - Suspicious price (>15%, not split): flagged in price_flags, Close kept
       - Zero-volume streak (>=3 days): ticker removed from market_data
 
     Returns (market_data, quality_report) where quality_report = {
@@ -78,11 +79,8 @@ def run_data_quality_checks(market_data):
             })
             continue
 
-        # Suspicious move: >15% in one day — replace last Close with prev to protect technicals
+        # Suspicious move: >15% in one day — flag only, keep the reported Close
         if abs(pct_change) > SUSPICIOUS_DAILY_MOVE:
-            fixed_df = df.copy()
-            fixed_df.iloc[-1, fixed_df.columns.get_loc("Close")] = prev_price
-            market_data[ticker] = fixed_df
             price_flags.append({
                 "ticker": ticker,
                 "pct_change": round(pct_change, 4),
@@ -104,7 +102,7 @@ def run_data_quality_checks(market_data):
         print(f"⚠️ Datakvalitet: {total} problem(er) oppdaget")
         for f in price_flags:
             sign = "+" if f["pct_change"] > 0 else ""
-            print(f"  ⚠️ {f['ticker']} {sign}{f['pct_change']:.0%} — mulig feil, bruker forrige kurs")
+            print(f"  ⚠️ {f['ticker']} {sign}{f['pct_change']:.0%} — stor bevegelse, flagget (kurs beholdt)")
         for v in volume_excluded:
             print(f"  ⚠️ {v['ticker']} — 0 volum {v['zero_days']} dager, ekskludert")
         for s in split_detected:

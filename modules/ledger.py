@@ -108,7 +108,8 @@ def compute_input_manifest(
     data_status values:
         "valid"          — recent data, no anomalies
         "stale"          — last_date is >5 calendar days before intended_session
-        "price_adjusted" — suspicious move detected, close replaced with prev
+        "price_adjusted" — suspicious >15% move flagged (name kept for schema
+                           compatibility; the close is no longer replaced)
         "split_detected" — large single-day drop flagged as possible split
         "excluded"       — removed by volume quality check
 
