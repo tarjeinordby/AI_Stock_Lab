@@ -12,6 +12,19 @@
     "reasoning": "3 consecutive misses with worsening surprises (-4.8%, -15.6%, -14.1%). Consensus $5.99 EPS looks aggressive vs recent trend. Negative momentum warrants caution.",
     "risk_level": "high"
   },
+  "AMZN": {
+    "beat_probability": 0.68,
+    "expected_reaction": "Moderately positive if AWS growth and margins hold; volatile given recent large beats inflating expectations",
+    "fetched_at": "2026-10-14T23:39:33.573693+00:00",
+    "key_metrics_to_watch": [
+      "AWS revenue growth & operating margin",
+      "Advertising revenue",
+      "Operating income / North America margin"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong recent beat streak but revenue trend softening and EPS consensus ($10.45) looks inconsistent with quarterly data; high uncertainty warrants caution.",
+    "risk_level": "high"
+  },
   "ASML": {
     "beat_probability": 0.62,
     "expected_reaction": "Positive if bookings strong; volatile given EUV/China exposure and lofty EPS consensus",
@@ -141,6 +154,32 @@
     "position_recommendation": "add_before",
     "reasoning": "4 straight beats averaging +4.5% surprise; consistent execution and pricing power support another beat, though reaction may be modest given defensive valuation",
     "risk_level": "low"
+  },
+  "LLY": {
+    "beat_probability": 0.8,
+    "expected_reaction": "Positive if GLP-1 momentum holds; muted upside as beats are now priced in. Guidance and orforglipron data are the real c",
+    "fetched_at": "2026-10-14T23:39:29.620396+00:00",
+    "key_metrics_to_watch": [
+      "Mounjaro/Zepbound revenue growth",
+      "FY guidance raise",
+      "orforglipron oral GLP-1 updates & supply/margin trends"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "4-straight large beats (avg +20%) favor another beat, but high expectations limit upside and data inconsistencies warrant caution. Hold into print.",
+    "risk_level": "medium"
+  },
+  "MA": {
+    "beat_probability": 0.82,
+    "expected_reaction": "Moderately positive; MA has beaten 4/4 quarters, but consistent beats are partly priced in, limiting upside surprise mag",
+    "fetched_at": "2026-10-14T23:39:38.346085+00:00",
+    "key_metrics_to_watch": [
+      "Cross-border volume growth",
+      "Switched transaction/GDV trends",
+      "Operating margin & value-added services revenue"
+    ],
+    "position_recommendation": "add_before",
+    "reasoning": "Perfect recent beat streak (avg +5.9% surprise), strong revenue resilience. Note: quarterly EPS consensus of $23.06 looks mislabeled/annual; verify data.",
+    "risk_level": "medium"
   },
   "MDB": {
     "beat_probability": 0.78,
@@ -274,15 +313,28 @@
   },
   "TSM": {
     "beat_probability": 0.82,
-    "expected_reaction": "positive move on beat; +4-8% if surprise exceeds 5%, but priced-in run-up risks sell-the-news",
-    "fetched_at": "2026-10-13T02:24:50.734757+00:00",
+    "expected_reaction": "Positive if beat holds; +3-6% move likely, but elevated expectations raise disappointment risk",
+    "fetched_at": "2026-10-14T23:39:20.176597+00:00",
     "key_metrics_to_watch": [
-      "AI/HPC revenue mix & data center demand",
-      "gross margin & N3/N2 ramp pricing",
-      "Q4 guidance and capex outlook"
+      "AI/HPC revenue growth",
+      "gross margin & N3/N2 yields",
+      "2026 capex and demand guidance"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "4 straight beats avg +8% surprise; strong AI demand tailwind. Consistent outperformance favors beat, but watch stretched expectations.",
+    "reasoning": "Consistent 4-quarter beats (avg ~8%) and AI-driven demand support upside, but priced-in strength caps surprise; EPS consensus flagged inconsistent vs trend.",
+    "risk_level": "medium"
+  },
+  "TWLO": {
+    "beat_probability": 0.82,
+    "expected_reaction": "Positive if beat continues, but muted due to declining revenue trend raising growth concerns",
+    "fetched_at": "2026-10-14T23:39:24.093981+00:00",
+    "key_metrics_to_watch": [
+      "Revenue growth / sequential decline",
+      "Dollar-based net expansion rate",
+      "Operating margin & FCF guidance"
+    ],
+    "position_recommendation": "add_before",
+    "reasoning": "Strong 4-qtr beat streak (avg +13.6%) favors another beat, but sequential revenue decline is a red flag; small position ahead of print.",
     "risk_level": "medium"
   },
   "U": {
