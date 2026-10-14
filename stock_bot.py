@@ -225,21 +225,62 @@ def run_premarket():
 
 
 # ============================================================
+# RECONCILIATION
+# ============================================================
+
+def run_post_execute_reconciliation(send_fn=None):
+    """Replay the saved trades.csv against every saved strategy state.
+
+    Alerts on Telegram when any strategy deviates by more than ALERT_THRESHOLD_USD.
+    Reads from disk on purpose: it checks what was actually persisted.
+    """
+    from modules.reconcile import (  # noqa: PLC0415
+        ALERT_THRESHOLD_USD, format_reconciliation, reconcile_all,
+    )
+    send_fn = send_fn or send_telegram
+    results = reconcile_all(load_trades(), STRATEGIES, load_strategy_state)
+    report = format_reconciliation(results)
+    print("Avstemming trades.csv mot state:\n" + report)
+    bad = [r for r in results if not r["ok"]]
+    if bad:
+        send_fn(
+            f"⚠️ AVSTEMMING: trades.csv stemmer ikke med porteføljen "
+            f"(avvik > ${ALERT_THRESHOLD_USD:.0f}) for {len(bad)} strategi(er)\n" + report
+        )
+    return results
+
+
+# ============================================================
 # SPLIT ADJUSTMENTS
 # ============================================================
 
-def apply_split_adjustments(split_detected):
+def apply_split_adjustments(split_detected, trades_df, session_date):
     """
-    For confirmed splits, adjust shares and avg_price in all strategy states.
-    Returns list of adjustment records for logging.
+    For confirmed splits, adjust shares and avg_price in all strategy states and record
+    each adjustment as a SPLIT row in trades_df (share change, no cash effect), so that
+    trades.csv stays a complete record of every share-count change.
+
+    Idempotent per (strategy, ticker, session): a split already recorded for this session
+    is not applied again if execute runs twice.
+    Returns (adjustments, trades_df).
     """
-    adjustments = []
+    import hashlib  # noqa: PLC0415
+
+    existing = set()
+    if not trades_df.empty and "trade_id" in trades_df.columns:
+        existing = set(trades_df["trade_id"].dropna().astype(str))
+    adjustments, rows = [], []
     for split in split_detected:
         ratio = split.get("ratio")
         if not ratio:
             continue
         ticker = split["ticker"]
         for strat_name in STRATEGIES:
+            split_id = "split-" + hashlib.sha256(
+                f"{strat_name}|{ticker}|{session_date}".encode()).hexdigest()[:12]
+            if split_id in existing:
+                print(f"  Split {ticker} [{strat_name}] allerede registrert for {session_date} — hopper over")
+                continue
             state = load_strategy_state(strat_name)
             pos = state["positions"].get(ticker)
             if not pos:
@@ -255,8 +296,17 @@ def apply_split_adjustments(split_detected):
                 "ticker": ticker, "strategy": strat_name, "ratio": ratio,
                 "old_shares": old_shares, "new_shares": pos["shares"],
             })
+            rows.append({
+                "date": session_date, "timestamp_utc": now_utc().isoformat(),
+                "strategy": strat_name, "action": "SPLIT", "ticker": ticker,
+                "shares": round(pos["shares"] - old_shares, 6), "price": 0.0, "value": 0.0,
+                "cost": 0.0, "reason": f"Split {ratio}:1", "execution_session": session_date,
+                "net_cash_effect": 0.0, "order_id": split_id, "trade_id": split_id,
+            })
             print(f"  Split {ticker} {ratio}:1 [{strat_name}]: {old_shares:.2f} → {pos['shares']:.2f} aksjer")
-    return adjustments
+    if rows:
+        trades_df = pd.concat([trades_df, pd.DataFrame(rows)], ignore_index=True)
+    return adjustments, trades_df
 
 
 # ============================================================
@@ -1487,7 +1537,7 @@ def run_execute():
     split_detected = quality_report.get("split_detected", [])
     if split_detected:
         print(f"Mulige splits oppdaget: {[s['ticker'] for s in split_detected]}")
-        apply_split_adjustments(split_detected)
+        _, trades_df = apply_split_adjustments(split_detected, trades_df, session_date)
 
     # --- MOO execution model: collect all tickers + yesterday's closes ---
     # fallback_prices = yesterday's close from signal (open price fallback + premarket reference)
@@ -1618,6 +1668,8 @@ def run_execute():
 
     save_csv(trades_df, TRADES_FILE)
     save_csv(performance_df, PERFORMANCE_FILE)
+
+    run_post_execute_reconciliation()
 
     # Load fundamentals cache for weekly sector report
     fundamentals_cache = load_json(FUNDAMENTALS_CACHE_FILE, {})
