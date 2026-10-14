@@ -21,3 +21,6 @@ data_v4/ledger/fills.jsonl.lock
 data_v4/v2b_ledger/*.lock
 data_v4/v2b_ledger/.ev_*
 data_v4/v2b_ledger/.idx_*
+
+# Research price cache
+research/cache/
