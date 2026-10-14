@@ -14,7 +14,7 @@ from modules.exchange_calendar import (
     last_completed_session,
 )
 from modules.orders import (
-    EXECUTED, EXPIRED, FAILED_PRICE, FAILED_RECONCILIATION, PENDING_PRICE, SETTLING, TERMINAL,  # noqa: F401
+    CANCELLED, EXECUTED, EXPIRED, FAILED_PRICE, FAILED_RECONCILIATION, PENDING_PRICE, SETTLING, TERMINAL,  # noqa: F401
     build_execution_stats,
     check_pending_price_guard,
     expire_stale_orders,
@@ -757,6 +757,19 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
     )
 
 
+def _buy_skip_outcome(skip_info):
+    """Map why execute_buy did not trade to (order status, failure_code, failure_reason).
+
+    Only a missing execution price is worth retrying later in the session; a too-small
+    order or an oversized opening gap is a deliberate rejection and is cancelled.
+    """
+    code = skip_info.get("code", "missing_execution_price")
+    reason = skip_info.get("reason", "no execution price for session")
+    if code == "missing_execution_price":
+        return PENDING_PRICE, code, reason
+    return CANCELLED, code, reason
+
+
 def _annotate_trade(trade, trades_df, order_id, orders, signal_run_id, execution_version):
     """Add traceability fields to a trade dict and its trades_df row, and persist the order as SETTLING.
 
@@ -919,12 +932,14 @@ def run_strategy_execution(
             candidate = candidates_by_ticker.get(ticker)
             if candidate:
                 cash_before = state["cash"]
+                skip = {}
                 state, trades_df, trade = execute_buy(
                     state, trades_df, strategy_name, ticker,
                     order["target_value"], order["reason"], candidate,
                     execution_price_cache,
                     premarket_move=premarket_flags.get(ticker),
                     pyramid_remaining=order.get("pyramid_remaining", 0.0),
+                    skip_info=skip,
                 )
                 if trade:
                     _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
@@ -933,11 +948,12 @@ def run_strategy_execution(
                     buys.append(trade)
                     print(f"  [{strategy_name}] RETRY-KJØP {ticker}: {order['reason']}")
                 else:
+                    status, code, why = _buy_skip_outcome(skip)
                     updated = save_order(
                         orders[order["order_id"]],
-                        status=PENDING_PRICE,
-                        failure_code="missing_execution_price",
-                        failure_reason="no execution price for session (retry attempt)",
+                        status=status,
+                        failure_code=code,
+                        failure_reason=f"{why} (retry attempt)",
                     )
                     orders[order["order_id"]] = updated
 
@@ -1195,11 +1211,13 @@ def run_strategy_execution(
                 orders[order["order_id"]] = saved
 
             buy_cash_before = state["cash"]
+            skip = {}
             state, trades_df, trade = execute_buy(
                 state, trades_df, strategy_name, ticker, initial_value,
                 reason, candidate, execution_price_cache,
                 premarket_move=pm_move,
                 pyramid_remaining=pyramid_remaining,
+                skip_info=skip,
             )
 
             if trade:
@@ -1209,11 +1227,12 @@ def run_strategy_execution(
                 buys.append(trade)
                 print(f"  [{strategy_name}] KJØP 60% {ticker}: {trade['reason']}")
             else:
+                status, code, why = _buy_skip_outcome(skip)
                 updated = save_order(
                     orders[order["order_id"]],
-                    status=PENDING_PRICE,
-                    failure_code="missing_execution_price",
-                    failure_reason="no execution price for session",
+                    status=status,
+                    failure_code=code,
+                    failure_reason=why,
                 )
                 orders[order["order_id"]] = updated
 

@@ -123,3 +123,28 @@ class TestTradeRowsCarryIds:
         _, df, trade = execute_pyramid_fill(state, pd.DataFrame(), STRATEGY, "AAPL", {"AAPL": 110.0})
         assert trade["action"] == "PYRAMID_FILL"
         assert df.iloc[-1]["action"] == "PYRAMID_FILL"
+
+
+# --- Order-status bug ----------------------------------------------------------
+
+class TestRejectedBuyStatus:
+
+    def test_below_min_position_is_cancelled_not_missing_price(self, harness):
+        """Reproduces the 114 orders from 2026-10-14: price existed, order was just too small."""
+        from modules.orders import CANCELLED
+        trades_df, buy_orders = harness(weight=0.05, open_price=100.0)  # 10000*0.05*0.6 = $300
+        assert trades_df.empty or len(trades_df[trades_df["ticker"] == "AAPL"]) == 0
+        assert buy_orders[0]["status"] == CANCELLED
+        assert buy_orders[0]["failure_code"] == "below_min_position"
+
+    def test_open_gap_is_cancelled_with_gap_code(self, harness):
+        from modules.orders import CANCELLED
+        _, buy_orders = harness(weight=0.10, open_price=106.0, signal_price=100.0)
+        assert buy_orders[0]["status"] == CANCELLED
+        assert buy_orders[0]["failure_code"] == "open_gap_too_large"
+
+    def test_truly_missing_price_stays_pending(self, harness):
+        from modules.orders import PENDING_PRICE
+        _, buy_orders = harness(weight=0.10, open_price=None)
+        assert buy_orders[0]["status"] == PENDING_PRICE
+        assert buy_orders[0]["failure_code"] == "missing_execution_price"

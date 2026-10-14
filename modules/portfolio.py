@@ -153,13 +153,22 @@ def execute_sell(
 
 def execute_buy(
     state, trades_df, strategy_name, ticker, target_value, reason, candidate,
-    execution_price_cache, premarket_move=None, pyramid_remaining=0.0,
+    execution_price_cache, premarket_move=None, pyramid_remaining=0.0, skip_info=None,
 ):
+    """Buy ticker at the session open. When no trade happens, the reason is written to
+    skip_info (if given) as {"code", "reason"} so the order can get an accurate status:
+    missing_execution_price (retryable) vs open_gap_too_large / below_min_position (not)."""
     import pandas as pd
+
+    def _skip(code, why):
+        if skip_info is not None:
+            skip_info["code"] = code
+            skip_info["reason"] = why
+        return state, trades_df, None
 
     if ticker not in execution_price_cache:
         print(f"  {ticker}: ingen gyldig åpningspris for session — KJØP utsatt")
-        return state, trades_df, None
+        return _skip("missing_execution_price", "no execution price for session")
     price = execution_price_cache[ticker]
 
     signal_price = candidate.get("price")
@@ -175,13 +184,14 @@ def execute_buy(
         gap = (price / signal_price) - 1
         if gap > 0.05:
             print(f"  {ticker}: åpnings-gap {gap:.1%} fra signal — hopper over")
-            return state, trades_df, None
+            return _skip("open_gap_too_large", f"open gap {gap:.1%} vs signal price exceeds 5%")
         if gap > 0.025:
             target_value *= 0.50
 
     target_value = min(target_value, state["cash"])
     if target_value < MIN_POSITION_VALUE:
-        return state, trades_df, None
+        return _skip("below_min_position",
+                     f"order ${target_value:.2f} below minimum ${MIN_POSITION_VALUE}")
 
     cost = estimate_trade_cost(target_value, "BUY")
     total_needed = target_value + cost
@@ -192,11 +202,12 @@ def execute_buy(
         total_needed = target_value + cost
 
     if target_value < MIN_POSITION_VALUE:
-        return state, trades_df, None
+        return _skip("below_min_position",
+                     f"order ${target_value:.2f} below minimum ${MIN_POSITION_VALUE} after costs")
 
     shares = target_value / price
     if shares <= 0:
-        return state, trades_df, None
+        return _skip("invalid_share_count", "computed share count <= 0")
 
     state["cash"] -= total_needed
     is_partial = pyramid_remaining > 0
