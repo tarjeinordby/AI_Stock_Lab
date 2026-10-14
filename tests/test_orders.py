@@ -6999,7 +6999,7 @@ class TestRound18Issue1PyramidNameError:
 
         pyramid_called = []
 
-        def mock_execute_pyramid(state, trades_df, strategy_name, ticker, exec_cache):
+        def mock_execute_pyramid(state, trades_df, strategy_name, ticker, exec_cache, **kwargs):
             pyramid_called.append(ticker)
             return dict(state), trades_df, None  # no fill
 

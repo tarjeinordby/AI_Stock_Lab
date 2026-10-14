@@ -99,8 +99,11 @@ def _get_effective_exposure(base_exposure, drawdown):
 
 
 def execute_sell(
-    state, trades_df, strategy_name, ticker, reason, execution_price_cache
+    state, trades_df, strategy_name, ticker, reason, execution_price_cache, session_date=None
 ):
+    # Rows and positions are labelled with the NYSE session being executed, not the
+    # Oslo calendar date (which is already "tomorrow" when execute runs after 22:00 UTC).
+    session = session_date or today_str()
     import pandas as pd
 
     pos = state["positions"].get(ticker)
@@ -120,7 +123,7 @@ def execute_sell(
     state["cash"] += net_value
 
     trade = {
-        "date": today_str(),
+        "date": session,
         "timestamp_utc": now_utc().isoformat(),
         "strategy": strategy_name,
         "action": "SELL",
@@ -130,7 +133,7 @@ def execute_sell(
         "value": round(value, 2),
         "cost": round(cost, 2),
         "reason": reason,
-        "execution_session": today_str(),
+        "execution_session": session,
         "execution_price_source": EXECUTION_PRICE_SOURCE,
         "order_status": "filled",
         # Slippage: zero in paper model (next_session_daily_open_v1 has no market impact)
@@ -146,7 +149,7 @@ def execute_sell(
 
     trades_df = pd.concat([trades_df, pd.DataFrame([trade])], ignore_index=True)
     del state["positions"][ticker]
-    state["cooldowns"][ticker] = today_str()
+    state["cooldowns"][ticker] = session
 
     return state, trades_df, trade
 
@@ -154,10 +157,14 @@ def execute_sell(
 def execute_buy(
     state, trades_df, strategy_name, ticker, target_value, reason, candidate,
     execution_price_cache, premarket_move=None, pyramid_remaining=0.0, skip_info=None,
+    session_date=None,
 ):
     """Buy ticker at the session open. When no trade happens, the reason is written to
     skip_info (if given) as {"code", "reason"} so the order can get an accurate status:
     missing_execution_price (retryable) vs open_gap_too_large / below_min_position (not)."""
+    # Rows and positions are labelled with the NYSE session being executed, not the
+    # Oslo calendar date (which is already "tomorrow" when execute runs after 22:00 UTC).
+    session = session_date or today_str()
     import pandas as pd
 
     def _skip(code, why):
@@ -217,7 +224,7 @@ def execute_buy(
         "last_price": price,
         "highest_price": price,
         "market_value": shares * price,
-        "buy_date": today_str(),
+        "buy_date": session,
         "buy_score": round(safe_float(candidate.get("strategy_score"), 0.0), 1),
         "is_partial": is_partial,
         "pyramid_remaining_value": round(pyramid_remaining, 2) if is_partial else 0.0,
@@ -226,7 +233,7 @@ def execute_buy(
     state["weekly_meta"]["buys_this_week"] += 1
 
     trade = {
-        "date": today_str(),
+        "date": session,
         "timestamp_utc": now_utc().isoformat(),
         "strategy": strategy_name,
         "action": "BUY",
@@ -236,7 +243,7 @@ def execute_buy(
         "value": round(target_value, 2),
         "cost": round(cost, 2),
         "reason": reason,
-        "execution_session": today_str(),
+        "execution_session": session,
         "execution_price_source": EXECUTION_PRICE_SOURCE,
         "order_status": "filled",
         "slippage_bps": 0,
@@ -252,7 +259,8 @@ def execute_buy(
     return state, trades_df, trade
 
 
-def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_price_cache):
+def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_price_cache,
+                         session_date=None):
     """
     Complete a partial position: buy the remaining 40% if:
     - Position is marked is_partial=True
@@ -260,6 +268,9 @@ def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_pric
     - Open price >= pyramid_min_price (entry × 1.02)
     - Valid execution price available for today's session
     """
+    # Rows and positions are labelled with the NYSE session being executed, not the
+    # Oslo calendar date (which is already "tomorrow" when execute runs after 22:00 UTC).
+    session = session_date or today_str()
     pos = state["positions"].get(ticker)
     if not pos or not pos.get("is_partial"):
         return state, trades_df, None
@@ -307,7 +318,7 @@ def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_pric
     pos["pyramid_remaining_value"] = 0.0
 
     trade = {
-        "date": today_str(),
+        "date": session,
         "timestamp_utc": now_utc().isoformat(),
         "strategy": strategy_name,
         "action": "PYRAMID_FILL",
@@ -317,7 +328,7 @@ def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_pric
         "value": round(remaining, 2),
         "cost": round(cost, 2),
         "reason": f"Pyramidering 40% ({entry_pct:+.1f}% fra entry, dag {days_held})",
-        "execution_session": today_str(),
+        "execution_session": session,
         "execution_price_source": EXECUTION_PRICE_SOURCE,
         "order_status": "filled",
         "slippage_bps": 0,

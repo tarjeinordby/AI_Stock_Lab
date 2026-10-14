@@ -148,3 +148,38 @@ class TestRejectedBuyStatus:
         _, buy_orders = harness(weight=0.10, open_price=None)
         assert buy_orders[0]["status"] == PENDING_PRICE
         assert buy_orders[0]["failure_code"] == "missing_execution_price"
+
+
+# --- Date label bug ------------------------------------------------------------
+
+class TestRowsLabelledWithTradingSession:
+    """Rows must carry the NYSE session they belong to, not the Oslo calendar date.
+
+    Execute is routinely started hours late by GitHub; after 22:00 UTC (CEST) the Oslo
+    date is already the next day, which mislabelled rows (e.g. two sets of 2026-10-13
+    rows in performance.csv)."""
+
+    def test_trade_and_position_use_session_date_after_oslo_midnight(self, harness, monkeypatch):
+        import modules.portfolio as pf
+        monkeypatch.setattr(pf, "today_str", lambda: "2026-10-15")  # Oslo already next day
+        trades_df, _ = harness(weight=0.10, open_price=100.0)
+        row = trades_df[trades_df["ticker"] == "AAPL"].iloc[0]
+        assert row["date"] == SESSION
+        assert row["execution_session"] == SESSION
+
+    def test_sell_sets_cooldown_to_session_date(self, monkeypatch):
+        import modules.portfolio as pf
+        monkeypatch.setattr(pf, "today_str", lambda: "2026-10-15")
+        state = {"cash": 0.0, "cooldowns": {}, "positions": {"AAPL": {"shares": 1.0, "avg_price": 100.0}}}
+        state, df, trade = pf.execute_sell(state, pd.DataFrame(), STRATEGY, "AAPL", "Stop-loss",
+                                           {"AAPL": 90.0}, session_date=SESSION)
+        assert trade["date"] == SESSION and trade["execution_session"] == SESSION
+        assert state["cooldowns"]["AAPL"] == SESSION
+
+    def test_performance_row_and_last_execution_use_session_date(self):
+        import inspect
+        import stock_bot as sb
+        src_exec = inspect.getsource(sb.run_execute)
+        src_strat = inspect.getsource(sb.run_strategy_execution)
+        assert '"date": session_date' in src_exec
+        assert 'state["last_execution_date"] = session_date' in src_strat

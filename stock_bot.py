@@ -910,6 +910,7 @@ def run_strategy_execution(
             state, trades_df, trade = execute_sell(
                 state, trades_df, strategy_name, ticker, order["reason"],
                 execution_price_cache,
+                session_date=session_date,
             )
             if trade:
                 _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
@@ -940,6 +941,7 @@ def run_strategy_execution(
                     premarket_move=premarket_flags.get(ticker),
                     pyramid_remaining=order.get("pyramid_remaining", 0.0),
                     skip_info=skip,
+                    session_date=session_date,
                 )
                 if trade:
                     _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
@@ -981,7 +983,8 @@ def run_strategy_execution(
             orders[order["order_id"]] = saved
         cash_before = state["cash"]
         state2, trades2, trade = execute_sell(
-            state, trades_df, strategy_name, ticker, reason, execution_price_cache
+            state, trades_df, strategy_name, ticker, reason, execution_price_cache,
+            session_date=session_date,
         )
         if trade:
             _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state2["cash"], execution_version)
@@ -1097,7 +1100,8 @@ def run_strategy_execution(
             # NOW execute portfolio mutation — order ledger already committed
             pyr_cash_before = state["cash"]
             state, trades_df, fill = execute_pyramid_fill(
-                state, trades_df, strategy_name, ticker, execution_price_cache
+                state, trades_df, strategy_name, ticker, execution_price_cache,
+                session_date=session_date,
             )
             if fill:
                 _fill_rec = _write_fill_event_for_order(pyr_order, fill, pyr_cash_before, state["cash"], execution_version)
@@ -1218,6 +1222,7 @@ def run_strategy_execution(
                 premarket_move=pm_move,
                 pyramid_remaining=pyramid_remaining,
                 skip_info=skip,
+                session_date=session_date,
             )
 
             if trade:
@@ -1250,7 +1255,7 @@ def run_strategy_execution(
         float(state.get("highest_portfolio_value", START_CAPITAL)),
         total_after,
     )
-    state["last_execution_date"] = today_str()
+    state["last_execution_date"] = session_date
 
     # Compute portfolio state hash before save — verified after atomic write
     from modules.fills import (  # noqa: PLC0415
@@ -1597,7 +1602,7 @@ def run_execute():
                 drawdown_warnings.append(f"{strategy_name}: {msg}")
 
         performance_row = {
-            "date": today_str(),
+            "date": session_date,
             "strategy": strategy_name,
             "portfolio_value": round(result["portfolio_value"], 2),
             "cash": round(result["cash"], 2),
