@@ -1039,6 +1039,20 @@ def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
     if not trades_df.empty and "trade_id" in trades_df.columns:
         existing_trade_ids = set(trades_df["trade_id"].dropna().astype(str))
 
+    # Rows written before trade IDs reached trades.csv have no trade_id. Recognise them by
+    # content so recovery doesn't append a second copy of a trade that is already there.
+    def _content_key(strategy, action, ticker, session, shares):
+        side = "SELL" if str(action) == "SELL" else "BUY"
+        return (str(strategy), side, str(ticker), str(session)[:10], round(float(shares), 4))
+
+    existing_content: set = set()
+    if not trades_df.empty and {"strategy", "action", "ticker", "shares"} <= set(trades_df.columns):
+        for _, r in trades_df.iterrows():
+            session = r.get("execution_session")
+            if session is None or (isinstance(session, float) and pd.isna(session)) or session == "":
+                session = r.get("date", "")
+            existing_content.add(_content_key(r["strategy"], r["action"], r["ticker"], session, r["shares"]))
+
     new_rows = []
     for order_id, order_events in events_by_order.items():
         persisted = next((e for e in order_events if e.get("status") == "persisted"), None)
@@ -1067,6 +1081,10 @@ def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
             round(float(filling.get("shares", 0)) * float(price), 2),
         )
         session = filling.get("actual_execution_session", filling.get("session_date", ""))
+        content_key = _content_key(filling.get("strategy", ""), filling.get("action", ""),
+                                   filling.get("ticker", ""), session, filling.get("shares", 0.0))
+        if content_key in existing_content:
+            continue
 
         row = {
             "date": session,
@@ -1097,6 +1115,7 @@ def project_fills_to_trades(trades_df: "pd.DataFrame") -> "pd.DataFrame":
         }
         new_rows.append(row)
         existing_trade_ids.add(trade_id)
+        existing_content.add(content_key)
 
     if new_rows:
         recovered_df = pd.DataFrame(new_rows)

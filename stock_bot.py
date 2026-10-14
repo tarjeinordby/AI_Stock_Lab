@@ -757,8 +757,12 @@ def _write_fill_event_for_order(order: dict, trade: dict, cash_before: float,
     )
 
 
-def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
-    """Add traceability fields to a trade dict and persist the order as SETTLING.
+def _annotate_trade(trade, trades_df, order_id, orders, signal_run_id, execution_version):
+    """Add traceability fields to a trade dict and its trades_df row, and persist the order as SETTLING.
+
+    execute_buy/sell/pyramid_fill append the row before the IDs exist, so the IDs must
+    also be written into that row — otherwise trades.csv never gets them and WAL
+    recovery (which matches on trade_id) appends a duplicate copy.
 
     SETTLING is an intermediate status: trade filled, portfolio not yet persisted.
     The caller must call save_order(order, status=EXECUTED) after save_strategy_state()
@@ -775,6 +779,22 @@ def _annotate_trade(trade, order_id, orders, signal_run_id, execution_version):
     # Explicit execution cost fields (zero in paper model — model assumption, not omission)
     trade["gross_execution_price"] = trade["price"]
     trade["commission_amount"] = trade["cost"]
+    row = (
+        (trades_df["timestamp_utc"] == trade["timestamp_utc"])
+        & (trades_df["strategy"] == trade["strategy"])
+        & (trades_df["ticker"] == trade["ticker"])
+    )
+    if row.sum() != 1:
+        raise RuntimeError(
+            f"_annotate_trade: expected exactly one trades_df row for {trade['strategy']}/"
+            f"{trade['ticker']} at {trade['timestamp_utc']}, found {int(row.sum())}"
+        )
+    for col in ("order_id", "trade_id", "signal_run_id", "execution_version",
+                "gross_execution_price", "commission_amount"):
+        if col not in trades_df.columns:
+            trades_df[col] = None
+        trades_df[col] = trades_df[col].astype(object)
+        trades_df.loc[row, col] = trade[col]
     order = orders.get(order_id, {})
     updated = save_order(order, status=SETTLING, trade_id=trade_id)
     orders[order_id] = updated
@@ -880,7 +900,7 @@ def run_strategy_execution(
             )
             if trade:
                 _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
-                _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                _annotate_trade(trade, trades_df, order["order_id"], orders, signal_run_id, execution_version)
                 settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 sells.append(trade)
                 print(f"  [{strategy_name}] RETRY-SELG {ticker}: {order['reason']}")
@@ -908,7 +928,7 @@ def run_strategy_execution(
                 )
                 if trade:
                     _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state["cash"], execution_version)
-                    _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                    _annotate_trade(trade, trades_df, order["order_id"], orders, signal_run_id, execution_version)
                     settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                     buys.append(trade)
                     print(f"  [{strategy_name}] RETRY-KJØP {ticker}: {order['reason']}")
@@ -949,7 +969,7 @@ def run_strategy_execution(
         )
         if trade:
             _fill_rec = _write_fill_event_for_order(order, trade, cash_before, state2["cash"], execution_version)
-            _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+            _annotate_trade(trade, trades2, order["order_id"], orders, signal_run_id, execution_version)
             settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
         else:
             updated = save_order(
@@ -1065,7 +1085,7 @@ def run_strategy_execution(
             )
             if fill:
                 _fill_rec = _write_fill_event_for_order(pyr_order, fill, pyr_cash_before, state["cash"], execution_version)
-                _annotate_trade(fill, pyr_order["order_id"], orders, signal_run_id, execution_version)
+                _annotate_trade(fill, trades_df, pyr_order["order_id"], orders, signal_run_id, execution_version)
                 settling_fills.append((pyr_order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 pyramid_fills.append(fill)
                 print(f"  [{strategy_name}] PYRAMID {ticker}: {fill['reason']}")
@@ -1184,7 +1204,7 @@ def run_strategy_execution(
 
             if trade:
                 _fill_rec = _write_fill_event_for_order(order, trade, buy_cash_before, state["cash"], execution_version)
-                _annotate_trade(trade, order["order_id"], orders, signal_run_id, execution_version)
+                _annotate_trade(trade, trades_df, order["order_id"], orders, signal_run_id, execution_version)
                 settling_fills.append((order["order_id"], _fill_rec["fill_attempt_id"], _fill_rec["content_hash"]))
                 buys.append(trade)
                 print(f"  [{strategy_name}] KJØP 60% {ticker}: {trade['reason']}")

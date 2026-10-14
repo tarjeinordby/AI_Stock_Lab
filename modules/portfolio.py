@@ -299,7 +299,7 @@ def execute_pyramid_fill(state, trades_df, strategy_name, ticker, execution_pric
         "date": today_str(),
         "timestamp_utc": now_utc().isoformat(),
         "strategy": strategy_name,
-        "action": "BUY",
+        "action": "PYRAMID_FILL",
         "ticker": ticker,
         "shares": round(new_shares, 6),
         "price": round(price, 2),
