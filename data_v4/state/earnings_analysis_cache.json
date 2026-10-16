@@ -26,16 +26,16 @@
     "risk_level": "high"
   },
   "AMZN": {
-    "beat_probability": 0.68,
-    "expected_reaction": "Moderately positive if AWS growth and margins hold; volatile given recent large beats inflating expectations",
-    "fetched_at": "2026-10-14T23:39:33.573693+00:00",
+    "beat_probability": 0.62,
+    "expected_reaction": "Volatile; upside if AWS growth and margins beat, but lofty consensus EPS ($10.45) raises bar after recent mega-surprises",
+    "fetched_at": "2026-10-16T23:15:19.516312+00:00",
     "key_metrics_to_watch": [
       "AWS revenue growth & operating margin",
       "Advertising revenue",
-      "Operating income / North America margin"
+      "Q4 holiday guidance"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong recent beat streak but revenue trend softening and EPS consensus ($10.45) looks inconsistent with quarterly data; high uncertainty warrants caution.",
+    "reasoning": "Strong beat history but consensus EPS looks inconsistent vs recent quarters; revenue declining sequentially raises caution. Data quality concerns limit conviction.",
     "risk_level": "high"
   },
   "ASML": {
@@ -116,6 +116,19 @@
     "reasoning": "Strong 4-quarter beat streak (avg +14%) supports EPS beat, but declining sequential revenue signals growth deceleration\u2014guidance is the key risk, warranting caution.",
     "risk_level": "high"
   },
+  "FFIV": {
+    "beat_probability": 0.85,
+    "expected_reaction": "Positive if beat continues; muted upside given priced-in expectations after 4 straight beats",
+    "fetched_at": "2026-10-16T23:15:03.412718+00:00",
+    "key_metrics_to_watch": [
+      "Software/ARR growth",
+      "Revenue (flat ~$0.81B trend)",
+      "FY guidance & margins"
+    ],
+    "position_recommendation": "add_before",
+    "reasoning": "Consistent double-digit beats (10-22%) signal conservative guidance. Flat revenue a concern but EPS momentum strong.",
+    "risk_level": "medium"
+  },
   "FTNT": {
     "beat_probability": 0.82,
     "expected_reaction": "Moderately positive if beat sustains; muted unless revenue reaccelerates or guidance raised, as valuation prices in stro",
@@ -155,6 +168,19 @@
     "reasoning": "Strong beat streak but surprises inconsistent and EPS consensus $15.25 seems anomalous vs actuals; revenue flat/declining. Hold through volatility.",
     "risk_level": "high"
   },
+  "HIG": {
+    "beat_probability": 0.6,
+    "expected_reaction": "Moderately positive if beat sustains; muted given mixed recent record and flat revenue",
+    "fetched_at": "2026-10-16T23:15:07.678570+00:00",
+    "key_metrics_to_watch": [
+      "P&C combined ratio & catastrophe losses",
+      "Net investment income",
+      "Group Benefits margin & premium growth"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "3 of 4 recent beats but one miss shows variance; flat revenue and Q4 cat-loss uncertainty argue for neutral stance into print.",
+    "risk_level": "medium"
+  },
   "HOOD": {
     "beat_probability": 0.62,
     "expected_reaction": "Volatile; strong beat history could drive upside, but EPS consensus of $3.44 looks anomalous vs ~$0.40-0.66 recent quart",
@@ -182,29 +208,29 @@
     "risk_level": "low"
   },
   "LLY": {
-    "beat_probability": 0.8,
-    "expected_reaction": "Positive if GLP-1 momentum holds; muted upside as beats are now priced in. Guidance and orforglipron data are the real c",
-    "fetched_at": "2026-10-14T23:39:29.620396+00:00",
+    "beat_probability": 0.82,
+    "expected_reaction": "Positive if beat continues, but muted upside given consensus already prices in strong momentum; watch guidance for volat",
+    "fetched_at": "2026-10-16T23:15:14.975207+00:00",
     "key_metrics_to_watch": [
-      "Mounjaro/Zepbound revenue growth",
-      "FY guidance raise",
-      "orforglipron oral GLP-1 updates & supply/margin trends"
+      "Mounjaro/Zepbound (tirzepatide) revenue growth",
+      "Full-year EPS & revenue guidance",
+      "Gross margin and supply/manufacturing capacity"
     ],
-    "position_recommendation": "hold",
-    "reasoning": "4-straight large beats (avg +20%) favor another beat, but high expectations limit upside and data inconsistencies warrant caution. Hold into print.",
+    "position_recommendation": "add_before",
+    "reasoning": "4 straight beats averaging +20%; strong GLP-1 franchise. But revenue trend declining QoQ and high consensus bar limit surprise magnitude.",
     "risk_level": "medium"
   },
   "MA": {
     "beat_probability": 0.82,
-    "expected_reaction": "Moderately positive; MA has beaten 4/4 quarters, but consistent beats are partly priced in, limiting upside surprise mag",
-    "fetched_at": "2026-10-14T23:39:38.346085+00:00",
+    "expected_reaction": "Moderately positive; consistent beats likely drive +2-4% move, though high expectations cap upside",
+    "fetched_at": "2026-10-16T23:15:25.266796+00:00",
     "key_metrics_to_watch": [
       "Cross-border volume growth",
-      "Switched transaction/GDV trends",
+      "Switched transactions / payment volume",
       "Operating margin & value-added services revenue"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "Perfect recent beat streak (avg +5.9% surprise), strong revenue resilience. Note: quarterly EPS consensus of $23.06 looks mislabeled/annual; verify data.",
+    "reasoning": "4 straight beats averaging +5.9% surprise, strong revenue resilience. MA's consumer spend durability supports another beat, but priced-in strength limits reaction.",
     "risk_level": "medium"
   },
   "MDB": {
@@ -244,6 +270,19 @@
     ],
     "position_recommendation": "add_before",
     "reasoning": "4 straight beats avg +8.8% surprise signals conservative guidance; strong Azure momentum. But revenue data looks inconsistent/declining-verify before sizing.",
+    "risk_level": "medium"
+  },
+  "NEM": {
+    "beat_probability": 0.72,
+    "expected_reaction": "Positive if gold prices hold and costs contained; muted given high bar from consistent beats",
+    "fetched_at": "2026-10-16T23:15:11.115956+00:00",
+    "key_metrics_to_watch": [
+      "AISC (all-in sustaining costs)",
+      "gold production volume & realized price",
+      "free cash flow and capital returns"
+    ],
+    "position_recommendation": "add_before",
+    "reasoning": "4 straight beats (avg ~21%) show strong execution; elevated gold prices support upside, but revenue declining trend and high expectations add risk",
     "risk_level": "medium"
   },
   "OKTA": {
