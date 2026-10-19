@@ -1,4 +1,20 @@
 {
+  "ABBV": {
+    "action": "hold",
+    "catalysts": [
+      "Strong EPS momentum could drive upgrades toward $328 target",
+      "Pipeline approvals or Skyrizi/Rinvoq growth offsetting Humira erosion"
+    ],
+    "conviction": "medium",
+    "fetched_at": "2026-10-19T20:08:55.266943+00:00",
+    "reasoning": "EPS acceleration positive but gross margin compression to 66.4% and volatile revenue warrant monitoring before adding.",
+    "risks": [
+      "Gross margin deterioration trend may signal pricing pressure or cost issues",
+      "Revenue volatility suggests demand inconsistency post-Humira biosimilar impact"
+    ],
+    "source": "claude",
+    "thesis_intact": true
+  },
   "ABNB": {
     "action": "hold",
     "catalysts": [
@@ -82,15 +98,15 @@
   "ROKU": {
     "action": "hold",
     "catalysts": [
-      "Continued EPS expansion could re-rate valuation higher",
-      "Streaming ad market recovery could reverse margin compression"
+      "EPS momentum turning sharply positive",
+      "High institutional ownership at 88.5% signals smart money conviction"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-10-05T21:36:33.874146+00:00",
-    "reasoning": "EPS trajectory strong (+650% over 4Q), but revenue volatility and margin compression warrant caution near analyst avg target.",
+    "fetched_at": "2026-10-19T20:08:58.975559+00:00",
+    "reasoning": "EPS acceleration is strong but revenue is volatile and margins compressed. Near analyst avg target limits upside.",
     "risks": [
-      "Revenue inconsistency signals demand uncertainty",
-      "Gross margin declining 6pts over 4 quarters pressures profitability"
+      "Revenue inconsistency signals ad market softness",
+      "Gross margin erosion from 49.7% to 43.4% is concerning"
     ],
     "source": "claude",
     "thesis_intact": true
