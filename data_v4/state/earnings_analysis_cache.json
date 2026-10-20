@@ -64,6 +64,19 @@
     "reasoning": "Strong beat streak (3 of 4) but $10.44 EPS consensus looks inconsistent vs recent quarterly EPS; data quality concerns warrant caution.",
     "risk_level": "high"
   },
+  "APA": {
+    "beat_probability": 0.75,
+    "expected_reaction": "Positive if beat continues, but shrinking surprise margins and declining revenue temper upside; muted to moderate move l",
+    "fetched_at": "2026-10-20T23:39:04.270600+00:00",
+    "key_metrics_to_watch": [
+      "Revenue stabilization/decline trend",
+      "Oil & gas production volumes and realized prices",
+      "Free cash flow and capital return guidance"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-qtr beat streak but surprise magnitude compressing (41.7%\u21921.0%) and revenue declining. Consensus $5.17 looks full-year; beat likely but reaction uncertain.",
+    "risk_level": "medium"
+  },
   "ASML": {
     "beat_probability": 0.62,
     "expected_reaction": "Positive if bookings strong; volatile given EUV/China exposure and lofty EPS consensus",
@@ -101,6 +114,19 @@
     ],
     "position_recommendation": "hold",
     "reasoning": "Strong 4-quarter beat streak (+37-93%) supports beat, but flat/declining revenue and high consensus EPS create risk. Hold given uncertainty.",
+    "risk_level": "high"
+  },
+  "CF": {
+    "beat_probability": 0.55,
+    "expected_reaction": "volatile; mixed signals from beat history vs declining revenue and recent miss",
+    "fetched_at": "2026-10-20T23:39:18.067634+00:00",
+    "key_metrics_to_watch": [
+      "nitrogen/urea pricing & gas input costs",
+      "revenue trajectory vs $1.66B trend",
+      "guidance and buyback pace"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong beat history but recent -15% miss and 4 straight revenue declines offset edge. Consensus data inconsistent (quarterly vs $11.3 annual). Mixed setup warrants caution.",
     "risk_level": "high"
   },
   "CRWD": {
@@ -157,15 +183,15 @@
   },
   "FTNT": {
     "beat_probability": 0.82,
-    "expected_reaction": "Moderately positive if beat sustains; muted unless revenue reaccelerates or guidance raised, as valuation prices in stro",
-    "fetched_at": "2026-10-15T23:32:50.694236+00:00",
+    "expected_reaction": "Positive if beat continues, but high bar priced in; muted upside unless billings/guidance strong",
+    "fetched_at": "2026-10-20T23:39:09.161569+00:00",
     "key_metrics_to_watch": [
-      "Billings growth & deferred revenue",
-      "Product (firewall refresh) revenue vs SaaS/security services mix",
-      "Operating margin and FY guidance"
+      "Billings/deferred revenue growth",
+      "Product revenue (firewall refresh cycle)",
+      "Operating margin & FY guidance"
     ],
-    "position_recommendation": "hold",
-    "reasoning": "Strong 4-quarter beat streak (avg +19.8%) supports beat odds, but choppy sequential revenue and high bar temper upside. Hold into print.",
+    "position_recommendation": "add_before",
+    "reasoning": "4 straight double-digit beats (avg ~20%) shows conservative guidance; strong consistency favors beat, but watch revenue sequential softness.",
     "risk_level": "medium"
   },
   "GOOG": {
@@ -219,6 +245,19 @@
     "position_recommendation": "hold",
     "reasoning": "Beat 3 of 4 quarters incl +43.7% last Q, but consensus EPS figure is unreliable and rate-cut risk to NII clouds setup; size caution.",
     "risk_level": "high"
+  },
+  "INCY": {
+    "beat_probability": 0.72,
+    "expected_reaction": "Positive if beat continues; stock likely up 3-7% on EPS beat, but revenue softness could cap upside",
+    "fetched_at": "2026-10-20T23:39:13.362191+00:00",
+    "key_metrics_to_watch": [
+      "Jakafi/Opzelura revenue growth",
+      "Pipeline/new drug updates & guidance",
+      "Operating margin and R&D spend"
+    ],
+    "position_recommendation": "add_before",
+    "reasoning": "3 of last 4 qtrs beat big (avg +27%), strong EPS momentum. Revenue choppy but bottom-line surprises favor upside.",
+    "risk_level": "medium"
   },
   "KO": {
     "beat_probability": 0.78,
@@ -364,16 +403,16 @@
     "risk_level": "high"
   },
   "ROKU": {
-    "beat_probability": 0.7,
-    "expected_reaction": "positive if platform revenue and margins expand; muted if EPS consensus reflects unrealistic $3.69 vs recent sub-$1 actu",
-    "fetched_at": "2026-08-05T22:10:10.085398+00:00",
+    "beat_probability": 0.78,
+    "expected_reaction": "Positive if EPS beats, but muted vs history; consensus $4.00 seems anomalously high vs recent ~$1.20 actuals, raising da",
+    "fetched_at": "2026-10-20T23:39:00.052680+00:00",
     "key_metrics_to_watch": [
-      "Platform revenue growth & ARPU",
-      "Adjusted EBITDA margin",
-      "Free cash flow & active accounts"
+      "Streaming/Platform revenue growth",
+      "Operating margin & FCF",
+      "Active accounts / ARPU"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-quarter beat streak favors upside, but $3.69 consensus looks anomalous vs history; revenue softening adds uncertainty. Hold ahead of volatile print.",
+    "reasoning": "Strong 4-quarter beat streak (+64% to +113%) favors a beat, but $4.00 consensus looks inconsistent with ~$1.20 trend\u2014unreliable bar warrants caution.",
     "risk_level": "high"
   },
   "SE": {
