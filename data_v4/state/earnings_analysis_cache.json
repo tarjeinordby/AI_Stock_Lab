@@ -168,6 +168,19 @@
     "reasoning": "Strong 4-quarter beat streak (avg +14%) supports EPS beat, but declining sequential revenue signals growth deceleration\u2014guidance is the key risk, warranting caution.",
     "risk_level": "high"
   },
+  "DVN": {
+    "beat_probability": 0.55,
+    "expected_reaction": "Moderately volatile; mixed track record (2 beats, 2 misses) suggests ~3-6% move either direction, upside tilt if product",
+    "fetched_at": "2026-10-22T23:53:33.422943+00:00",
+    "key_metrics_to_watch": [
+      "Oil & gas production volumes vs guidance",
+      "Free cash flow & shareholder returns (buybacks/dividends)",
+      "Realized commodity prices & per-unit costs (LOE)"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Inconsistent surprise history and commodity-price sensitivity create two-sided risk; no clear edge to justify pre-earnings directional bet.",
+    "risk_level": "medium"
+  },
   "EOG": {
     "beat_probability": 0.78,
     "expected_reaction": "Modest positive move (+2-4%) if beat holds, but muted upside given revenue decline; downside risk if commodity prices pr",
@@ -233,6 +246,19 @@
     "reasoning": "Strong beat streak but consensus EPS looks anomalous vs flat/declining revenue; elevated uncertainty favors holding over sizing up.",
     "risk_level": "high"
   },
+  "GRMN": {
+    "beat_probability": 0.78,
+    "expected_reaction": "Positive; recent strong beats (3 straight double-digit surprises) suggest upside, but high bar may limit pop. Expect +3-",
+    "fetched_at": "2026-10-22T23:53:42.774302+00:00",
+    "key_metrics_to_watch": [
+      "Fitness/Outdoor segment revenue growth",
+      "Operating margin expansion",
+      "FY2026 EPS guidance revision"
+    ],
+    "position_recommendation": "add_before",
+    "reasoning": "3 consecutive beats of 13-22% show conservative consensus; strong momentum favors another beat, but size position for elevated post-earnings volatility.",
+    "risk_level": "medium"
+  },
   "HIG": {
     "beat_probability": 0.6,
     "expected_reaction": "Moderately positive if beat; muted given mixed recent track record and flat revenue. Volatility likely on P&C combined r",
@@ -261,15 +287,15 @@
   },
   "INCY": {
     "beat_probability": 0.72,
-    "expected_reaction": "Positive if beat continues; stock likely up 3-7% on EPS beat, but revenue softness could cap upside",
-    "fetched_at": "2026-10-20T23:39:13.362191+00:00",
+    "expected_reaction": "positive if beat continues, but muted given high consensus bar; volatility likely",
+    "fetched_at": "2026-10-22T23:53:29.103865+00:00",
     "key_metrics_to_watch": [
       "Jakafi/Opzelura revenue growth",
-      "Pipeline/new drug updates & guidance",
-      "Operating margin and R&D spend"
+      "pipeline/new product uptake",
+      "gross margin & operating expenses"
     ],
-    "position_recommendation": "add_before",
-    "reasoning": "3 of last 4 qtrs beat big (avg +27%), strong EPS momentum. Revenue choppy but bottom-line surprises favor upside.",
+    "position_recommendation": "hold",
+    "reasoning": "Strong beat history (3 of 4 quarters, avg +27%) favors upside, but one miss and high EPS consensus create risk. Hold through event.",
     "risk_level": "medium"
   },
   "KO": {
@@ -400,6 +426,19 @@
     ],
     "position_recommendation": "hold",
     "reasoning": "Consistent 4-10% EPS beats over 4 quarters suggest strong beat odds, but high valuation means guidance drives reaction. Hold to avoid post-earnings volatility.",
+    "risk_level": "medium"
+  },
+  "PFG": {
+    "beat_probability": 0.55,
+    "expected_reaction": "Moderately positive if beat continues; recent two-quarter beat momentum vs earlier misses suggests improving execution, ",
+    "fetched_at": "2026-10-22T23:53:38.063490+00:00",
+    "key_metrics_to_watch": [
+      "Assets under management (AUM) net flows",
+      "Retirement & income solutions margins",
+      "Net investment income / spread trends"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Recent 2 beats (+2.9%, +7.1%) show momentum but prior 2 misses and lumpy revenue warrant caution. Note: consensus $10.23 looks like annual, not quarterly.",
     "risk_level": "medium"
   },
   "PSX": {

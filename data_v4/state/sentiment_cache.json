@@ -1,14 +1,14 @@
 {
   "ABBV": {
-    "fetched_at": "2026-10-21T23:54:12.472274+00:00",
+    "fetched_at": "2026-10-22T23:53:01.621384+00:00",
     "key_factors": [
-      "73 buy/strongBuy ratings (80% bullish) vs 3 strongSell",
-      "Near 52w high suggests valuation already reflects optimism"
+      "73 buy/strongBuy vs 3 sell/strongSell (96% positive coverage)",
+      "Near 52w highs suggests strong momentum and investor confidence"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong analyst support with solid fundamentals; minor valuation headroom."
+    "summary": "Strong bullish consensus with solid fundamentals; minor valuation concern"
   },
   "ABNB": {
     "fetched_at": "2026-10-20T23:38:53.212378+00:00",
@@ -22,15 +22,15 @@
     "summary": "Moderately bullish. Strong analyst support offset by earnings misses and recent "
   },
   "APA": {
-    "fetched_at": "2026-10-20T23:38:50.769093+00:00",
+    "fetched_at": "2026-10-22T23:53:14.623039+00:00",
     "key_factors": [
-      "4 consecutive earnings beats demonstrate operational excellence",
-      "Consensus tilted bearish (41 holds + 9 sells vs 27 buys) suggests limited upside"
+      "Consistent earnings beats (4 consecutive quarters)",
+      "Consensus hold rating (41/77 analysts)"
     ],
-    "raw_score": 0.15,
-    "score": 0.575,
+    "raw_score": 0.28,
+    "score": 0.64,
     "source": "claude",
-    "summary": "Mixed signals: Strong earnings, but consensus caution and peak valuation."
+    "summary": "Cautiously optimistic. Strong earnings, solid ratings, but mixed sentiment."
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -184,6 +184,17 @@
     "source": "claude",
     "summary": "Modestly bullish. Strong earnings, near highs, but mixed analyst sentiment."
   },
+  "FTNT": {
+    "fetched_at": "2026-10-22T23:53:22.112974+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4) shows strong execution",
+      "Consensus skewed toward hold (89/132) suggests limited upside"
+    ],
+    "raw_score": 0.35,
+    "score": 0.675,
+    "source": "claude",
+    "summary": "Solid fundamentals offset by valuation concerns and mixed sentiment"
+  },
   "HOOD": {
     "fetched_at": "2026-10-07T00:20:51.867053+00:00",
     "key_factors": [
@@ -227,13 +238,15 @@
     "summary": "Strong fundamentals with valuation reset. Consistent execution supports upside."
   },
   "MPC": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-10-21T23:54:26.681225+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-10-22T23:53:12.229735+00:00",
+    "key_factors": [
+      "29 buy/strongBuy vs 26 hold/sell ratings shows modest bullish consensus",
+      "Recent earnings momentum: 3 beats in last 4 quarters is constructive"
+    ],
+    "raw_score": 0.35,
+    "score": 0.675,
+    "source": "claude",
+    "summary": "Moderate positive bias; strong analyst support offset by mixed ratings"
   },
   "MRVL": {
     "fetched_at": "2026-10-21T23:54:37.505734+00:00",
@@ -260,6 +273,17 @@
     "source": "claude",
     "summary": "Mixed sentiment with recent volatility: Strong Q1 earnings (34% revenue growth, beat expectations) and multiple analyst upgrades (Morgan Stanley to $305) offset by major workforce restructuring (20% layoffs) and governance concerns, though bullish AI positioning and VoidZero acquisition drive optimism."
   },
+  "NTAP": {
+    "fetched_at": "2026-10-22T23:53:24.853138+00:00",
+    "key_factors": [
+      "Consistent earnings beats (4/4) demonstrates solid execution",
+      "Analyst consensus skews hold (35/60) despite 24 buy-rated; risk/reward unclear"
+    ],
+    "raw_score": 0.35,
+    "score": 0.675,
+    "source": "claude",
+    "summary": "Mixed outlook: Strong earnings but tepid analyst sentiment suggests caution."
+  },
   "NVO": {
     "error": "Ugyldig JSON-respons",
     "fetched_at": "2026-06-17T12:39:50.594073+00:00",
@@ -270,15 +294,15 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-10-13T02:24:23.407896+00:00",
+    "fetched_at": "2026-10-22T23:53:19.552391+00:00",
     "key_factors": [
-      "Perfect 4Q earnings beat streak demonstrates execution excellence",
-      "Overwhelming analyst support: 102 buy/strongBuy vs 1 strongSell"
+      "Exceptional earnings consistency: 4 consecutive beats",
+      "Strong analyst consensus: 102 buy vs 1 sell (99:1 ratio)"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with consistent earnings beats and bullish consensus"
+    "summary": "Strong fundamentals with consistent execution offset by valuation concerns"
   },
   "PANW": {
     "fetched_at": "2026-10-13T02:24:39.673735+00:00",
@@ -303,15 +327,15 @@
     "summary": "Strong fundamentals with excellent earnings execution offset by valuation concer"
   },
   "PSX": {
-    "fetched_at": "2026-10-21T23:54:17.789188+00:00",
+    "fetched_at": "2026-10-22T23:53:06.664639+00:00",
     "key_factors": [
-      "Perfect earnings track record: 4 consecutive beats",
-      "Overwhelming analyst consensus: 36/60 strong buy/buy ratings (60%)"
+      "Perfect 4-quarter earnings beat streak demonstrates operational excellence",
+      "Overwhelming analyst consensus: 36 buy/strong buy vs 6 sell ratings (86% bullish)"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong bullish setup with consistent execution and broad analyst support"
+    "summary": "Strong bullish sentiment with consistent execution and broad analyst support"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -323,15 +347,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-10-21T23:54:14.991581+00:00",
+    "fetched_at": "2026-10-22T23:53:04.178838+00:00",
     "key_factors": [
-      "Perfect earnings track record (4 consecutive beats)",
-      "Analyst consensus skewed toward hold (55/80 = 69%)"
+      "Consistent earnings beats (4/4) indicate solid execution",
+      "55 hold ratings vs 24 buy ratings suggest limited upside conviction"
     ],
-    "raw_score": 0.35,
-    "score": 0.675,
+    "raw_score": 0.15,
+    "score": 0.575,
     "source": "claude",
-    "summary": "Cautious optimism. Strong fundamentals offset by mixed analyst sentiment."
+    "summary": "Mixed signals: Strong earnings, but consensus cautious; valuation stretched"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -448,26 +472,26 @@
     "summary": "Moderately bullish. Strong analyst support offset by valuation concerns and mixe"
   },
   "VLO": {
-    "fetched_at": "2026-10-21T23:54:20.568548+00:00",
+    "fetched_at": "2026-10-22T23:53:09.422358+00:00",
     "key_factors": [
-      "Perfect 4Q earnings beat streak shows operational excellence",
-      "Analyst consensus slightly bullish (29 buy/strongBuy vs 7 sell)"
+      "Perfect 4Q earnings beat streak demonstrates operational excellence",
+      "Analyst consensus skews bullish (29 buy/strongBuy vs 7 sell/strongSell)"
     ],
-    "raw_score": 0.32,
-    "score": 0.66,
+    "raw_score": 0.42,
+    "score": 0.71,
     "source": "claude",
-    "summary": "Moderately positive. Strong earnings track record and analyst support offset nea"
+    "summary": "Moderately positive. Strong earnings, analyst support offset by modest valuation"
   },
   "ZBRA": {
-    "fetched_at": "2026-10-21T23:54:34.768562+00:00",
+    "fetched_at": "2026-10-22T23:53:17.408147+00:00",
     "key_factors": [
-      "Bullish consensus: 33 buy/strong buy vs 16 hold (67% positive)",
-      "Near 52w high suggests limited upside, elevated valuation"
+      "Overwhelming buy-side analyst bias (33 of 49 = 67% buy/strongBuy)",
+      "3 of 4 recent quarters beat expectations showing execution capability"
     ],
-    "raw_score": 0.62,
-    "score": 0.81,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong analyst support near 52w high; solid earnings consistency offset by valua"
+    "summary": "Strong analyst consensus with solid earnings execution supports positive outlook"
   },
   "ZS": {
     "fetched_at": "2026-10-07T00:20:56.987179+00:00",
