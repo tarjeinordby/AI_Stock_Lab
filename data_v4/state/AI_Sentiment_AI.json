@@ -3,7 +3,7 @@
   "cooldowns": {},
   "created_at": "2026-10-13T11:32:36.497470+00:00",
   "highest_portfolio_value": 10037.908250410834,
-  "last_execution_date": "2026-10-21",
+  "last_execution_date": "2026-10-22",
   "portfolio_id": "35d41e09-8201-4d6e-a1a6-d6c099770057",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
@@ -13,8 +13,8 @@
       "buy_score": 82.3,
       "highest_price": 288.2799987792969,
       "is_partial": false,
-      "last_price": 287.6300048828125,
-      "market_value": 533.7491663712185,
+      "last_price": 284.57000732421875,
+      "market_value": 528.0707909643731,
       "pyramid_min_price": 282.54,
       "pyramid_remaining_value": 0.0,
       "shares": 1.855679718076287
@@ -25,8 +25,8 @@
       "buy_score": 77.7,
       "highest_price": 157.5,
       "is_partial": false,
-      "last_price": 157.5,
-      "market_value": 641.927994561165,
+      "last_price": 156.7899932861328,
+      "market_value": 639.0341965550842,
       "pyramid_min_price": 155.8152,
       "pyramid_remaining_value": 0.0,
       "shares": 4.0757332988010475
