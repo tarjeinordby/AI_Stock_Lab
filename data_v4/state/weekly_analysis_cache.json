@@ -2,15 +2,15 @@
   "ABBV": {
     "action": "hold",
     "catalysts": [
-      "Strong EPS momentum could drive upgrades toward $328 target",
-      "Pipeline approvals or Skyrizi/Rinvoq growth offsetting Humira erosion"
+      "Continued EPS growth trajectory",
+      "Pipeline approvals driving revenue stabilization"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-10-19T20:08:55.266943+00:00",
-    "reasoning": "EPS acceleration positive but gross margin compression to 66.4% and volatile revenue warrant monitoring before adding.",
+    "fetched_at": "2026-10-26T20:06:44.809450+00:00",
+    "reasoning": "EPS accelerating strongly; revenue volatile and margins compressing. Trading near avg target limits upside.",
     "risks": [
-      "Gross margin deterioration trend may signal pricing pressure or cost issues",
-      "Revenue volatility suggests demand inconsistency post-Humira biosimilar impact"
+      "Gross margin deterioration from 74.7% to 66.4% trend",
+      "Revenue near analyst avg target with limited upside"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -98,15 +98,15 @@
   "ROKU": {
     "action": "hold",
     "catalysts": [
-      "EPS momentum turning sharply positive",
-      "High institutional ownership at 88.5% signals smart money conviction"
+      "Accelerating EPS growth may drive re-rating",
+      "Streaming ad market recovery could expand platform revenue"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-10-19T20:08:58.975559+00:00",
-    "reasoning": "EPS acceleration is strong but revenue is volatile and margins compressed. Near analyst avg target limits upside.",
+    "fetched_at": "2026-10-26T20:06:48.422004+00:00",
+    "reasoning": "EPS trajectory strong but revenue volatile and margins compressing. Trading near avg target limits upside.",
     "risks": [
-      "Revenue inconsistency signals ad market softness",
-      "Gross margin erosion from 49.7% to 43.4% is concerning"
+      "Gross margin erosion from 49.7% to 43.4% signals pricing pressure",
+      "Inconsistent revenue growth raises demand durability concerns"
     ],
     "source": "claude",
     "thesis_intact": true

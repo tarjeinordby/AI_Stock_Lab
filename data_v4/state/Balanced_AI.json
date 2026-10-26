@@ -2,8 +2,8 @@
   "cash": 8887.59511665022,
   "cooldowns": {},
   "created_at": "2026-10-13T11:32:36.497470+00:00",
-  "highest_portfolio_value": 10030.661366482227,
-  "last_execution_date": "2026-10-23",
+  "highest_portfolio_value": 10033.5305618545,
+  "last_execution_date": "2026-10-26",
   "portfolio_id": "c7d85efc-4862-4d37-bc6f-d9d8310009ea",
   "portfolio_version": "risk_parity_pyramid_v1",
   "positions": {
@@ -13,8 +13,8 @@
       "buy_score": 81.6,
       "highest_price": 288.2799987792969,
       "is_partial": false,
-      "last_price": 284.5799865722656,
-      "market_value": 557.2045999128942,
+      "last_price": 287.04998779296875,
+      "market_value": 562.040836144906,
       "pyramid_min_price": 282.54,
       "pyramid_remaining_value": 0.0,
       "shares": 1.9579894096712906
@@ -24,17 +24,17 @@
       "buy_date": "2026-10-19",
       "buy_score": 76.6,
       "highest_price": 159.34500122070312,
-      "is_partial": true,
-      "last_price": 159.34500122070312,
-      "market_value": 585.8616499191135,
+      "is_partial": false,
+      "last_price": 158.80999755859375,
+      "market_value": 583.8946090593752,
       "pyramid_min_price": 157.8348,
-      "pyramid_remaining_value": 379.29,
+      "pyramid_remaining_value": 0.0,
       "shares": 3.676686720204402
     }
   },
   "strategy": "Balanced_AI",
   "weekly_meta": {
-    "buys_this_week": 1,
-    "iso_week": "2026-W43"
+    "buys_this_week": 0,
+    "iso_week": "2026-W44"
   }
 }
