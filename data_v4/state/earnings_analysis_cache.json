@@ -183,15 +183,15 @@
   },
   "CVX": {
     "beat_probability": 0.75,
-    "expected_reaction": "Moderate positive if beat, but muted given run-up; downside risk if oil prices pressure margins",
-    "fetched_at": "2026-10-28T00:19:50.448517+00:00",
+    "expected_reaction": "Modest positive if beat holds; muted given macro/oil price sensitivity",
+    "fetched_at": "2026-10-30T00:35:10.076400+00:00",
     "key_metrics_to_watch": [
       "Upstream production volumes & realizations",
-      "Free cash flow / capex discipline",
-      "Downstream refining margins"
+      "Refining margins/downstream earnings",
+      "Free cash flow & shareholder returns (buybacks/dividend)"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-qtr beat streak (avg +17%) favors beat, but $15.72 consensus looks suspect vs recent quarterly EPS; revenue declining. Oil price swings add volatility.",
+    "reasoning": "Consistent 4-quarter beat streak supports edge, but $15.72 annualized EPS consensus looks mismatched vs quarterly data; revenue declining. Hold given uncertainty.",
     "risk_level": "medium"
   },
   "DDOG": {
