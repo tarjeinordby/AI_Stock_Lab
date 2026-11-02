@@ -2,15 +2,15 @@
   "ABBV": {
     "action": "hold",
     "catalysts": [
-      "Continued EPS growth trajectory",
-      "Pipeline approvals driving revenue stabilization"
+      "Skyrizi/Rinvoq uptake driving EPS growth",
+      "Stock ~$15 below analyst avg target offers upside"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-10-26T20:06:44.809450+00:00",
-    "reasoning": "EPS accelerating strongly; revenue volatile and margins compressing. Trading near avg target limits upside.",
+    "fetched_at": "2026-11-02T22:52:26.479678+00:00",
+    "reasoning": "EPS accelerating despite lumpy revenue; trading below avg target $305. Gross margin compression warrants monitoring.",
     "risks": [
-      "Gross margin deterioration from 74.7% to 66.4% trend",
-      "Revenue near analyst avg target with limited upside"
+      "Gross margin declining trend (74.7%\u219266.4%) suggests pricing/mix pressure",
+      "Revenue volatility may signal Humira biosimilar headwinds persisting"
     ],
     "source": "claude",
     "thesis_intact": true
@@ -98,15 +98,15 @@
   "ROKU": {
     "action": "hold",
     "catalysts": [
-      "Accelerating EPS growth may drive re-rating",
-      "Streaming ad market recovery could expand platform revenue"
+      "Accelerating EPS growth trend may drive multiple expansion",
+      "Streaming consolidation could benefit Roku as neutral OS platform"
     ],
     "conviction": "medium",
-    "fetched_at": "2026-10-26T20:06:48.422004+00:00",
-    "reasoning": "EPS trajectory strong but revenue volatile and margins compressing. Trading near avg target limits upside.",
+    "fetched_at": "2026-11-02T22:52:30.250186+00:00",
+    "reasoning": "EPS trajectory strong but revenue volatile and margins compressed. Stock near avg target limits upside near-term.",
     "risks": [
-      "Gross margin erosion from 49.7% to 43.4% signals pricing pressure",
-      "Inconsistent revenue growth raises demand durability concerns"
+      "Gross margin deterioration from 49.7% to 43.4% signals pricing pressure",
+      "Inconsistent revenue growth raises platform monetization concerns"
     ],
     "source": "claude",
     "thesis_intact": true
