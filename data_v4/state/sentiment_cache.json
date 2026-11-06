@@ -1,14 +1,12 @@
 {
   "ABBV": {
-    "fetched_at": "2026-11-05T01:16:57.889236+00:00",
-    "key_factors": [
-      "Overwhelming bullish consensus (72 buy/strongBuy vs 18 hold/sell)",
-      "Near 52w highs suggest positive price momentum"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong analyst support with solid fundamentals; limited near-term catalysts."
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-06T01:21:23.894196+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "ABNB": {
     "error": "Ugyldig JSON-respons",
@@ -42,15 +40,15 @@
     "summary": "Mixed signals: Strong earnings momentum offset by P&L headwinds and insider sile"
   },
   "APA": {
-    "fetched_at": "2026-11-05T01:17:03.354603+00:00",
+    "fetched_at": "2026-11-06T01:21:28.835626+00:00",
     "key_factors": [
-      "Consistent earnings beats (4 consecutive quarters)",
-      "Analyst sentiment mixed: 29 buy vs 51 hold/sell ratings"
+      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
+      "Majority hold rating (42/80) suggests limited upside conviction"
     ],
-    "raw_score": 0.52,
-    "score": 0.76,
+    "raw_score": 0.35,
+    "score": 0.675,
     "source": "claude",
-    "summary": "Strong fundamentals offset by valuation concerns; cautiously bullish"
+    "summary": "Strong fundamentals offset by valuation concerns and mixed sentiment"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -119,15 +117,13 @@
     "summary": "Moderately positive. Strong fundamentals offset by valuation concerns and mixed "
   },
   "COP": {
-    "fetched_at": "2026-11-05T01:17:16.526105+00:00",
-    "key_factors": [
-      "Overwhelming bullish consensus (57 buy/strongBuy vs 1 strongSell)",
-      "3 of last 4 quarters beat expectations; positive momentum"
-    ],
-    "raw_score": 0.68,
-    "score": 0.84,
-    "source": "claude",
-    "summary": "Strong analyst support with solid earnings momentum; valuation attractive vs 52w"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-06T01:21:41.436551+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "CRWD": {
     "fetched_at": "2026-10-13T02:24:34.097966+00:00",
@@ -152,15 +148,15 @@
     "summary": "Strong analyst support and perfect earnings execution offset valuation concern"
   },
   "CVX": {
-    "fetched_at": "2026-11-05T01:17:05.888243+00:00",
+    "fetched_at": "2026-11-06T01:21:31.287966+00:00",
     "key_factors": [
-      "Exceptional earnings consistency (4/4 beats)",
-      "Overwhelming analyst support (61 buy+ vs 15 sell/hold)"
+      "18 strong buy + 43 buy ratings (81% bullish consensus)",
+      "Perfect 4Q earnings beat streak demonstrates execution"
     ],
     "raw_score": 0.72,
     "score": 0.86,
     "source": "claude",
-    "summary": "Strong fundamentals with bullish sector tailwinds, but near-term pullback warran"
+    "summary": "Strong fundamental momentum with positive policy tailwinds; valuation attractive"
   },
   "DDOG": {
     "fetched_at": "2026-10-13T02:24:31.634544+00:00",
@@ -183,15 +179,13 @@
     "summary": "Ingen data"
   },
   "DOCU": {
-    "fetched_at": "2026-11-05T01:17:18.995907+00:00",
-    "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution strength",
-      "Analyst consensus mixed: 12 buy ratings offset by 46 holds and 3 sells"
-    ],
-    "raw_score": 0.35,
-    "score": 0.675,
-    "source": "claude",
-    "summary": "Solid fundamentals tempered by mixed sentiment and valuation concerns"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-06T01:21:38.919893+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "DVN": {
     "fetched_at": "2026-11-04T01:03:57.899792+00:00",
@@ -216,13 +210,15 @@
     "summary": "Strong fundamentals with valuation pullback. Consistent execution supports upsid"
   },
   "EOG": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-05T01:17:08.733195+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-06T01:21:33.754834+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
+      "Analyst consensus cautious: 62 holds vs 33 buys suggests fair valuation"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong fundamentals offset by valuation concerns; consistent performer"
   },
   "FFIV": {
     "fetched_at": "2026-10-28T00:18:52.936162+00:00",
@@ -247,13 +243,15 @@
     "summary": "Solid fundamentals offset by mixed sentiment; hold bias prevails"
   },
   "GDDY": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-04T01:03:34.835727+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-06T01:21:46.858084+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
+      "Record profit margins and AI-driven transformation gaining traction"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Strong fundamentals with margin expansion offset by mixed analyst sentiment"
   },
   "HOOD": {
     "fetched_at": "2026-10-07T00:20:51.867053+00:00",
@@ -415,7 +413,7 @@
   },
   "PFG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-04T01:03:37.225299+00:00",
+    "fetched_at": "2026-11-06T01:21:43.994665+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -454,15 +452,15 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-11-05T01:17:00.872236+00:00",
+    "fetched_at": "2026-11-06T01:21:26.382938+00:00",
     "key_factors": [
-      "Consistent earnings beats demonstrate operational strength",
-      "Majority hold ratings (60/81) suggest limited upside at current valuation"
+      "Consistent earnings beats (4 consecutive quarters)",
+      "Near 52-week high suggests momentum"
     ],
-    "raw_score": 0.35,
-    "score": 0.675,
+    "raw_score": 0.42,
+    "score": 0.71,
     "source": "claude",
-    "summary": "Mixed signals: Strong fundamentals offset by analyst caution and valuation conce"
+    "summary": "Moderately positive. Strong earnings, near 52w high, but analyst consensus cauti"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -607,7 +605,7 @@
   },
   "XOM": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-05T01:17:11.331220+00:00",
+    "fetched_at": "2026-11-06T01:21:36.381960+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
