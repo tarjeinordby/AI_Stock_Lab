@@ -1,18 +1,16 @@
 {
   "ABBV": {
-    "fetched_at": "2026-11-07T00:36:39.430145+00:00",
-    "key_factors": [
-      "Overwhelming buy/strongBuy ratio (72 of 90 analysts)",
-      "Mostly positive earnings track record (3 of 4 beats)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong analyst support with solid earnings execution; near 52w highs"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-10T03:08:46.576300+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-07T00:36:47.640144+00:00",
+    "fetched_at": "2026-11-10T03:08:51.562182+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -33,6 +31,15 @@
   "ALL": {
     "error": "Ugyldig JSON-respons",
     "fetched_at": "2026-11-07T00:37:04.914588+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "AMD": {
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-10T03:09:04.174992+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -179,15 +186,15 @@
     "summary": "Ingen data"
   },
   "DOCU": {
-    "fetched_at": "2026-11-07T00:36:44.885856+00:00",
+    "fetched_at": "2026-11-10T03:08:49.075856+00:00",
     "key_factors": [
-      "Consistent earnings beats (4/4 quarters) demonstrate operational strength",
-      "Analyst consensus heavily weighted to HOLD (46/55) suggests limited upside"
+      "Perfect earnings track record (4/4 beats) demonstrates execution strength",
+      "Consensus holds (46/55 ratings) suggests limited upside catalyst near-term"
     ],
     "raw_score": 0.15,
     "score": 0.575,
     "source": "claude",
-    "summary": "Mixed signals: Strong execution vs. valuation concerns; consensus hold."
+    "summary": "Mixed signals: Strong earnings, but valuation concerns and analyst skepticism do"
   },
   "DVN": {
     "fetched_at": "2026-11-04T01:03:57.899792+00:00",
@@ -201,13 +208,15 @@
     "summary": "Strong analyst support with mixed earnings execution; valuation attractive near "
   },
   "ELF": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-07T00:36:55.842526+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-10T03:08:53.838351+00:00",
+    "key_factors": [
+      "Perfect 4-quarter earnings beat streak demonstrates operational excellence",
+      "Overwhelming analyst support: 36 buy/strong buy vs 18 hold, zero sell ratings"
+    ],
+    "raw_score": 0.78,
+    "score": 0.89,
+    "source": "claude",
+    "summary": "Strong bullish sentiment with perfect earnings execution and analyst consensus s"
   },
   "EOG": {
     "fetched_at": "2026-11-06T01:21:33.754834+00:00",
@@ -243,15 +252,22 @@
     "summary": "Solid fundamentals offset by mixed sentiment; hold bias prevails"
   },
   "GDDY": {
-    "fetched_at": "2026-11-07T00:36:50.149936+00:00",
-    "key_factors": [
-      "Perfect earnings track record (4/4 beats) demonstrates execution",
-      "Record profit margins and AI-driven transformation underway"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong fundamentals with execution risk; positive but mixed sentiment"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-10T03:08:59.032600+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
+  "GRMN": {
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-10T03:09:09.473040+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "HOOD": {
     "fetched_at": "2026-10-07T00:20:51.867053+00:00",
@@ -325,15 +341,13 @@
     "summary": "Ingen data"
   },
   "NEM": {
-    "fetched_at": "2026-11-07T00:36:59.228987+00:00",
-    "key_factors": [
-      "Perfect earnings track record: 4 consecutive beats",
-      "Overwhelming analyst support: 59 buy/strongBuy vs 10 sell/hold"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong bullish sentiment supported by consistent earnings, analyst consensus, an"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-10T03:09:01.796858+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "NET": {
     "fetched_at": "2026-06-11T12:37:03.898475+00:00",
@@ -379,15 +393,13 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "fetched_at": "2026-10-29T00:35:41.325961+00:00",
-    "key_factors": [
-      "Perfect earnings track record (4 consecutive beats)",
-      "Overwhelming analyst support (102 buy vs 1 sell)"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong momentum with consistent execution; minor pullback presents opportunity"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-10T03:09:06.830004+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "OXY": {
     "fetched_at": "2026-11-03T02:46:02.312737+00:00",
@@ -412,13 +424,15 @@
     "summary": "Strong fundamentals with consistent execution offset by modest valuation concern"
   },
   "PFG": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-07T00:36:53.204390+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-10T03:08:56.312712+00:00",
+    "key_factors": [
+      "Beneficiary of higher rates environment (financial services tailwind)",
+      "Analyst consensus heavily weighted to HOLD (24/36) signals caution"
+    ],
+    "raw_score": 0.15,
+    "score": 0.575,
+    "source": "claude",
+    "summary": "Mixed signals. Rate sensitivity positive, but execution risk and analyst diverge"
   },
   "PLTR": {
     "fetched_at": "2026-10-13T02:24:45.042174+00:00",
