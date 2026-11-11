@@ -1,7 +1,7 @@
 {
   "ABBV": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-10T03:08:46.576300+00:00",
+    "fetched_at": "2026-11-11T00:59:59.527734+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -10,7 +10,7 @@
   },
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-10T03:08:51.562182+00:00",
+    "fetched_at": "2026-11-11T01:00:04.419535+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -29,22 +29,26 @@
     "summary": "Strong fundamentals with consistent execution; minor valuation concern."
   },
   "ALL": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-07T00:37:04.914588+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-11T01:00:09.758646+00:00",
+    "key_factors": [
+      "Perfect 4Q earnings beat streak demonstrates operational excellence",
+      "Conflicting analyst sentiment: 31 buy/strong-buy vs 14 sell/strong-sell"
+    ],
+    "raw_score": 0.35,
+    "score": 0.675,
+    "source": "claude",
+    "summary": "Moderately positive. Strong earnings, mixed analyst view, valuation appeal."
   },
   "AMD": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-10T03:09:04.174992+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-11T01:00:14.675205+00:00",
+    "key_factors": [
+      "Exceptional earnings consistency (4/4 beats)",
+      "Overwhelming analyst support (133 buy/strongBuy vs 33 hold)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with positive momentum; valuation attractive after pullback."
   },
   "APA": {
     "fetched_at": "2026-11-06T01:21:28.835626+00:00",
@@ -113,15 +117,15 @@
     "summary": "Bullish analyst consensus but valuation reset warranted after sharp decline"
   },
   "CF": {
-    "fetched_at": "2026-11-07T00:37:02.352444+00:00",
+    "fetched_at": "2026-11-11T01:00:12.336390+00:00",
     "key_factors": [
-      "Recent miss continues negative earnings streak (2 of last 4 quarters)",
-      "Consensus heavily weighted to hold (41/65), limiting upside catalyst"
+      "Consensus neutral: 41 holds vs 15 buys suggest limited conviction",
+      "Recent miss streak (2 of last 4Q) raises execution risk"
     ],
-    "raw_score": -0.15,
-    "score": 0.425,
+    "raw_score": 0.15,
+    "score": 0.575,
     "source": "claude",
-    "summary": "Mixed signals: solid EBITDA but earnings misses, consensus hold, valuation pullb"
+    "summary": "Cautious optimism. Mixed signals with improving operations offset by recent miss"
   },
   "COP": {
     "error": "Ugyldig JSON-respons",
@@ -219,15 +223,15 @@
     "summary": "Strong bullish sentiment with perfect earnings execution and analyst consensus s"
   },
   "EOG": {
-    "fetched_at": "2026-11-06T01:21:33.754834+00:00",
+    "fetched_at": "2026-11-11T01:00:01.932150+00:00",
     "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
-      "Analyst consensus cautious: 62 holds vs 33 buys suggests fair valuation"
+      "Perfect earnings track record (4/4 beats) demonstrates operational excellence",
+      "Dividend raise (7.8%) signals management confidence in cash generation"
     ],
     "raw_score": 0.62,
     "score": 0.81,
     "source": "claude",
-    "summary": "Strong fundamentals offset by valuation concerns; consistent performer"
+    "summary": "Strong fundamentals with consistent earnings beats offset by mixed analyst senti"
   },
   "FFIV": {
     "fetched_at": "2026-10-28T00:18:52.936162+00:00",
@@ -253,7 +257,7 @@
   },
   "GDDY": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-10T03:08:59.032600+00:00",
+    "fetched_at": "2026-11-11T01:00:07.108439+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -262,12 +266,23 @@
   },
   "GRMN": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-10T03:09:09.473040+00:00",
+    "fetched_at": "2026-11-11T01:00:17.561373+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
+  },
+  "HLT": {
+    "fetched_at": "2026-11-11T01:00:22.436451+00:00",
+    "key_factors": [
+      "Perfect earnings track record (4/4 beats)",
+      "Overwhelming analyst support (53 buy/strongBuy vs 3 sell)"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong fundamentals with consistent execution; political stability acknowledged"
   },
   "HOOD": {
     "fetched_at": "2026-10-07T00:20:51.867053+00:00",
@@ -341,13 +356,15 @@
     "summary": "Ingen data"
   },
   "NEM": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-10T03:09:01.796858+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-11T01:00:19.876789+00:00",
+    "key_factors": [
+      "Perfect earnings beat streak (4/4 quarters) demonstrates operational excellence",
+      "59 buy/strong buy vs 3 sell ratings shows strong analyst consensus"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong momentum with consistent execution; pullback offers entry"
   },
   "NET": {
     "fetched_at": "2026-06-11T12:37:03.898475+00:00",
