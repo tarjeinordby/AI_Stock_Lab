@@ -38,6 +38,19 @@
     "reasoning": "3 of 4 recent quarters missed, some sharply (-15%). The $6.21 EPS consensus looks inconsistent with recent $0.26-$1.37 range, suggesting data noise and uncertainty.",
     "risk_level": "high"
   },
+  "ADI": {
+    "beat_probability": 0.8,
+    "expected_reaction": "Moderately positive if beat continues; muted given valuation and declining revenue trend. However, note the EPS consensu",
+    "fetched_at": "2026-11-12T02:08:04.451791+00:00",
+    "key_metrics_to_watch": [
+      "Quarterly revenue vs. ~$3.0B trend (declining sequentially is a red flag)",
+      "Gross margin and guidance for next quarter",
+      "Industrial/Auto end-market demand commentary and book-to-bill"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-qtr beat streak (avg +4.3%) favors a beat, but revenue declining $4.02B\u2192$3.08B signals demand weakness. Reaction hinges on guidance, not EPS. Data discrepancy limits conviction.",
+    "risk_level": "medium"
+  },
   "ALL": {
     "beat_probability": 0.85,
     "expected_reaction": "positive if beat continues, but consensus EPS of $28.11 looks anomalously high vs recent quarterly actuals (~$9-14), cre",
@@ -183,15 +196,15 @@
   },
   "CSCO": {
     "beat_probability": 0.78,
-    "expected_reaction": "Modestly positive; consistent beats likely priced in, upside hinges on guidance and revenue stabilization",
-    "fetched_at": "2026-11-10T03:09:21.879573+00:00",
+    "expected_reaction": "Modest positive move (+2-4%) if beat holds, but revenue decline trend is a concern that could cap upside",
+    "fetched_at": "2026-11-12T02:08:12.161529+00:00",
     "key_metrics_to_watch": [
-      "Revenue trajectory (declining trend reversal)",
-      "Forward guidance / AI networking orders",
-      "Gross margins & subscription/ARR growth"
+      "Revenue trajectory vs declining trend",
+      "Product order growth / backlog",
+      "AI infrastructure & security segment demand"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-qtr beat streak with accelerating surprises supports upside, but declining revenue trend caps conviction. Hold for guidance clarity.",
+    "reasoning": "Consistent beats (4/4, accelerating surprise) support EPS, but sequential revenue decline raises top-line risk. Hold into print.",
     "risk_level": "medium"
   },
   "CVX": {
@@ -416,16 +429,16 @@
     "risk_level": "high"
   },
   "MDT": {
-    "beat_probability": 0.78,
-    "expected_reaction": "Modestly positive; +2-4% if beat holds, but revenue softness may cap upside",
-    "fetched_at": "2026-11-10T03:09:18.212484+00:00",
+    "beat_probability": 0.82,
+    "expected_reaction": "Modest positive move (+1-3%) if EPS beats and guidance holds; muted upside given full-year consensus framing and soft se",
+    "fetched_at": "2026-11-12T02:08:08.560619+00:00",
     "key_metrics_to_watch": [
-      "Revenue vs ~$9B consensus",
-      "Diabetes/Cardiovascular segment growth",
-      "FY guidance revision & margins"
+      "Organic revenue growth by segment (Cardiovascular, Neuroscience)",
+      "FY operating margin & gross margin",
+      "Full-year EPS guidance revision"
     ],
     "position_recommendation": "add_before",
-    "reasoning": "4/4 consecutive beats averaging +2.6%, strong EPS momentum. But declining quarterly revenue signals caution; size position modestly.",
+    "reasoning": "4/4 recent beats averaging +2.6%, consistent EPS outperformance. Revenue softening is a risk but margin discipline supports a beat; favor modest pre-earnings add.",
     "risk_level": "medium"
   },
   "META": {
@@ -482,15 +495,15 @@
   },
   "NVDA": {
     "beat_probability": 0.8,
-    "expected_reaction": "Moderately positive if beat, but high valuation risk means muted upside and sharp downside on any miss or soft guidance",
-    "fetched_at": "2026-11-10T03:09:28.428607+00:00",
+    "expected_reaction": "Positive if beat, but muted given high expectations; outsized downside risk on any guidance miss",
+    "fetched_at": "2026-11-12T02:08:18.477871+00:00",
     "key_metrics_to_watch": [
       "Data center revenue growth & guidance",
-      "Forward EPS/revenue guidance vs consensus",
-      "Gross margin trend"
+      "Gross margin trajectory",
+      "Blackwell/next-gen supply & demand commentary"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-qtr beat streak (avg +5.1%, rising) favors beat. BUT revenue trend shown is DECLINING sequentially & EPS consensus $15.93 is implausible vs ~$2.22 actuals\u2014data likely corrupted. Low convictio",
+    "reasoning": "Consistent beats (3.5%->6.2% expanding) support beat odds, but data integrity issues: EPS consensus $15.9 vs ~$2.22 trend, revenue listed descending. Verify before sizing.",
     "risk_level": "high"
   },
   "OKTA": {
@@ -677,15 +690,15 @@
   },
   "WSM": {
     "beat_probability": 0.72,
-    "expected_reaction": "Moderately positive if beat; muted unless comps turn positive\u2014stock reaction hinges on guidance and margin commentary",
-    "fetched_at": "2026-11-10T03:09:14.666507+00:00",
+    "expected_reaction": "Moderately positive if beat holds; muted unless comps/margins impress given stretched prior surprises",
+    "fetched_at": "2026-11-12T02:07:58.338615+00:00",
     "key_metrics_to_watch": [
       "Comparable sales growth",
       "Gross/operating margin",
-      "FY guidance & holiday outlook"
+      "FY guidance & inventory levels"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-qtr beat streak (avg ~13.6%) favors another beat, but Q2's 37.9% outlier inflates expectations; macro/housing demand risk warrants caution.",
+    "reasoning": "Consistent 4-quarter beat streak (avg +13.7%) supports upside, but outsized Q2 surprise is hard to repeat; EPS consensus looks like annual figure, raising estimate uncertainty.",
     "risk_level": "medium"
   },
   "XOM": {
