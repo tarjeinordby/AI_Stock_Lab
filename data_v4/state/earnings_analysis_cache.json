@@ -363,6 +363,19 @@
     "reasoning": "Beat 3 of 4 quarters incl +43.7% last Q, but consensus EPS figure is unreliable and rate-cut risk to NII clouds setup; size caution.",
     "risk_level": "high"
   },
+  "HPE": {
+    "beat_probability": 0.72,
+    "expected_reaction": "Moderately positive if revenue stabilizes; EPS beat likely but declining revenue trend caps upside. Expect +2-5% on beat",
+    "fetched_at": "2026-11-13T01:40:04.011976+00:00",
+    "key_metrics_to_watch": [
+      "Revenue trajectory (decline from $12.21B to $9.68B is concerning)",
+      "AI/server segment demand and margins",
+      "Forward guidance vs consensus"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong 4-qtr beat streak (avg +20%) supports EPS beat, but 21% revenue decline signals demand erosion. Data inconsistencies warrant caution over aggressive positioning.",
+    "risk_level": "high"
+  },
   "INCY": {
     "beat_probability": 0.7,
     "expected_reaction": "positive if beat continues, but muted given mixed Q4 miss and lumpy revenue; high volatility likely",
