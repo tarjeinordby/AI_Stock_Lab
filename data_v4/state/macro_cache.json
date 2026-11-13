@@ -1,8 +1,8 @@
 {
-  "date": "11/10/2026",
+  "date": "11/13/2026",
   "exposure_mult": 1.0,
-  "fetched_at": "2026-11-12T02:08:19.016790+00:00",
+  "fetched_at": "2026-11-13T20:58:10.434906+00:00",
   "inverted": false,
-  "spread": 0.25,
-  "status": "Normal (0.25%)"
+  "spread": 0.27000000000000046,
+  "status": "Normal (0.27%)"
 }
