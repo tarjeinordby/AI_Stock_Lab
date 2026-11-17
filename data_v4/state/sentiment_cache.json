@@ -1,18 +1,18 @@
 {
   "ABBV": {
-    "fetched_at": "2026-11-14T01:14:52.610236+00:00",
+    "fetched_at": "2026-11-17T03:23:02.317154+00:00",
     "key_factors": [
-      "72 buy/strongBuy ratings vs 3 sell ratings shows strong consensus",
-      "Positioned in high-yield dividend trend (news mentions 4%+ yields)"
+      "Overwhelming buy ratings (72 of 90 analysts bullish)",
+      "Recent AI drug discovery partnerships signal pipeline growth"
     ],
-    "raw_score": 0.68,
-    "score": 0.84,
+    "raw_score": 0.72,
+    "score": 0.86,
     "source": "claude",
-    "summary": "Strong analyst support and dividend appeal offset modest recent underperformance"
+    "summary": "Strong bullish setup: dominant analyst support, consistent earnings beats, strat"
   },
   "ABNB": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-14T01:15:04.969811+00:00",
+    "fetched_at": "2026-11-17T03:23:17.067355+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -62,13 +62,15 @@
     "summary": "Ingen data"
   },
   "APA": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-13T01:39:38.995781+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-17T03:23:04.849144+00:00",
+    "key_factors": [
+      "Consistent earnings beats demonstrate operational excellence",
+      "91% YTD rally with valuation caution suggests limited near-term upside"
+    ],
+    "raw_score": 0.35,
+    "score": 0.675,
+    "source": "claude",
+    "summary": "Mixed sentiment. Strong fundamentals offset by valuation concerns and operationa"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -137,15 +139,15 @@
     "summary": "Cautiously Positive. Valuation appeal offset by mixed earnings and sentiment."
   },
   "COP": {
-    "fetched_at": "2026-11-13T01:39:43.930994+00:00",
+    "fetched_at": "2026-11-17T03:23:14.495417+00:00",
     "key_factors": [
-      "Strong analyst consensus: 57 buy/strongBuy vs 1 strongSell",
-      "Solid earnings momentum: 3 consecutive beats"
+      "57 buy/strongBuy vs 1 strongSell shows overwhelming analyst conviction",
+      "Recent 3Q beat streak demonstrates operational execution"
     ],
-    "raw_score": 0.62,
-    "score": 0.81,
+    "raw_score": 0.68,
+    "score": 0.84,
     "source": "claude",
-    "summary": "Bullish bias tempered by geopolitical headwinds and valuation concerns"
+    "summary": "Strong bullish bias with solid fundamentals; near-term pullback offers entry"
   },
   "CRWD": {
     "fetched_at": "2026-10-13T02:24:34.097966+00:00",
@@ -202,7 +204,7 @@
   },
   "DOCU": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-12T02:07:36.406718+00:00",
+    "fetched_at": "2026-11-17T03:23:12.370505+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -221,24 +223,24 @@
     "summary": "Strong analyst support with mixed earnings execution; valuation attractive near "
   },
   "ELF": {
+    "fetched_at": "2026-11-17T03:23:21.639114+00:00",
+    "key_factors": [
+      "Perfect earnings track record: 4 consecutive beats",
+      "Strong analyst consensus: 36 buy/strongBuy vs 18 hold, zero sells"
+    ],
+    "raw_score": 0.72,
+    "score": 0.86,
+    "source": "claude",
+    "summary": "Strong bullish setup with consistent execution and broad analyst support"
+  },
+  "EOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-13T01:39:51.009767+00:00",
+    "fetched_at": "2026-11-17T03:23:09.797093+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
     "source": "fallback",
     "summary": "Ingen data"
-  },
-  "EOG": {
-    "fetched_at": "2026-11-14T01:14:57.313162+00:00",
-    "key_factors": [
-      "Perfect earnings track record (4 consecutive beats)",
-      "Oil price catalyst near $85 threshold supporting fundamentals"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Strong operational momentum offset by cautious analyst positioning"
   },
   "FFIV": {
     "fetched_at": "2026-10-28T00:18:52.936162+00:00",
@@ -263,15 +265,15 @@
     "summary": "Solid fundamentals offset by mixed sentiment; hold bias prevails"
   },
   "GDDY": {
-    "fetched_at": "2026-11-14T01:15:10.270738+00:00",
+    "fetched_at": "2026-11-17T03:23:23.886187+00:00",
     "key_factors": [
-      "Perfect 4Q earnings streak shows operational excellence",
-      "8 strong buys + 15 buys vs 27 holds suggests consensus caution"
+      "Perfect earnings track record (4/4 beats)",
+      "23 buy/strongBuy vs 30 hold ratings shows mixed conviction"
     ],
-    "raw_score": 0.42,
-    "score": 0.71,
+    "raw_score": 0.35,
+    "score": 0.675,
     "source": "claude",
-    "summary": "Moderately bullish. Strong earnings, analyst support offset by valuation"
+    "summary": "Moderately bullish. Strong earnings, analyst support offset by valuation concern"
   },
   "GRMN": {
     "error": "Ugyldig JSON-respons",
@@ -470,15 +472,15 @@
     "summary": "Strong fundamentals with excellent earnings execution offset by valuation concer"
   },
   "PSX": {
-    "fetched_at": "2026-11-14T01:14:54.807895+00:00",
+    "fetched_at": "2026-11-17T03:23:07.218123+00:00",
     "key_factors": [
-      "Perfect 4Q earnings beat streak demonstrates operational excellence",
-      "Bullish analyst consensus: 35 buy/strong buy vs 5 sell ratings"
+      "Perfect earnings beat streak (4/4 quarters)",
+      "Strong analyst support (9 strong buys, 26 buys vs 5 sells)"
     ],
-    "raw_score": 0.72,
-    "score": 0.86,
+    "raw_score": 0.68,
+    "score": 0.84,
     "source": "claude",
-    "summary": "Strong fundamental momentum with excellent earnings execution offset by valuatio"
+    "summary": "Positive outlook supported by strong fundamentals and analyst consensus"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -491,7 +493,7 @@
   },
   "REGN": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-14T01:15:12.991106+00:00",
+    "fetched_at": "2026-11-17T03:23:19.487619+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,

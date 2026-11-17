@@ -507,16 +507,16 @@
     "risk_level": "medium"
   },
   "NVDA": {
-    "beat_probability": 0.8,
-    "expected_reaction": "Positive if beat continues, but muted given high bar; outsized downside risk if any guidance disappointment",
-    "fetched_at": "2026-11-14T01:15:33.822606+00:00",
+    "beat_probability": 0.85,
+    "expected_reaction": "Positive if beat exceeds +5% and data center guidance strong; muted/negative if guidance disappoints despite beat",
+    "fetched_at": "2026-11-17T03:23:32.288112+00:00",
     "key_metrics_to_watch": [
-      "Data center revenue growth & guidance",
-      "Gross margin trajectory",
-      "Forward revenue guidance vs consensus"
+      "Data center revenue growth",
+      "Forward guidance vs consensus",
+      "Gross margin trajectory"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Consistent beats (+3.5% to +6.2% rising) favor a beat, but EPS consensus $15.83 vs ~$2.22 recent actuals and reversed revenue trend ($96B->$57B) suggest corrupted/misordered data. Verify before sizing",
+    "reasoning": "Consistent beats (3.5%-6.2%, accelerating) support bullish setup, but elevated expectations create volatility risk. EPS consensus data appears inconsistent.",
     "risk_level": "high"
   },
   "OKTA": {
@@ -703,15 +703,15 @@
   },
   "WSM": {
     "beat_probability": 0.72,
-    "expected_reaction": "moderate upside if beat, but high bar priced in; muted unless comps/margins surprise",
-    "fetched_at": "2026-11-14T01:15:20.909616+00:00",
+    "expected_reaction": "Moderately positive if beat holds; muted unless comps and margins surprise. Volatility elevated given recent 38% beat se",
+    "fetched_at": "2026-11-17T03:23:28.209227+00:00",
     "key_metrics_to_watch": [
-      "comparable sales growth",
-      "gross & operating margin",
-      "full-year EPS guidance"
+      "Comparable store sales growth",
+      "Gross/operating margin",
+      "FY guidance & holiday outlook"
     ],
     "position_recommendation": "hold",
-    "reasoning": "Strong 4-qtr beat streak favors another beat, but Q2's +37.9% outlier inflates expectations. Consumer/housing softness adds revenue risk.",
+    "reasoning": "4-quarter beat streak favors upside, but last qtr's 38% surprise raises expectations. Annual EPS consensus seems mismatched to quarterly data; verify. Hold into print.",
     "risk_level": "medium"
   },
   "XOM": {
