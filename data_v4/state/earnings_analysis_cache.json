@@ -181,6 +181,19 @@
     "reasoning": "Strong beat history (3 of 4) but one miss shows volatility; declining revenue trend and commodity exposure warrant caution. Hold through print.",
     "risk_level": "medium"
   },
+  "CRM": {
+    "beat_probability": 0.72,
+    "expected_reaction": "Moderately positive if beat sustains, but declining revenue trend caps upside; outsized surprises likely reflect inconsi",
+    "fetched_at": "2026-11-18T02:44:03.330354+00:00",
+    "key_metrics_to_watch": [
+      "Current Remaining Performance Obligations (cRPO) growth",
+      "Subscription revenue & operating margin",
+      "AI/Agentforce/Data Cloud adoption and guidance"
+    ],
+    "position_recommendation": "hold",
+    "reasoning": "Strong beat history but falling revenue ($11.35B->$10.26B) is a red flag. EPS consensus of $16 vs ~$3-5 quarterly suggests data mismatch; low conviction on any directional bet.",
+    "risk_level": "high"
+  },
   "CRWD": {
     "beat_probability": 0.72,
     "expected_reaction": "moderately positive if beat, but muted given premium valuation; downside risk if guidance soft",

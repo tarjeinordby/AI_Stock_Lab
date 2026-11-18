@@ -1,23 +1,25 @@
 {
   "ABBV": {
-    "fetched_at": "2026-11-17T03:23:02.317154+00:00",
+    "fetched_at": "2026-11-18T02:43:33.774324+00:00",
     "key_factors": [
-      "Overwhelming buy ratings (72 of 90 analysts bullish)",
-      "Recent AI drug discovery partnerships signal pipeline growth"
+      "72 out of 90 analysts rate Buy/Strong Buy (80% bullish)",
+      "Recent miss breaks winning streak; Q3 neuroscience results uncertain"
     ],
-    "raw_score": 0.72,
-    "score": 0.86,
+    "raw_score": 0.68,
+    "score": 0.84,
     "source": "claude",
-    "summary": "Strong bullish setup: dominant analyst support, consistent earnings beats, strat"
+    "summary": "Positive outlook with strong analyst support; execution risk remains"
   },
   "ABNB": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-17T03:23:17.067355+00:00",
-    "key_factors": [],
-    "raw_score": 0.0,
-    "score": 0.5,
-    "source": "fallback",
-    "summary": "Ingen data"
+    "fetched_at": "2026-11-18T02:43:46.757700+00:00",
+    "key_factors": [
+      "78 bullish analysts vs 7 bearish (strong consensus buy)",
+      "Recent earnings beat streak; potential momentum continuation"
+    ],
+    "raw_score": 0.62,
+    "score": 0.81,
+    "source": "claude",
+    "summary": "Positive momentum with strong analyst support; growth narrative intact but valua"
   },
   "ADI": {
     "fetched_at": "2026-11-04T01:03:52.623171+00:00",
@@ -54,7 +56,7 @@
   },
   "ANET": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-14T01:15:07.674282+00:00",
+    "fetched_at": "2026-11-18T02:43:54.521333+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -62,15 +64,15 @@
     "summary": "Ingen data"
   },
   "APA": {
-    "fetched_at": "2026-11-17T03:23:04.849144+00:00",
+    "fetched_at": "2026-11-18T02:43:39.186456+00:00",
     "key_factors": [
       "Consistent earnings beats demonstrate operational excellence",
-      "91% YTD rally with valuation caution suggests limited near-term upside"
+      "91% YTY rally with analyst suggestion to take profits signals overvaluation"
     ],
     "raw_score": 0.35,
     "score": 0.675,
     "source": "claude",
-    "summary": "Mixed sentiment. Strong fundamentals offset by valuation concerns and operationa"
+    "summary": "Strong fundamentals offset by valuation concerns and profit-taking signals."
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -235,7 +237,7 @@
   },
   "EOG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-17T03:23:09.797093+00:00",
+    "fetched_at": "2026-11-18T02:43:44.538457+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -453,7 +455,7 @@
   },
   "PFG": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-14T01:15:15.926777+00:00",
+    "fetched_at": "2026-11-18T02:43:49.456587+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -472,15 +474,13 @@
     "summary": "Strong fundamentals with excellent earnings execution offset by valuation concer"
   },
   "PSX": {
-    "fetched_at": "2026-11-17T03:23:07.218123+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters)",
-      "Strong analyst support (9 strong buys, 26 buys vs 5 sells)"
-    ],
-    "raw_score": 0.68,
-    "score": 0.84,
-    "source": "claude",
-    "summary": "Positive outlook supported by strong fundamentals and analyst consensus"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-18T02:43:41.792375+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "QBTS": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
@@ -493,7 +493,7 @@
   },
   "REGN": {
     "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-17T03:23:19.487619+00:00",
+    "fetched_at": "2026-11-18T02:43:51.896408+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -501,15 +501,13 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "fetched_at": "2026-11-07T00:36:42.264924+00:00",
-    "key_factors": [
-      "Fox acquisition finalized - removes takeover uncertainty",
-      "Analyst consensus heavily tilted to hold (60/81) despite 21 buy ratings"
-    ],
-    "raw_score": -0.35,
-    "score": 0.325,
-    "source": "claude",
-    "summary": "Acquisition completion resolves uncertainty, but mixed analyst view suggests cau"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-18T02:43:36.451340+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "SE": {
     "fetched_at": "2026-08-07T21:35:37.123147+00:00",
@@ -633,15 +631,13 @@
     "summary": "Moderately bullish. Strong analyst support offset by valuation concerns and mixe"
   },
   "VLO": {
-    "fetched_at": "2026-10-28T00:18:44.079978+00:00",
-    "key_factors": [
-      "Perfect earnings beat streak (4/4 quarters) demonstrates execution",
-      "Analyst consensus skewed buy (29) vs hold/sell (31), showing uncertainty"
-    ],
-    "raw_score": 0.35,
-    "score": 0.675,
-    "source": "claude",
-    "summary": "Moderate positive bias tempered by valuation concerns and mixed analyst view"
+    "error": "Ugyldig JSON-respons",
+    "fetched_at": "2026-11-18T02:43:57.016600+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "WDAY": {
     "fetched_at": "2026-11-04T01:03:50.179996+00:00",
