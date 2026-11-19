@@ -1,25 +1,21 @@
 {
   "ABBV": {
-    "fetched_at": "2026-11-18T02:43:33.774324+00:00",
-    "key_factors": [
-      "72 out of 90 analysts rate Buy/Strong Buy (80% bullish)",
-      "Recent miss breaks winning streak; Q3 neuroscience results uncertain"
-    ],
-    "raw_score": 0.68,
-    "score": 0.84,
-    "source": "claude",
-    "summary": "Positive outlook with strong analyst support; execution risk remains"
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:03.016140+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "ABNB": {
-    "fetched_at": "2026-11-18T02:43:46.757700+00:00",
-    "key_factors": [
-      "78 bullish analysts vs 7 bearish (strong consensus buy)",
-      "Recent earnings beat streak; potential momentum continuation"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Positive momentum with strong analyst support; growth narrative intact but valua"
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:04.641752+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "ADI": {
     "fetched_at": "2026-11-04T01:03:52.623171+00:00",
@@ -55,8 +51,8 @@
     "summary": "Strong fundamentals and analyst support offset near-term weakness"
   },
   "ANET": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-18T02:43:54.521333+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:06.856670+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -64,15 +60,13 @@
     "summary": "Ingen data"
   },
   "APA": {
-    "fetched_at": "2026-11-18T02:43:39.186456+00:00",
-    "key_factors": [
-      "Consistent earnings beats demonstrate operational excellence",
-      "91% YTY rally with analyst suggestion to take profits signals overvaluation"
-    ],
-    "raw_score": 0.35,
-    "score": 0.675,
-    "source": "claude",
-    "summary": "Strong fundamentals offset by valuation concerns and profit-taking signals."
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:04.193423+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "APP": {
     "fetched_at": "2026-06-12T10:44:42.612824+00:00",
@@ -225,19 +219,17 @@
     "summary": "Strong analyst support with mixed earnings execution; valuation attractive near "
   },
   "ELF": {
-    "fetched_at": "2026-11-17T03:23:21.639114+00:00",
-    "key_factors": [
-      "Perfect earnings track record: 4 consecutive beats",
-      "Strong analyst consensus: 36 buy/strongBuy vs 18 hold, zero sells"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong bullish setup with consistent execution and broad analyst support"
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:07.926578+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "EOG": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-18T02:43:44.538457+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:03.597851+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -454,8 +446,8 @@
     "summary": "Strong fundamentals with consistent execution offset by modest valuation concern"
   },
   "PFG": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-18T02:43:49.456587+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:05.791916+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -474,8 +466,8 @@
     "summary": "Strong fundamentals with excellent earnings execution offset by valuation concer"
   },
   "PSX": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-18T02:43:41.792375+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:05.187505+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -492,8 +484,8 @@
     "summary": "Ingen data"
   },
   "REGN": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-18T02:43:51.896408+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:06.332096+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -631,8 +623,8 @@
     "summary": "Moderately bullish. Strong analyst support offset by valuation concerns and mixe"
   },
   "VLO": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-18T02:43:57.016600+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-19T02:16:07.270155+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
