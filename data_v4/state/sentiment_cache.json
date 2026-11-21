@@ -1,7 +1,7 @@
 {
   "ABBV": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:37.445843+00:00",
+    "fetched_at": "2026-11-21T01:57:33.452329+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -10,7 +10,7 @@
   },
   "ABNB": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:37.807532+00:00",
+    "fetched_at": "2026-11-21T01:57:36.417854+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -41,7 +41,7 @@
   },
   "AMD": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:38.967916+00:00",
+    "fetched_at": "2026-11-21T01:57:38.487807+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -50,7 +50,7 @@
   },
   "ANET": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:38.551850+00:00",
+    "fetched_at": "2026-11-21T01:57:38.119590+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -269,7 +269,7 @@
   },
   "GRMN": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:41.616451+00:00",
+    "fetched_at": "2026-11-21T01:57:36.952378+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -422,8 +422,8 @@
     "summary": "Ingen data"
   },
   "OKTA": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-10T03:09:06.830004+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-21T01:57:34.799555+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -454,7 +454,7 @@
   },
   "PFG": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:39.561345+00:00",
+    "fetched_at": "2026-11-21T01:57:37.584619+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -492,7 +492,7 @@
   },
   "REGN": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:41.160271+00:00",
+    "fetched_at": "2026-11-21T01:57:35.839073+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -500,8 +500,8 @@
     "summary": "Ingen data"
   },
   "ROKU": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-18T02:43:36.451340+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-21T01:57:34.419106+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -651,7 +651,7 @@
   },
   "WSM": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-20T02:00:40.629263+00:00",
+    "fetched_at": "2026-11-21T01:57:35.348466+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
