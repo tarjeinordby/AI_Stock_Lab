@@ -2623,9 +2623,9 @@
   "intended_execution_session": "2026-11-23",
   "missing_ticker_count": 0,
   "model_version": "quant_baseline_v1",
-  "publication_status": "draft",
-  "published_at": null,
-  "published_commit_sha": null,
+  "publication_status": "published",
+  "published_at": "2026-11-21T01:57:46.053300+00:00",
+  "published_commit_sha": "b1cb6eeed1e389672f1396d15c39bd2fbfe9a394",
   "qqq": {
     "above_sma200": false,
     "above_sma50": false,
@@ -2784,7 +2784,7 @@
     }
   },
   "signal_ai_cost_usd": 0.0,
-  "signal_content_hash": "",
+  "signal_content_hash": "09cbf2691aad6e8c5d59bfe0e67cb28fbc938d8da62a9c087115efa569a8452d",
   "signal_run_id": "run-2026-11-20-04121484d1d1",
   "spy": {
     "above_sma200": false,
