@@ -1,7 +1,7 @@
 {
   "ABBV": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-24T05:08:13.411893+00:00",
+    "fetched_at": "2026-11-25T03:56:25.515220+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -10,7 +10,7 @@
   },
   "ABNB": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-24T05:08:15.162016+00:00",
+    "fetched_at": "2026-11-25T03:56:29.151623+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -59,7 +59,7 @@
   },
   "APA": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-19T02:16:04.193423+00:00",
+    "fetched_at": "2026-11-25T03:56:28.191149+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -133,15 +133,13 @@
     "summary": "Cautiously Positive. Valuation appeal offset by mixed earnings and sentiment."
   },
   "COP": {
-    "fetched_at": "2026-11-17T03:23:14.495417+00:00",
-    "key_factors": [
-      "57 buy/strongBuy vs 1 strongSell shows overwhelming analyst conviction",
-      "Recent 3Q beat streak demonstrates operational execution"
-    ],
-    "raw_score": 0.68,
-    "score": 0.84,
-    "source": "claude",
-    "summary": "Strong bullish bias with solid fundamentals; near-term pullback offers entry"
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-25T03:56:28.777396+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "CRWD": {
     "fetched_at": "2026-10-13T02:24:34.097966+00:00",
@@ -166,15 +164,13 @@
     "summary": "Strong analyst support and perfect earnings execution offset valuation concern"
   },
   "CVX": {
-    "fetched_at": "2026-11-06T01:21:31.287966+00:00",
-    "key_factors": [
-      "18 strong buy + 43 buy ratings (81% bullish consensus)",
-      "Perfect 4Q earnings beat streak demonstrates execution"
-    ],
-    "raw_score": 0.72,
-    "score": 0.86,
-    "source": "claude",
-    "summary": "Strong fundamental momentum with positive policy tailwinds; valuation attractive"
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-25T03:56:27.582593+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "DDOG": {
     "fetched_at": "2026-10-13T02:24:31.634544+00:00",
@@ -198,7 +194,7 @@
   },
   "DOCU": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-24T05:08:14.218301+00:00",
+    "fetched_at": "2026-11-25T03:56:26.518839+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -227,7 +223,7 @@
   },
   "EOG": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-19T02:16:03.597851+00:00",
+    "fetched_at": "2026-11-25T03:56:27.033140+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -269,7 +265,7 @@
   },
   "GRMN": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-24T05:08:17.795888+00:00",
+    "fetched_at": "2026-11-25T03:56:29.765989+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -308,15 +304,13 @@
     "summary": "Strong analyst support with solid earnings consistency outweighs valuation conce"
   },
   "HPE": {
-    "fetched_at": "2026-10-21T23:54:29.341897+00:00",
-    "key_factors": [
-      "Consistent earnings beats (4/4 quarters) demonstrate execution strength",
-      "Bullish analyst consensus: 58% buy/strong buy vs 0% sell"
-    ],
-    "raw_score": 0.62,
-    "score": 0.81,
-    "source": "claude",
-    "summary": "Positive outlook with strong fundamentals; valuation pullback attractive."
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-25T03:56:30.310311+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
   },
   "IONQ": {
     "error": "Ugyldig JSON-respons",
@@ -510,7 +504,7 @@
   },
   "ROKU": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-21T01:57:34.419106+00:00",
+    "fetched_at": "2026-11-25T03:56:25.992541+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
