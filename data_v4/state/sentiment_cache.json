@@ -1,7 +1,7 @@
 {
   "ABBV": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:13.445030+00:00",
+    "fetched_at": "2026-11-27T03:28:07.976049+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -59,7 +59,7 @@
   },
   "APA": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:14.799867+00:00",
+    "fetched_at": "2026-11-27T03:28:09.439394+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -134,7 +134,7 @@
   },
   "COP": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:16.157346+00:00",
+    "fetched_at": "2026-11-27T03:28:10.980884+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -165,7 +165,7 @@
   },
   "CVX": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:15.584293+00:00",
+    "fetched_at": "2026-11-27T03:28:10.347229+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -194,7 +194,7 @@
   },
   "DOCU": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:16.760792+00:00",
+    "fetched_at": "2026-11-27T03:28:11.628392+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -223,7 +223,7 @@
   },
   "EOG": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:14.139175+00:00",
+    "fetched_at": "2026-11-27T03:28:08.685278+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -265,7 +265,7 @@
   },
   "GRMN": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:17.357403+00:00",
+    "fetched_at": "2026-11-27T03:28:12.410611+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -426,7 +426,7 @@
   },
   "OKTA": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:17.870419+00:00",
+    "fetched_at": "2026-11-27T03:28:12.923789+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -446,7 +446,7 @@
   },
   "P": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:18.626995+00:00",
+    "fetched_at": "2026-11-27T03:28:13.429482+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -486,7 +486,7 @@
   },
   "PSX": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-26T03:23:19.273425+00:00",
+    "fetched_at": "2026-11-27T03:28:14.191170+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
