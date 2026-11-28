@@ -1,7 +1,7 @@
 {
   "ABBV": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:07.976049+00:00",
+    "fetched_at": "2026-11-28T03:04:05.175222+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -59,7 +59,7 @@
   },
   "APA": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:09.439394+00:00",
+    "fetched_at": "2026-11-28T03:04:07.211629+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -110,6 +110,15 @@
     "source": "claude",
     "summary": "Strong fundamentals offset valuation concerns; consistent execution supports ups"
   },
+  "CBOE": {
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-28T03:04:11.739336+00:00",
+    "key_factors": [],
+    "raw_score": 0.0,
+    "score": 0.5,
+    "source": "fallback",
+    "summary": "Ingen data"
+  },
   "CELH": {
     "fetched_at": "2026-10-07T00:21:05.241832+00:00",
     "key_factors": [
@@ -134,7 +143,7 @@
   },
   "COP": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:10.980884+00:00",
+    "fetched_at": "2026-11-28T03:04:08.695095+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -165,7 +174,7 @@
   },
   "CVX": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:10.347229+00:00",
+    "fetched_at": "2026-11-28T03:04:07.951774+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -194,7 +203,7 @@
   },
   "DOCU": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:11.628392+00:00",
+    "fetched_at": "2026-11-28T03:04:12.446019+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -223,7 +232,7 @@
   },
   "EOG": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:08.685278+00:00",
+    "fetched_at": "2026-11-28T03:04:06.346525+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -265,7 +274,7 @@
   },
   "GRMN": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:12.410611+00:00",
+    "fetched_at": "2026-11-28T03:04:10.139883+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -446,7 +455,7 @@
   },
   "P": {
     "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
-    "fetched_at": "2026-11-27T03:28:13.429482+00:00",
+    "fetched_at": "2026-11-28T03:04:11.002846+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
@@ -671,8 +680,8 @@
     "summary": "Ingen data"
   },
   "XOM": {
-    "error": "Ugyldig JSON-respons",
-    "fetched_at": "2026-11-06T01:21:36.381960+00:00",
+    "error": "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too lo",
+    "fetched_at": "2026-11-28T03:04:09.352074+00:00",
     "key_factors": [],
     "raw_score": 0.0,
     "score": 0.5,
